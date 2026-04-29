@@ -14,7 +14,13 @@ module.exports = {
   parserOptions: { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true } },
   settings: { react: { version: '18.3' } },
   plugins: ['react', 'react-hooks', 'react-refresh', '@typescript-eslint'],
-  ignorePatterns: ['dist', 'node_modules', 'scripts/*.js', '.eslintrc.cjs'],
+  ignorePatterns: [
+    'dist',
+    'node_modules',
+    'scripts/*.js',
+    '.eslintrc.cjs',
+    'src/**/*.secured-backup.*',
+  ],
   rules: {
     'react/prop-types': 'off',
     'react/no-unescaped-entities': 'off',

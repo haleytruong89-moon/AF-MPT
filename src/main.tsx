@@ -21,13 +21,13 @@ const root = ReactDOM.createRoot(document.getElementById('root')!);
     // calls know who's making the request. Lives inside <AuthProvider> so it
     // can read useAuth(), and outside <AuthGate>'s child so the shim is wired
     // by the time <App /> mounts.
-    function ShimUserSync({ children }: { children: React.ReactNode }) {
+    const ShimUserSync = ({ children }: { children: React.ReactNode }) => {
       const { user } = useAuth();
       React.useEffect(() => {
         setStorageUser(user);
       }, [user]);
       return <>{children}</>;
-    }
+    };
 
     root.render(
       <React.StrictMode>
