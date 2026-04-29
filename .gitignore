@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Firebase admin credentials — NEVER commit these
+service-account.json
+serviceAccountKey.json
+*-service-account.json
+firebase-adminsdk-*.json
+
+# Data backups (may contain user data)
+backup.json
+backup-*.json
+
+# Local backup of secured-version App.jsx (kept on disk, not committed)
+src/App.secured-backup.jsx

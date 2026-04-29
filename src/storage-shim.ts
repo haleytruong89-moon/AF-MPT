@@ -1,0 +1,410 @@
+// window.storage shim, Firebase-backed.
+// ────────────────────────────────────────────────────────────────────────────
+// The new App.jsx (ported from the artifact) reads/writes to a key-value API
+// (window.storage.get/set/delete/list). The original shim used localStorage
+// for everything; this version routes "shared" keys to Firestore so the team
+// sees the same data, while keeping per-user "local" keys in localStorage.
+//
+// Routing table:
+//   shared:'workspace:meta'  ↔ workspaces/main doc + derived projectIds/names
+//                              from the projects collection (per-user filtered)
+//   shared:'project:{id}'    ↔ workspaces/main/projects/{id}
+//                              (RBAC fields auto-injected on first write)
+//   shared:'activity:{id}'   ↔ workspaces/main/activity/{id}
+//                              (entries[0].author rewritten to currentUser.email
+//                               so the Firestore rule passes; original author
+//                               preserved as authorName for display)
+//   local:*                  ↔ localStorage with "afmpt:" prefix
+//
+// Auth: shim methods await `getUser()` which resolves once AuthProvider sets
+// the current Firebase user via `setStorageUser()`. Because <App /> only
+// mounts inside <AuthGate>, by the time storage methods are called, the user
+// is already signed in.
+
+import {
+  doc,
+  collection,
+  query,
+  where,
+  getDoc,
+  getDocs,
+  setDoc,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { db } from './firebase';
+import type { UserProfile } from './types';
+
+const WORKSPACE = 'main';
+const META_REF = () => doc(db, 'workspaces', WORKSPACE);
+const PROJECTS_COL = () => collection(db, 'workspaces', WORKSPACE, 'projects');
+const PROJECT_REF = (pid: string) => doc(db, 'workspaces', WORKSPACE, 'projects', pid);
+const ACTIVITY_REF = (pid: string) => doc(db, 'workspaces', WORKSPACE, 'activity', pid);
+
+const LS_PREFIX = 'afmpt:';
+const ACTIVITY_CAP = 500;
+
+/** Per-user localStorage key for the "currently selected project". */
+function currentProjectKey(uid: string): string {
+  return `currentProjectId:${uid}`;
+}
+
+/* ─────── Auth context (set by main.tsx after Firebase Auth resolves) ─────── */
+let currentUser: UserProfile | null = null;
+let resolveUserReady: ((u: UserProfile) => void) | null = null;
+const userReady: Promise<UserProfile> = new Promise((resolve) => {
+  resolveUserReady = resolve;
+});
+
+/** Called from main.tsx whenever the Firebase auth user changes. */
+export function setStorageUser(user: UserProfile | null): void {
+  currentUser = user;
+  if (user && resolveUserReady) {
+    resolveUserReady(user);
+    resolveUserReady = null;
+    // Also publish a `user:local` localStorage entry so the new App.jsx can
+    // pick it up via its existing flow.
+    try {
+      localStorage.setItem(
+        LS_PREFIX + 'user:local',
+        JSON.stringify({ name: user.name || user.email, email: user.email })
+      );
+    } catch {}
+  }
+}
+
+async function getUser(): Promise<UserProfile> {
+  if (currentUser) return currentUser;
+  return userReady;
+}
+
+/* ─────── Shim implementation ─────── */
+type StorageResult<T = unknown> = T | null;
+
+interface StorageGetResult {
+  key: string;
+  value: string;
+  shared: boolean;
+}
+interface StorageSetResult {
+  key: string;
+  value: string;
+  shared: boolean;
+}
+interface StorageDeleteResult {
+  key: string;
+  deleted: boolean;
+  shared: boolean;
+}
+interface StorageListResult {
+  keys: string[];
+  prefix: string;
+  shared: boolean;
+}
+
+declare global {
+  interface Window {
+    storage: {
+      get(key: string, shared?: boolean): Promise<StorageResult<StorageGetResult>>;
+      set(key: string, value: string, shared?: boolean): Promise<StorageResult<StorageSetResult>>;
+      delete(key: string, shared?: boolean): Promise<StorageResult<StorageDeleteResult>>;
+      list(prefix?: string, shared?: boolean): Promise<StorageResult<StorageListResult>>;
+    };
+  }
+}
+
+const lsKey = (key: string) => LS_PREFIX + key;
+
+window.storage = {
+  async get(key, shared = false) {
+    if (!shared) {
+      try {
+        const raw = localStorage.getItem(lsKey(key));
+        return raw == null ? null : { key, value: raw, shared: false };
+      } catch (e) {
+        console.warn('[storage] local get failed:', e);
+        return null;
+      }
+    }
+    try {
+      const user = await getUser();
+
+      if (key === 'workspace:meta') {
+        // The new App expects meta with { projectIds: [], names: {}, ... }.
+        // projectIds + names are derived from the projects collection, filtered
+        // by membership, so each user only sees their accessible projects.
+        // Return null only when the workspace marker doc doesn't exist yet
+        // (truly first-ever user) so the App's auto-seed flow runs once.
+        const metaSnap = await getDoc(META_REF());
+        if (!metaSnap.exists()) return null;
+        const baseMeta = metaSnap.data() || {};
+        const q = query(PROJECTS_COL(), where('memberIds', 'array-contains', user.uid));
+        const projSnap = await getDocs(q);
+        const projectIds: string[] = [];
+        const names: Record<string, string> = {};
+        projSnap.forEach((d) => {
+          const dd = d.data() as Record<string, unknown>;
+          if (dd.deletedAt) return;
+          projectIds.push(d.id);
+          if (typeof dd.name === 'string') names[d.id] = dd.name;
+        });
+        // currentProjectId is per-user (not workspace-shared) — stored in
+        // localStorage so user A's project switch doesn't affect user B.
+        // Fall back to the first accessible project if the cached value is
+        // stale or missing.
+        let storedCurrent: string | null = null;
+        try {
+          storedCurrent = localStorage.getItem(LS_PREFIX + currentProjectKey(user.uid));
+        } catch {}
+        const validCurrent =
+          storedCurrent && projectIds.includes(storedCurrent)
+            ? storedCurrent
+            : projectIds[0] || null;
+        // Drop the workspace-shared `currentProjectId` from baseMeta — it's
+        // a vestigial field and we no longer write it.
+        const { currentProjectId: _drop, ...metaRest } = baseMeta;
+        void _drop;
+        return {
+          key,
+          value: JSON.stringify({
+            ...metaRest,
+            projectIds,
+            names,
+            currentProjectId: validCurrent,
+          }),
+          shared: true,
+        };
+      }
+
+      if (key.startsWith('project:')) {
+        const pid = key.substring('project:'.length);
+        const snap = await getDoc(PROJECT_REF(pid));
+        if (!snap.exists()) return null;
+        const data = snap.data() as Record<string, unknown>;
+        if (data.deletedAt) return null;
+        // Strip RBAC-internal fields from the value so the new App.jsx isn't
+        // confused by extra members/roles fields. (Member management uses the
+        // separate MembersModal which reads them via the data.ts hooks.)
+        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, ...rest } =
+          data as Record<string, unknown>;
+        // Suppress unused warnings — these are intentional drops:
+        void memberIds;
+        void roles;
+        void deletedAt;
+        void createdBy;
+        void createdAt;
+        void updatedAt;
+        return {
+          key,
+          value: JSON.stringify({ id: pid, ...rest }),
+          shared: true,
+        };
+      }
+
+      if (key.startsWith('activity:')) {
+        const pid = key.substring('activity:'.length);
+        const snap = await getDoc(ACTIVITY_REF(pid));
+        if (!snap.exists()) return { key, value: JSON.stringify([]), shared: true };
+        const data = snap.data() as { entries?: Array<Record<string, unknown>> };
+        const raw = data.entries || [];
+        // Map author → friendly name for display: the stored `author` is the
+        // email (rule-validated). Show authorName when present.
+        const display = raw.map((e) => ({
+          ...e,
+          author: typeof e.authorName === 'string' && e.authorName ? e.authorName : e.author,
+        }));
+        return { key, value: JSON.stringify(display), shared: true };
+      }
+
+      console.warn('[storage] unknown shared key for get:', key);
+      return null;
+    } catch (e) {
+      console.warn('[storage] shared get failed:', key, e);
+      return null;
+    }
+  },
+
+  async set(key, value, shared = false) {
+    if (!shared) {
+      try {
+        localStorage.setItem(lsKey(key), value);
+        return { key, value, shared: false };
+      } catch (e) {
+        console.warn('[storage] local set failed:', e);
+        return null;
+      }
+    }
+    try {
+      const user = await getUser();
+
+      if (key === 'workspace:meta') {
+        // - projectIds & names are derived from the projects collection on
+        //   read, so we drop them from the persisted doc.
+        // - currentProjectId is per-user — we write it to localStorage with a
+        //   uid-namespaced key instead of into the workspace-shared doc.
+        let incoming: Record<string, unknown> = {};
+        try {
+          incoming = JSON.parse(value);
+        } catch {}
+        const {
+          projectIds: _pids,
+          names: _names,
+          currentProjectId: incomingCurrent,
+          ...rest
+        } = incoming;
+        void _pids;
+        void _names;
+        if (typeof incomingCurrent === 'string' && incomingCurrent) {
+          try {
+            localStorage.setItem(LS_PREFIX + currentProjectKey(user.uid), incomingCurrent);
+          } catch {}
+        }
+        await setDoc(
+          META_REF(),
+          { ...rest, seeded: true, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+        return { key, value, shared: true };
+      }
+
+      if (key.startsWith('project:')) {
+        const pid = key.substring('project:'.length);
+        const incoming = JSON.parse(value) as Record<string, unknown>;
+        // Read existing to preserve RBAC + lifecycle fields
+        const existing = await getDoc(PROJECT_REF(pid));
+        const ex = existing.exists() ? (existing.data() as Record<string, unknown>) : null;
+        const memberIds = (ex?.memberIds as string[] | undefined) || [user.uid];
+        const roles = (ex?.roles as Record<string, string> | undefined) || {
+          [user.uid]: 'owner',
+        };
+        const createdBy = (ex?.createdBy as string | undefined) || user.uid;
+        const createdAt = ex?.createdAt || serverTimestamp();
+        const deletedAt = ex?.deletedAt ?? null;
+        const { id: _id, ...body } = incoming;
+        void _id;
+        await setDoc(PROJECT_REF(pid), {
+          ...body,
+          memberIds,
+          roles,
+          createdBy,
+          createdAt,
+          deletedAt,
+          updatedAt: serverTimestamp(),
+        });
+        return { key, value, shared: true };
+      }
+
+      if (key.startsWith('activity:')) {
+        const pid = key.substring('activity:'.length);
+        const incoming = JSON.parse(value);
+        let entries: Array<Record<string, unknown>> = Array.isArray(incoming) ? incoming : [];
+        // Rule requires entries[0].author == request.auth.token.email. The new
+        // App typically sets author to the user's display name; we move that
+        // to `authorName` and replace `author` with the verified email.
+        if (entries.length > 0) {
+          const first = entries[0];
+          const originalAuthor = first.author;
+          const isEmailish =
+            typeof originalAuthor === 'string' && originalAuthor.includes('@');
+          entries = [
+            {
+              ...first,
+              author: user.email,
+              authorName:
+                first.authorName ||
+                (!isEmailish && typeof originalAuthor === 'string'
+                  ? originalAuthor
+                  : user.name) ||
+                user.name,
+              authorUid: user.uid,
+            },
+            ...entries.slice(1),
+          ];
+        }
+        if (entries.length > ACTIVITY_CAP) entries = entries.slice(0, ACTIVITY_CAP);
+        await setDoc(ACTIVITY_REF(pid), { entries });
+        return { key, value, shared: true };
+      }
+
+      console.warn('[storage] unknown shared key for set:', key);
+      return null;
+    } catch (e) {
+      console.warn('[storage] shared set failed:', key, e);
+      return null;
+    }
+  },
+
+  async delete(key, shared = false) {
+    if (!shared) {
+      try {
+        localStorage.removeItem(lsKey(key));
+        return { key, deleted: true, shared: false };
+      } catch (e) {
+        console.warn('[storage] local delete failed:', e);
+        return null;
+      }
+    }
+    try {
+      await getUser();
+      if (key.startsWith('project:')) {
+        const pid = key.substring('project:'.length);
+        // Soft delete (preserves data; rule allows owner update with deletedAt)
+        await setDoc(PROJECT_REF(pid), { deletedAt: serverTimestamp() }, { merge: true });
+        return { key, deleted: true, shared: true };
+      }
+      if (key.startsWith('activity:')) {
+        // Activity is append-only by rule; ignore delete to avoid permission
+        // errors. Soft-deleted projects keep their activity log intact.
+        return { key, deleted: true, shared: true };
+      }
+      if (key === 'workspace:meta') return null;
+      return null;
+    } catch (e) {
+      console.warn('[storage] shared delete failed:', key, e);
+      return null;
+    }
+  },
+
+  async list(prefix = '', shared = false) {
+    if (!shared) {
+      try {
+        const fullPrefix = lsKey(prefix);
+        const keys: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(fullPrefix)) {
+            keys.push(k.substring(LS_PREFIX.length));
+          }
+        }
+        return { keys, prefix, shared: false };
+      } catch (e) {
+        console.warn('[storage] local list failed:', e);
+        return { keys: [], prefix, shared: false };
+      }
+    }
+    try {
+      const user = await getUser();
+      // The new App typically lists with prefix 'project:' or '' to find
+      // accessible projects. Always return only the projects user is a member of.
+      if (
+        prefix === '' ||
+        prefix === 'project:' ||
+        prefix === 'project' ||
+        prefix.startsWith('project')
+      ) {
+        const q = query(PROJECTS_COL(), where('memberIds', 'array-contains', user.uid));
+        const snap = await getDocs(q);
+        const keys: string[] = [];
+        snap.forEach((d) => {
+          if (!d.data().deletedAt) keys.push('project:' + d.id);
+        });
+        return { keys, prefix, shared: true };
+      }
+      return { keys: [], prefix, shared: true };
+    } catch (e) {
+      console.warn('[storage] shared list failed:', prefix, e);
+      return { keys: [], prefix, shared: true };
+    }
+  },
+};
+
+console.log('[storage shim] Firestore-backed shim initialized');

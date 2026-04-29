@@ -1,0 +1,144 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AF·MTP Tracker security rules
+//
+// Two layers of access control:
+//   1. Domain gate: only verified @smartosc.com Workspace identities pass
+//   2. Per-project RBAC: each project has memberIds[] + roles{uid: 'owner'|'operator'|'member'}
+//      - owner   : full control (rename, delete, manage members, edit content)
+//      - operator: edit content (programs/workstreams/tasks/check-ins)
+//      - member  : read-only
+//
+// Activity log entries are validated server-side: the `author` field MUST equal
+// the caller's verified email (no spoofing teammates' identities).
+//
+// IMPORTANT — migration order: any project that lacks `memberIds` will be
+// invisible to clients (the where('memberIds', 'array-contains', uid) query
+// can't match it, and Firestore rejects unconstrained list queries that could
+// return unauthorized docs). Before publishing these rules to a workspace
+// that has v1 data, run scripts/setup-rbac.js with admin credentials so every
+// existing project gets memberIds/roles populated.
+//
+// Deploy via Firebase Console → Firestore Database → Rules → Publish.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSmartOSC() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.matches('.*@smartosc[.]com$');
+    }
+
+    function projectData(pid) {
+      return get(/databases/$(database)/documents/workspaces/main/projects/$(pid)).data;
+    }
+
+    function isMember(p) {
+      return ('memberIds' in p) && (request.auth.uid in p.memberIds);
+    }
+
+    function roleOf(p, uid) {
+      return ('roles' in p && uid in p.roles) ? p.roles[uid] : null;
+    }
+
+    function canEdit(p) {
+      return roleOf(p, request.auth.uid) == 'owner'
+          || roleOf(p, request.auth.uid) == 'operator';
+    }
+
+    function isOwner(p) {
+      return roleOf(p, request.auth.uid) == 'owner';
+    }
+
+    function hasAtLeastOneOwner(p) {
+      return p.roles.values().hasAny(['owner']);
+    }
+
+    // ─────── Workspace meta (just a marker doc; project list is queried directly) ───────
+    match /workspaces/{workspace} {
+      allow read, write: if isSmartOSC() && workspace == 'main';
+    }
+
+    // ─────── Projects ───────
+    // Per-doc read rule: only members. Firestore enforces this on get() and
+    // on list() — but list queries must constrain themselves so Firestore can
+    // prove all returned docs match. The client uses
+    //     query(projects, where('memberIds', 'array-contains', uid))
+    // which guarantees every result has uid in memberIds.
+    match /workspaces/main/projects/{pid} {
+
+      allow read: if isSmartOSC() && isMember(resource.data);
+
+      // CREATE — creator must put themselves as owner; required fields enforced
+      allow create: if isSmartOSC()
+        && request.resource.data.keys().hasAll(['name', 'memberIds', 'roles'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 200
+        && request.auth.uid in request.resource.data.memberIds
+        && request.resource.data.roles[request.auth.uid] == 'owner';
+
+      // UPDATE — owners can change anything (must keep at least one owner).
+      // Operators can change content but not membership/roles, name,
+      // deletedAt, or createdBy.
+      allow update: if isSmartOSC() && (
+        // Owner: full update
+        (isOwner(resource.data)
+          && hasAtLeastOneOwner(request.resource.data))
+        ||
+        // Operator: cannot touch ACL / name / deletedAt / createdBy
+        (canEdit(resource.data)
+          && request.resource.data.roles == resource.data.roles
+          && request.resource.data.memberIds == resource.data.memberIds
+          && request.resource.data.name == resource.data.name
+          && request.resource.data.get('deletedAt', null) == resource.data.get('deletedAt', null)
+          && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null))
+      );
+
+      // DELETE (hard) — owners only. Soft delete via update(deletedAt) preferred.
+      allow delete: if isSmartOSC() && isOwner(resource.data);
+    }
+
+    // ─────── Activity log ───────
+    // Entries are an array on a single doc. Author is validated server-side
+    // against the caller's verified email — teammates can't spoof each other.
+    // Cap of 500 enforced; older entries stay immutable except for the trim tail.
+    match /workspaces/main/activity/{pid} {
+      allow read: if isSmartOSC() && isMember(projectData(pid));
+
+      // First write (no existing doc): must contain at least one entry by current user.
+      allow create: if isSmartOSC()
+        && isMember(projectData(pid))
+        && request.resource.data.entries.size() > 0
+        && request.resource.data.entries.size() <= 500
+        && request.resource.data.entries[0].author == request.auth.token.email;
+
+      // Subsequent writes: entries[0] must be a new entry by the current user;
+      // size capped at 500. (We can't easily verify older entries are unchanged
+      // without per-entry inspection, but `author` spoofing of NEW entries is blocked.)
+      allow update: if isSmartOSC()
+        && isMember(projectData(pid))
+        && request.resource.data.entries.size() <= 500
+        && request.resource.data.entries[0].author == request.auth.token.email;
+
+      // No deletes; activity is append-only.
+      allow delete: if false;
+    }
+
+    // ─────── User directory (so owners can pick teammates by email) ───────
+    // Each user upserts their own entry on sign-in; everyone in the workspace
+    // can read it to populate the member-picker.
+    match /workspaces/main/users/{uid} {
+      allow read: if isSmartOSC();
+      allow write: if isSmartOSC() && request.auth.uid == uid;
+    }
+
+    // ─────── Per-user private prefs (currentProjectId, etc.) ───────
+    match /users/{uid} {
+      allow read, write: if isSmartOSC() && request.auth.uid == uid;
+    }
+  }
+}

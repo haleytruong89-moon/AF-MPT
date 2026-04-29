@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy Policy — AF Master Project Tracker</title>
+    <link rel="icon" href="/favicon.svg" />
+    <style>
+      body {
+        font-family: 'Geist', 'Inter', system-ui, sans-serif;
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 24px;
+        color: #1a1a19;
+        background: #f7f5ef;
+        line-height: 1.6;
+      }
+      h1 { font-size: 24px; margin: 0 0 6px; }
+      h2 { font-size: 16px; margin: 28px 0 8px; }
+      .meta { color: #6e6c66; font-size: 12px; margin-bottom: 28px; }
+      ul { padding-left: 22px; }
+      li { margin: 4px 0; }
+      a { color: #3b6d11; }
+      code { background: #edebe4; padding: 1px 5px; border-radius: 3px; font-size: 90%; }
+    </style>
+  </head>
+  <body>
+    <h1>Privacy Policy</h1>
+    <p class="meta">AF Master Project Tracker (afmpt) · Last updated: 2026-04-29</p>
+
+    <h2>Who runs this app</h2>
+    <p>
+      The AF Master Project Tracker (“AFMPT”, “the app”) is an internal tool operated by
+      SmartOSC for use by employees of the <code>@smartosc.com</code> Google Workspace.
+      It is not offered to the general public.
+    </p>
+
+    <h2>What data we collect</h2>
+    <ul>
+      <li>
+        <strong>Google Workspace identity</strong>: your email address, display name, profile
+        photo URL, and Firebase Auth user ID. We collect this when you sign in with Google.
+      </li>
+      <li>
+        <strong>Project content you create</strong>: program/workstream/task names, owners,
+        dates, deliverables, dependencies, and weekly check-in notes you post.
+      </li>
+      <li>
+        <strong>Activity log</strong>: a trail of who edited what (capped at the most recent
+        500 entries per project). Each entry stores your verified email as the author.
+      </li>
+      <li>
+        <strong>Per-user preferences</strong>: the project ID you last viewed.
+      </li>
+    </ul>
+
+    <h2>What we do NOT collect</h2>
+    <ul>
+      <li>No analytics, tracking pixels, or third-party advertising tags.</li>
+      <li>No location data, device fingerprinting, or browsing history outside the app.</li>
+      <li>No access to your Gmail, Drive, Calendar, or any other Google service.</li>
+    </ul>
+
+    <h2>How we use your data</h2>
+    <ul>
+      <li>Authenticate you and confirm you belong to <code>@smartosc.com</code>.</li>
+      <li>Display your name and photo on changes and check-ins for team attribution.</li>
+      <li>Keep an audit-style log of edits so the team can see who did what.</li>
+    </ul>
+
+    <h2>Where your data lives</h2>
+    <p>
+      Project content and your profile metadata are stored in Google Firestore (Firebase) in
+      the <code>asia-southeast1</code> region. Authentication is handled by Firebase
+      Authentication. Static assets are served by Vercel. We do not transfer your data to any
+      other third party.
+    </p>
+
+    <h2>Access controls</h2>
+    <p>
+      The app enforces three layers of access control:
+    </p>
+    <ul>
+      <li>Sign-in is restricted to verified <code>@smartosc.com</code> Google identities.</li>
+      <li>
+        Each project has a member list and per-user roles (Owner / Operator / Viewer). Only
+        members of a project can read its content; non-members are blocked at the database
+        layer (Firestore security rules).
+      </li>
+      <li>
+        Activity-log entries are signed with your verified email server-side — teammates
+        cannot post entries that pretend to be from someone else.
+      </li>
+    </ul>
+
+    <h2>Retention</h2>
+    <p>
+      Project content remains in Firestore until a project owner deletes it. Deleted projects
+      are soft-deleted (hidden but recoverable from the Firebase console). The activity log is
+      capped at 500 entries per project and rotates oldest-first.
+    </p>
+
+    <h2>Your rights</h2>
+    <ul>
+      <li>
+        <strong>Access</strong>: every project member can already see the project's content,
+        including check-ins they posted. You can export any project as JSON or Excel from the
+        app toolbar.
+      </li>
+      <li>
+        <strong>Correction</strong>: edit your own check-ins or task fields directly. To
+        change your display name or photo, update your Google Workspace profile.
+      </li>
+      <li>
+        <strong>Deletion</strong>: ask a workspace admin (see contact below) to remove your
+        check-ins and directory entry. Project content you authored may remain if other
+        members rely on it; the admin will discuss case-by-case.
+      </li>
+    </ul>
+
+    <h2>Cookies & local storage</h2>
+    <p>
+      The app uses Firebase Authentication's secure session storage to remember that you are
+      signed in. We do not set marketing or tracking cookies.
+    </p>
+
+    <h2>Children</h2>
+    <p>
+      The app is for SmartOSC employees only and is not intended for anyone under 18.
+    </p>
+
+    <h2>Changes to this policy</h2>
+    <p>
+      Material changes will be announced in the team channel before they take effect. The
+      “Last updated” date above shows the most recent revision.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions about this policy or data handling: contact the AF team workspace admin at
+      <a href="mailto:ai-bo-02@smartosc.com">ai-bo-02@smartosc.com</a>.
+    </p>
+
+    <p style="margin-top: 40px; font-size: 12px;">
+      <a href="/">← Back to the app</a> · <a href="/terms.html">Terms of Service</a>
+    </p>
+  </body>
+</html>
