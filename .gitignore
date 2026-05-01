@@ -20,3 +20,6 @@ backup-*.json
 
 # Local backup of secured-version App.jsx (kept on disk, not committed)
 src/App.secured-backup.jsx
+
+# Superpowers brainstorming/visual companion artifacts
+.superpowers/
