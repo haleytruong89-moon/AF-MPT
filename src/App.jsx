@@ -5,12 +5,13 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3
+  Move, FileText, History, Grip, BarChart3, HelpCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
 import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
+import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 
 /* ═════════ SEED DATA ═════════ */
@@ -4082,6 +4083,7 @@ export default function App() {
   useSearchHotkey(() => setShowSearch(true));
   const { user: authUser } = useAuth();
   const fileInputRef = useRef(null);
+  const walkthroughRef = useRef(null);
   const saveTimers = useRef({});
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
 
@@ -4360,6 +4362,7 @@ export default function App() {
             <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
+            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => walkthroughRef.current?.start()} title="Show walkthrough"><HelpCircle size={12} /></Btn></span>
           </div>
 
           {/* Scope / focus selector */}
@@ -4442,6 +4445,14 @@ export default function App() {
 
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
+        <Walkthrough
+          ref={walkthroughRef}
+          uid={authUser?.uid || null}
+          ready={!loading && !!meta && !!currentId}
+          currentProject={project}
+          currentView={view}
+          setView={setView}
+        />
 
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
