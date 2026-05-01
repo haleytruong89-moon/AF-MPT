@@ -3503,7 +3503,20 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
               const d = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
               return <path key={i} d={d} stroke={TOK.lineStrong} strokeWidth="1.2" fill="none" />;
             })}
-            {nodes.map((n) => <MindNode key={n.id} n={n} onToggle={toggle} onTaskClick={onTaskClick} selectedTaskId={selectedTaskId} onOpenMenu={openMenu} />)}
+            {(() => {
+              const firstTaskIdx = nodes.findIndex((x) => x.kind === 'task');
+              return nodes.map((n, idx) => (
+                <MindNode
+                  key={n.id}
+                  n={n}
+                  isFirstTask={idx === firstTaskIdx}
+                  onToggle={toggle}
+                  onTaskClick={onTaskClick}
+                  selectedTaskId={selectedTaskId}
+                  onOpenMenu={openMenu}
+                />
+              ));
+            })()}
           </g>
         </svg>
         {menu && (
@@ -3517,7 +3530,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   );
 }
 
-function MindNode({ n, onToggle, onTaskClick, selectedTaskId, onOpenMenu }) {
+function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpenMenu }) {
   const isTask = n.kind === 'task';
   const isSelected = isTask && n.data.id === selectedTaskId;
   const isDropped = isTask && n.data.status === 'Dropped';
@@ -3548,7 +3561,7 @@ function MindNode({ n, onToggle, onTaskClick, selectedTaskId, onOpenMenu }) {
   const healthColor = taskHealth === 'red' ? TOK.healthRed : taskHealth === 'amber' ? TOK.healthAmber : TOK.healthGreen;
 
   return (
-    <g data-mindnode="true" transform={`translate(${n.x},${n.y})`} opacity={opacity}>
+    <g data-mindnode="true" data-tour={isFirstTask ? 'first-task' : undefined} transform={`translate(${n.x},${n.y})`} opacity={opacity}>
       <g style={{ cursor: 'pointer' }}
         onClick={(e) => {
           e.stopPropagation();
