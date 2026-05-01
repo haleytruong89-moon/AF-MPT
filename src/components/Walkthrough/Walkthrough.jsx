@@ -17,6 +17,8 @@ const TOOLTIP_Z = 1501;
 const DIM = 'rgba(0,0,0,0.55)';
 const VIEWPORT_MARGIN = 16;
 const FALLBACK_RETRY_MS = 200;
+const TOOLTIP_W = 280;
+const TOOLTIP_H = 140;
 
 function getRect(target) {
   if (!target) return null;
@@ -30,8 +32,6 @@ function getRect(target) {
 function pickPlacement(rect, preferred) {
   // Try preferred → bottom → top → right → left, returning the first that
   // leaves at least 240×120 px of viewport space along that edge.
-  const TOOLTIP_W = 280;
-  const TOOLTIP_H = 140;
   const tries = preferred && preferred !== 'auto'
     ? [preferred, 'bottom', 'top', 'right', 'left']
     : ['bottom', 'top', 'right', 'left'];
@@ -48,8 +48,6 @@ function pickPlacement(rect, preferred) {
 }
 
 function tooltipPosition(rect, placement) {
-  const TOOLTIP_W = 280;
-  const TOOLTIP_H = 140;
   const GAP = 12;
   let left = rect.left + rect.width / 2 - TOOLTIP_W / 2;
   let top = rect.bottom + GAP;
@@ -168,6 +166,9 @@ const Walkthrough = forwardRef(function Walkthrough(
           }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="walkthrough-modal-title"
             style={{
               background: '#fff', borderRadius: 12, padding: 24, width: 420, maxWidth: '90vw',
               boxShadow: '0 20px 50px rgba(0,0,0,0.35)',
@@ -176,7 +177,7 @@ const Walkthrough = forwardRef(function Walkthrough(
             }}
           >
             <ProgressBar current={stepIndex + 1} total={totalSteps} />
-            <div style={{ fontSize: 17, fontWeight: 600, marginTop: 12, marginBottom: 8 }}>{step.title}</div>
+            <div id="walkthrough-modal-title" style={{ fontSize: 17, fontWeight: 600, marginTop: 12, marginBottom: 8 }}>{step.title}</div>
             <div style={{ fontSize: 13, lineHeight: 1.55, color: '#333' }}>{step.body}</div>
             {useFallbackModal && step.fallbackNote && (
               <div style={{ fontSize: 12, color: '#888', fontStyle: 'italic', marginTop: 10 }}>
@@ -278,9 +279,11 @@ function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, o
       />
       {/* Tooltip card */}
       <div
+        role="dialog"
+        aria-labelledby="walkthrough-tooltip-title"
         style={{
           position: 'fixed', top: tip.top, left: tip.left,
-          width: 280, padding: 14, background: '#fff', borderRadius: 10,
+          width: TOOLTIP_W, padding: 14, background: '#fff', borderRadius: 10,
           boxShadow: '0 12px 32px rgba(0,0,0,0.4)', zIndex: TOOLTIP_Z,
           pointerEvents: 'auto',
           fontFamily: '"Geist","Inter",ui-sans-serif,system-ui,sans-serif',
@@ -288,7 +291,7 @@ function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, o
         }}
       >
         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{progressLabel}</div>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{step.title}</div>
+        <div id="walkthrough-tooltip-title" style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{step.title}</div>
         <div style={{ fontSize: 12.5, lineHeight: 1.5, color: '#333' }}>{step.body}</div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
           <button onClick={onSkip} style={btnStyle('secondary')}>Skip</button>
