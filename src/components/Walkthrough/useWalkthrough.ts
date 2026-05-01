@@ -57,7 +57,15 @@ export function useWalkthrough({
 }: UseWalkthroughArgs): WalkthroughApi {
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
+  // Auto-trigger fires exactly once per mount. start() (replay) does NOT reset
+  // this ref — replay is manual-only via the "?" button.
   const autoTriggerRanRef = useRef(false);
+  // Latest project ref so the delayed auto-trigger re-checks tasks at fire time
+  // (the user may switch projects during the 800ms delay).
+  const currentProjectRef = useRef(currentProject);
+  useEffect(() => {
+    currentProjectRef.current = currentProject;
+  }, [currentProject]);
 
   const markCompleted = useCallback(async () => {
     try {
@@ -78,6 +86,9 @@ export function useWalkthrough({
   }, [uid]);
 
   const start = useCallback(() => {
+    // Replay: reset to step 0 and show. Does NOT reset autoTriggerRanRef
+    // (we don't want auto-trigger to re-fire on next render) and does NOT
+    // clear the persistence flag.
     setStepIndex(0);
     setActive(true);
   }, []);
@@ -124,14 +135,17 @@ export function useWalkthrough({
     autoTriggerRanRef.current = true;
 
     let cancelled = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     (async () => {
       try {
         const snap = await getDoc(USER_REF(uid));
         const data = snap.exists() ? snap.data() : null;
         if (!data || data.tourCompletedAt == null) {
           if (cancelled) return;
-          setTimeout(() => {
-            if (!cancelled) start();
+          timeoutHandle = setTimeout(() => {
+            // Re-check project state at fire time: user may have switched
+            // projects during the 800ms delay to one with no tasks.
+            if (!cancelled && projectHasTasks(currentProjectRef.current)) start();
           }, AUTO_TRIGGER_DELAY_MS);
         }
       } catch (err) {
@@ -141,6 +155,7 @@ export function useWalkthrough({
 
     return () => {
       cancelled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     };
   }, [ready, uid, currentProject, start]);
 
