@@ -23,3 +23,4 @@ src/App.secured-backup.jsx
 
 # Superpowers brainstorming/visual companion artifacts
 .superpowers/
+.vercel
