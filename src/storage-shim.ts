@@ -269,9 +269,19 @@ window.storage = {
       if (key.startsWith('project:')) {
         const pid = key.substring('project:'.length);
         const incoming = JSON.parse(value) as Record<string, unknown>;
-        // Read existing to preserve RBAC + lifecycle fields
-        const existing = await getDoc(PROJECT_REF(pid));
-        const ex = existing.exists() ? (existing.data() as Record<string, unknown>) : null;
+        // Read existing to preserve RBAC + lifecycle fields. For non-existent
+        // docs, Firestore evaluates the read rule against null resource, which
+        // denies (isMember(null) = false) and getDoc throws permission_denied.
+        // Treat that as "doc doesn't exist" so create path can proceed.
+        let ex: Record<string, unknown> | null = null;
+        try {
+          const existing = await getDoc(PROJECT_REF(pid));
+          if (existing.exists()) {
+            ex = existing.data() as Record<string, unknown>;
+          }
+        } catch {
+          ex = null;
+        }
         const memberIds = (ex?.memberIds as string[] | undefined) || [user.uid];
         const roles = (ex?.roles as Record<string, string> | undefined) || {
           [user.uid]: 'owner',
