@@ -25,6 +25,55 @@ const STATUS_WEIGHT = { Planned: 0, InProgress: 0.5, Completed: 1, Dropped: null
 const HEALTH_VALUES = ['green', 'amber', 'red'];
 const HEALTH_LABEL = { green: 'On track', amber: 'At risk', red: 'Off track' };
 
+// ─── Deadline classification (Activity Dashboard) ───
+const DEADLINE_TYPES = ['hard', 'soft'];
+const DEADLINE_TYPE_LABEL = { hard: 'Hard deadline', soft: 'Soft target' };
+const DEFAULT_DEADLINE_TYPE = 'hard';
+
+// ─── Activity Dashboard thresholds ───
+const ACTIVITY_THRESHOLDS = {
+  delivery: { green: 85, amber: 70 },
+  cadence:  { green: 7, amber: 14 },
+  blocker:  { green: 3, amber: 7 },
+  risk:     { green: 85, amber: 70 },
+  engagement: { green: 5, amber: 2 },
+  composite: { green: 80, amber: 65 },
+  minSamples: 3,
+};
+const COMPOSITE_WEIGHTS = {
+  delivery: 0.40,
+  cadence: 0.30,
+  risk: 0.20,
+  engagement: 0.10,
+};
+const DEFAULT_DASHBOARD_WINDOW = {
+  actionWeeks: 4,
+  taskWeeks: 12,
+};
+const DIFFICULTY_PRESETS = {
+  standard: 1.0,
+  complex: 1.3,
+  exploration: 1.5,
+  execution: 1.0,
+};
+const DIFFICULTY_LABELS = {
+  standard: 'Standard',
+  complex: 'Complex (Legal/Finance)',
+  exploration: 'Exploration (R&D/Strategy)',
+  execution: 'Execution (Sales/Ops)',
+};
+
+// ─── Briefing & decision decay constants ───
+const DECISION_REVIEW_DAYS = 30;
+const BRIEFING_DEFAULT_WINDOW_DAYS = 7;
+
+// ─── Credit allocation (v22+) ───
+const DEFAULT_CREDIT_POINTS = 100;
+
+// Default company departments — seeded into contributorRegistry for new projects.
+// Owner can add/remove via Project Settings → Contributor registry.
+const DEFAULT_DEPARTMENTS = ['HR', 'QA', 'GA', 'Legal', 'IT', 'FIN', 'AF', 'BOD'];
+
 // Reference (wiki link) types — auto-detected from URL pattern.
 // Each type gets a distinctive label + color pill in the UI.
 const REF_TYPE_STYLE = {
@@ -102,6 +151,560 @@ const fmtDateShort = (s) => { const d = parseDate(s); return d ? d.toLocaleDateS
 const fmtDateTime = (s) => { const d = parseDate(s); return d ? d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'; };
 const toISODate = (s) => { const d = parseDate(s); return d ? d.toISOString().slice(0, 10) : ''; };
 const isOverdue = (t) => { if (!t || t.status === 'Completed' || t.status === 'Dropped') return false; const e = parseDate(t.end); return e ? e < today() : false; };
+
+// ─── Activity Dashboard / Briefing date helpers ───
+function weeksAgo(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - n * 7);
+  return d;
+}
+
+function daysBetween(a, b) {
+  const da = new Date(a); da.setHours(0, 0, 0, 0);
+  const db = new Date(b); db.setHours(0, 0, 0, 0);
+  return Math.round((db - da) / 86400000);
+}
+
+function inDateRange(ts, from, to) {
+  if (!ts) return false;
+  const d = new Date(ts);
+  if (isNaN(d)) return false;
+  if (from && d < from) return false;
+  if (to) { const t = new Date(to); t.setHours(23, 59, 59, 999); if (d > t) return false; }
+  return true;
+}
+
+function bucketColor(value, thresholds, { inverted = false } = {}) {
+  if (value == null || isNaN(value)) return 'subtle';
+  if (inverted) {
+    if (value <= thresholds.green) return 'green';
+    if (value <= thresholds.amber) return 'amber';
+    return 'red';
+  }
+  if (value >= thresholds.green) return 'green';
+  if (value >= thresholds.amber) return 'amber';
+  return 'red';
+}
+
+function sampleStatus(count) {
+  return count >= ACTIVITY_THRESHOLDS.minSamples ? 'ok' : 'low';
+}
+
+function addDays(isoDate, days) {
+  if (!isoDate) return null;
+  const d = new Date(isoDate);
+  if (isNaN(d)) return null;
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function isMonday(date = new Date()) {
+  return date.getDay() === 1;
+}
+
+function todayISODate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function logDeadlineChange(oldTask, newEnd, author, reason) {
+  const oldEnd = oldTask.end || null;
+  const next = newEnd || null;
+  if (oldEnd === next) return oldTask;
+  const entry = {
+    id: `dh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    from: oldEnd, to: next,
+    changedAt: new Date().toISOString(),
+    changedBy: author || 'Unknown',
+    reason: reason || '',
+  };
+  return { ...oldTask, end: next, deadlineHistory: [...(oldTask.deadlineHistory || []), entry] };
+}
+
+// Trend direction: 'up' | 'flat' | 'down' | null. inverted=true means lower is better.
+function trendOf(curr, prev, { inverted = false } = {}) {
+  if (curr == null || prev == null) return null;
+  const delta = curr - prev;
+  const threshold = Math.max(2, Math.abs(prev) * 0.05);
+  if (Math.abs(delta) < threshold) return 'flat';
+  const isUp = delta > 0;
+  if (inverted) return isUp ? 'down' : 'up';
+  return isUp ? 'up' : 'down';
+}
+
+// Per-PIC activity snapshot for the Activity Dashboard. Pure function.
+function computeActivityIndex(projectsMap, options = {}) {
+  const now = options.now || new Date();
+  const actionFrom = options.actionFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.actionWeeks);
+  const taskFrom = options.taskFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.taskWeeks);
+
+  const out = new Map();
+  const ensure = (pic) => {
+    if (!out.has(pic)) out.set(pic, {
+      pic,
+      delivery: { onTime: 0, late: 0, total: 0, rate: null, weightedRate: null, hardOnTime: 0, hardTotal: 0, softOnTime: 0, softTotal: 0 },
+      cadence:  { activeTasks: 0, staleTasks: 0, avgDaysSinceUpdate: null },
+      blocker:  { resolved: 0, unresolved: 0, avgResolveDays: null },
+      risk:     { greenButOverdue: 0, totalReports: 0, honestyRate: null, lateBlockers: 0, earlyBlockers: 0 },
+      engagement: { decisions: 0, blockersResolvedForOthers: 0, crossTaskUpdates: 0, total: 0 },
+      composite: { score: null, dimensions: { delivery: null, cadence: null, risk: null, engagement: null } },
+      sampleSize: { actions: 0, tasks: 0, blockers: 0, riskReports: 0 },
+      activeTasks: [],
+      recentFlags: [],
+    });
+    return out.get(pic);
+  };
+
+  const cadenceDaysByPic = new Map();
+  const resolveDaysByPic = new Map();
+  const weightedDeliveryByPic = new Map();
+
+  for (const project of Object.values(projectsMap)) {
+    for (const action of project.actionItems || []) {
+      if (!action.pic) continue;
+      const dueInRange = action.dueDate && inDateRange(action.dueDate, actionFrom, now);
+      const closedInRange = action.status === 'Done' && inDateRange(action.timestamp, actionFrom, now);
+      if (!dueInRange && !closedInRange) continue;
+
+      const m = ensure(action.pic);
+      m.sampleSize.actions++;
+      if (action.status === 'Cancelled') continue;
+
+      m.delivery.total++;
+      if (action.status === 'Done') {
+        const closedAt = action.completedAt || action.timestamp;
+        const onTime = !action.dueDate || daysBetween(closedAt, action.dueDate) >= 0;
+        if (onTime) m.delivery.onTime++;
+        else m.delivery.late++;
+      } else if (action.dueDate && new Date(action.dueDate) < now) {
+        m.delivery.late++;
+        const lateDays = daysBetween(action.dueDate, now);
+        m.recentFlags.push({
+          kind: 'overdue_action',
+          message: `Action overdue ${lateDays}d: ${action.title}`,
+          ts: action.dueDate,
+        });
+      }
+    }
+
+    for (const program of project.programs || []) {
+      for (const ws of program.workstreams || []) {
+        const wsMultiplier = ws.difficultyMultiplier || 1.0;
+        for (const task of ws.tasks || []) {
+          if (!task.pic) continue;
+          const m = ensure(task.pic);
+          const deadlineType = task.deadlineType || DEFAULT_DEADLINE_TYPE;
+          const inTaskWindow = task.end && inDateRange(task.end, taskFrom, now);
+
+          if (inTaskWindow && task.status !== 'Dropped') {
+            m.sampleSize.tasks++;
+            const isComplete = task.status === 'Completed';
+            if (deadlineType === 'hard') {
+              m.delivery.hardTotal++;
+              if (isComplete) m.delivery.hardOnTime++;
+            } else {
+              m.delivery.softTotal++;
+              if (isComplete) m.delivery.softOnTime++;
+            }
+            if (!weightedDeliveryByPic.has(task.pic)) {
+              weightedDeliveryByPic.set(task.pic, { weightedOnTime: 0, weightedTotal: 0 });
+            }
+            const wd = weightedDeliveryByPic.get(task.pic);
+            wd.weightedTotal += wsMultiplier;
+            if (isComplete) wd.weightedOnTime += wsMultiplier;
+
+            const isOverdueTask = !isComplete && new Date(task.end) < now;
+            if (isOverdueTask || isComplete) {
+              m.sampleSize.riskReports++;
+              m.risk.totalReports++;
+              if (isOverdueTask && (task.health === 'green' || !task.health)) {
+                m.risk.greenButOverdue++;
+                m.recentFlags.push({
+                  kind: 'risk_dishonesty',
+                  message: `Self-reported green but overdue: ${task.name}`,
+                  ts: task.end, taskId: task.id,
+                });
+              }
+            }
+
+            if (!isComplete && new Date(task.end) < now) {
+              const lateDays = daysBetween(task.end, now);
+              m.recentFlags.push({
+                kind: deadlineType === 'hard' ? 'overdue_task_hard' : 'overdue_task_soft',
+                message: `${deadlineType === 'hard' ? 'Task' : 'Soft target'} overdue ${lateDays}d: ${task.name}`,
+                ts: task.end, taskId: task.id,
+              });
+            }
+          }
+
+          if (task.status === 'InProgress') {
+            m.cadence.activeTasks++;
+            m.activeTasks.push({ project, program, workstream: ws, task });
+            const latestUpdate = (task.updates || [])
+              .map((u) => new Date(u.timestamp))
+              .filter((d) => !isNaN(d))
+              .sort((a, b) => b - a)[0];
+            // Use latest update; fall back to task.start only if it's in the past
+            // (a future-dated start has no "days since activity" meaning).
+            let latestActivity = latestUpdate;
+            if (!latestActivity && task.start) {
+              const startD = new Date(task.start);
+              if (!isNaN(startD) && startD <= now) latestActivity = startD;
+            }
+            if (latestActivity) {
+              const days = Math.max(0, daysBetween(latestActivity, now));
+              if (!cadenceDaysByPic.has(task.pic)) cadenceDaysByPic.set(task.pic, []);
+              cadenceDaysByPic.get(task.pic).push(days);
+              if (days >= ACTIVITY_THRESHOLDS.cadence.amber) {
+                m.cadence.staleTasks++;
+                if (days >= ACTIVITY_THRESHOLDS.cadence.green * 2) {
+                  m.recentFlags.push({
+                    kind: 'stale_update',
+                    message: `No update for ${days}d: ${task.name}`,
+                    ts: latestActivity.toISOString(), taskId: task.id,
+                  });
+                }
+              }
+            }
+          }
+
+          for (const u of task.updates || []) {
+            if (u.author && u.author !== task.pic && inDateRange(u.timestamp, taskFrom, now)) {
+              const updater = ensure(u.author);
+              updater.engagement.crossTaskUpdates++;
+              updater.engagement.total++;
+            }
+            if (u.isBlocker && u.resolvedAt && u.resolvedBy && u.resolvedBy !== task.pic
+                && inDateRange(u.resolvedAt, taskFrom, now)) {
+              const helper = ensure(u.resolvedBy);
+              helper.engagement.blockersResolvedForOthers++;
+              helper.engagement.total++;
+            }
+            if (!u.isBlocker) continue;
+            if (!inDateRange(u.timestamp, taskFrom, now)) continue;
+            m.sampleSize.blockers++;
+            if (u.resolvedAt) {
+              m.blocker.resolved++;
+              const days = daysBetween(u.timestamp, u.resolvedAt);
+              if (!resolveDaysByPic.has(task.pic)) resolveDaysByPic.set(task.pic, []);
+              resolveDaysByPic.get(task.pic).push(days);
+            } else {
+              m.blocker.unresolved++;
+              const ageDays = daysBetween(u.timestamp, now);
+              if (ageDays >= ACTIVITY_THRESHOLDS.blocker.amber) {
+                m.recentFlags.push({
+                  kind: 'unresolved_blocker',
+                  message: `Blocker open ${ageDays}d: ${task.name}`,
+                  ts: u.timestamp, taskId: task.id,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for (const decision of project.decisions || []) {
+      if (!inDateRange(decision.date, taskFrom, now)) continue;
+      for (const decider of decision.decidedBy || []) {
+        const m = ensure(decider);
+        m.engagement.decisions++;
+        m.engagement.total++;
+      }
+    }
+  }
+
+  for (const m of out.values()) {
+    if (m.delivery.total > 0) {
+      m.delivery.rate = Math.round(100 * m.delivery.onTime / m.delivery.total);
+    }
+    const wd = weightedDeliveryByPic.get(m.pic);
+    if (wd && wd.weightedTotal > 0) {
+      const taskComponent = wd.weightedOnTime / wd.weightedTotal;
+      const actionComponent = m.delivery.total > 0 ? m.delivery.onTime / m.delivery.total : taskComponent;
+      if (m.delivery.total > 0 && wd.weightedTotal > 0) {
+        m.delivery.weightedRate = Math.round(100 * (0.6 * actionComponent + 0.4 * taskComponent));
+      } else if (wd.weightedTotal > 0) {
+        m.delivery.weightedRate = Math.round(100 * taskComponent);
+      } else {
+        m.delivery.weightedRate = m.delivery.rate;
+      }
+    } else {
+      m.delivery.weightedRate = m.delivery.rate;
+    }
+    const cd = cadenceDaysByPic.get(m.pic);
+    if (cd && cd.length > 0) {
+      m.cadence.avgDaysSinceUpdate = Math.round(cd.reduce((a, b) => a + b, 0) / cd.length);
+    }
+    const rd = resolveDaysByPic.get(m.pic);
+    if (rd && rd.length > 0) {
+      m.blocker.avgResolveDays = Math.round(10 * rd.reduce((a, b) => a + b, 0) / rd.length) / 10;
+    }
+    if (m.risk.totalReports > 0) {
+      m.risk.honestyRate = Math.round(100 * (1 - m.risk.greenButOverdue / m.risk.totalReports));
+    }
+    const dim = { delivery: null, cadence: null, risk: null, engagement: null };
+    let totalWeight = 0;
+    let weightedSum = 0;
+
+    if (sampleStatus(m.sampleSize.actions) === 'ok' && m.delivery.weightedRate != null) {
+      dim.delivery = m.delivery.weightedRate;
+      weightedSum += dim.delivery * COMPOSITE_WEIGHTS.delivery;
+      totalWeight += COMPOSITE_WEIGHTS.delivery;
+    }
+    if (m.cadence.activeTasks > 0 && m.cadence.avgDaysSinceUpdate != null) {
+      const days = m.cadence.avgDaysSinceUpdate;
+      dim.cadence = Math.max(0, Math.min(100, Math.round(100 - days * 3.5)));
+      weightedSum += dim.cadence * COMPOSITE_WEIGHTS.cadence;
+      totalWeight += COMPOSITE_WEIGHTS.cadence;
+    }
+    if (sampleStatus(m.sampleSize.riskReports) === 'ok' && m.risk.honestyRate != null) {
+      dim.risk = m.risk.honestyRate;
+      weightedSum += dim.risk * COMPOSITE_WEIGHTS.risk;
+      totalWeight += COMPOSITE_WEIGHTS.risk;
+    }
+    if (m.engagement.total > 0) {
+      const e = m.engagement.total;
+      if (e <= 2) dim.engagement = Math.round(60 * e / 2);
+      else if (e <= 5) dim.engagement = Math.round(60 + (85 - 60) * (e - 2) / 3);
+      else dim.engagement = Math.min(100, Math.round(85 + (100 - 85) * (e - 5) / 5));
+      weightedSum += dim.engagement * COMPOSITE_WEIGHTS.engagement;
+      totalWeight += COMPOSITE_WEIGHTS.engagement;
+    }
+    m.composite.dimensions = dim;
+    // Low-confidence guard: composite needs ≥2 qualifying dimensions, otherwise
+    // a single dimension would dominate (re-normalized to 100% weight) and the
+    // score becomes misleading — show "—" instead.
+    const qualifyingDims = Object.values(dim).filter((v) => v != null).length;
+    if (totalWeight > 0 && qualifyingDims >= 2) {
+      m.composite.score = Math.round(weightedSum / totalWeight);
+    }
+    m.composite.qualifyingDims = qualifyingDims;
+
+    m.recentFlags.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    m.recentFlags = m.recentFlags.slice(0, 5);
+  }
+  return out;
+}
+
+// Wraps computeActivityIndex with previous-period comparison; attaches `trend` per PIC.
+function computeActivityIndexWithTrend(projectsMap, options = {}) {
+  const now = options.now || new Date();
+  const actionWeeks = options.actionWeeks || DEFAULT_DASHBOARD_WINDOW.actionWeeks;
+  const taskWeeks = options.taskWeeks || DEFAULT_DASHBOARD_WINDOW.taskWeeks;
+
+  const current = computeActivityIndex(projectsMap, {
+    actionFrom: weeksAgo(actionWeeks),
+    taskFrom: weeksAgo(taskWeeks),
+    now,
+  });
+
+  const prevNow = weeksAgo(actionWeeks);
+  const previous = computeActivityIndex(projectsMap, {
+    actionFrom: weeksAgo(actionWeeks * 2),
+    taskFrom: weeksAgo(taskWeeks * 2),
+    now: prevNow,
+  });
+
+  for (const m of current.values()) {
+    const prev = previous.get(m.pic);
+    m.trend = {
+      composite: trendOf(m.composite.score, prev?.composite?.score),
+      delivery: trendOf(m.delivery.weightedRate, prev?.delivery?.weightedRate),
+      cadence: trendOf(m.cadence.avgDaysSinceUpdate, prev?.cadence?.avgDaysSinceUpdate, { inverted: true }),
+      risk: trendOf(m.risk.honestyRate, prev?.risk?.honestyRate),
+    };
+  }
+  return current;
+}
+
+// Decision decay check: returns { decayed, daysOverdue?, reviewDate? }
+function getDecisionDecay(decision, now = new Date()) {
+  if (!decision.expectedReviewDate) {
+    if (!decision.date) return { decayed: false };
+    const d = new Date(decision.date);
+    if (isNaN(d)) return { decayed: false };
+    d.setDate(d.getDate() + DECISION_REVIEW_DAYS);
+    decision = { ...decision, expectedReviewDate: d.toISOString().slice(0, 10) };
+  }
+  const reviewDate = new Date(decision.expectedReviewDate);
+  if (isNaN(reviewDate)) return { decayed: false };
+  const isOpen = decision.followUpStatus === 'Open' || decision.followUpStatus === 'InProgress';
+  const isPast = reviewDate < now;
+  if (!isPast || !isOpen) return { decayed: false, reviewDate };
+  return {
+    decayed: true,
+    daysOverdue: daysBetween(reviewDate, now),
+    reviewDate,
+  };
+}
+
+// ─── Credit allocation helpers (v22) ───
+
+// Equal split: returns array of N items each = 100/N (rounded to 2 decimals).
+// Used as fallback when sibling weights are not explicitly set.
+function equalSplit(count) {
+  if (count <= 0) return [];
+  const each = Math.round((100 / count) * 100) / 100;
+  return new Array(count).fill(each);
+}
+
+// Resolve effective % for each sibling. If all have explicit numeric weight,
+// normalize to 100. Otherwise fall back to equalSplit(N).
+function getEffectiveWeights(siblings) {
+  if (!siblings || siblings.length === 0) return [];
+  const allHave = siblings.every((s) => typeof s.weight === 'number' && !isNaN(s.weight) && s.weight >= 0);
+  if (!allHave) return equalSplit(siblings.length);
+  const sum = siblings.reduce((acc, s) => acc + s.weight, 0);
+  if (sum <= 0) return equalSplit(siblings.length);
+  return siblings.map((s) => (s.weight / sum) * 100);
+}
+
+// Resolve a task's per-PIC share map. Always normalizes to sum=100 (or {} if no PIC).
+// If task.creditShares set explicitly, use it; otherwise default = 100% to primary PIC.
+function getEffectiveCreditShares(task) {
+  if (!task) return {};
+  const explicit = task.creditShares;
+  if (explicit && typeof explicit === 'object' && Object.keys(explicit).length > 0) {
+    const sum = Object.values(explicit).reduce((a, b) => a + (Number(b) || 0), 0);
+    if (sum > 0) {
+      const out = {};
+      for (const [k, v] of Object.entries(explicit)) {
+        if (Number(v) > 0) out[k] = (Number(v) / sum) * 100;
+      }
+      return out;
+    }
+  }
+  if (task.pic) return { [task.pic]: 100 };
+  return {};
+}
+
+// Effort-based credit: only Completed tasks earn credit.
+function isTaskCredited(task) {
+  return !!task && task.status === 'Completed';
+}
+
+// ─── Credit allocation: rules + project-level computation (v23) ───
+
+// Default-share rules. Returns {[name]: %} or null if no rule applies.
+//   1 PIC + 0 contributors → primary 100%
+//   1 PIC + 1 contributor  → 70/30
+//   1 PIC + 2 contributors → 70/15/15
+//   1 PIC + 3+ contribs    → null (PM enters manually)
+function computeDefaultCreditShares(primaryPic, contributors) {
+  if (!primaryPic) return null;
+  const contribs = Array.isArray(contributors) ? contributors.filter(Boolean) : [];
+  if (contribs.length === 0) return { [primaryPic]: 100 };
+  if (contribs.length === 1) return { [primaryPic]: 70, [contribs[0]]: 30 };
+  if (contribs.length === 2) return { [primaryPic]: 70, [contribs[0]]: 15, [contribs[1]]: 15 };
+  return null;
+}
+
+// Per-project credit computation. Returns rich object:
+//   { totalCp, leadCp, leadName, leadSharePct, programPoolCp, perPic, breakdown }
+// Project lead (if set) gets `projectLeadShare`% extracted FIRST, awarded
+// proportional to overall completion. Remaining (100 - leadShare)% is split
+// among programs/workstreams/tasks via getEffectiveWeights.
+// `breakdown` includes every (task × pic) row plus a Project Lead pseudo-entry
+// (`isProjectLead: true`) — filter that out when summing per-program totals.
+function computeProjectCredits(project) {
+  const totalCp = (typeof project.creditPoints === 'number' && project.creditPoints >= 0)
+    ? project.creditPoints
+    : DEFAULT_CREDIT_POINTS;
+  const perPic = new Map();
+  const breakdown = [];
+
+  // Step 1: Project Lead (if set)
+  const leadName = (project.projectLead || '').trim();
+  const leadSharePct = (typeof project.projectLeadShare === 'number' && project.projectLeadShare >= 0 && project.projectLeadShare <= 100)
+    ? project.projectLeadShare
+    : (leadName ? 10 : 0);
+  const leadCp = leadName ? (totalCp * leadSharePct / 100) : 0;
+  if (leadName && leadCp > 0) {
+    const r = rollup(project);
+    const projectCompletionPct = (r.weighted / Math.max(r.total, 1)) * 100;
+    const leadActual = leadCp * (projectCompletionPct / 100);
+    if (!perPic.has(leadName)) perPic.set(leadName, { earned: 0, projected: 0 });
+    const cur = perPic.get(leadName);
+    cur.earned += leadActual;
+    cur.projected += leadCp;
+    breakdown.push({
+      programId: null, programName: '— Project Lead —',
+      workstreamId: null, workstreamName: '',
+      taskId: null, taskName: `${leadName} (project lead, ${leadSharePct}%)`,
+      picName: leadName, sharePct: 100, taskCp: leadCp,
+      projected: leadCp, actual: leadActual, credited: r.weighted >= r.total,
+      taskStatus: null, isProjectLead: true,
+    });
+  }
+
+  // Step 2: Programs/workstreams/tasks share remaining
+  const programPoolCp = totalCp - leadCp;
+  const programs = project.programs || [];
+  const programWeights = getEffectiveWeights(programs);
+
+  programs.forEach((pg, pgIdx) => {
+    const pgCp = programPoolCp * (programWeights[pgIdx] / 100);
+    const wss = pg.workstreams || [];
+    const wsWeights = getEffectiveWeights(wss);
+
+    wss.forEach((ws, wsIdx) => {
+      const wsCp = pgCp * (wsWeights[wsIdx] / 100);
+      const eligibleTasks = (ws.tasks || []).filter((t) => t.status !== 'Dropped');
+      const taskWeights = getEffectiveWeights(eligibleTasks);
+
+      eligibleTasks.forEach((t, tIdx) => {
+        const taskCp = wsCp * (taskWeights[tIdx] / 100);
+        const credited = isTaskCredited(t);
+        const shares = getEffectiveCreditShares(t);
+
+        for (const [picName, sharePct] of Object.entries(shares)) {
+          const earned = taskCp * (sharePct / 100);
+          const projected = earned;
+          const actual = credited ? earned : 0;
+
+          breakdown.push({
+            programId: pg.id, programName: pg.name,
+            workstreamId: ws.id, workstreamName: ws.name,
+            taskId: t.id, taskName: t.name,
+            picName, sharePct, taskCp, projected, actual, credited,
+            taskStatus: t.status, isProjectLead: false,
+          });
+
+          if (!perPic.has(picName)) perPic.set(picName, { earned: 0, projected: 0 });
+          const cur = perPic.get(picName);
+          cur.earned += actual;
+          cur.projected += projected;
+        }
+      });
+    });
+  });
+
+  return { totalCp, leadCp, leadName, leadSharePct, programPoolCp, perPic, breakdown };
+}
+
+// Aggregate credits across all projects, optionally filtered by year.
+// Projects without a `creditYear` are always included (no filter applied to them).
+// Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
+function computeWorkspaceCredits(projects, year = null) {
+  const perPic = new Map();
+  const perProject = new Map();
+  let totalCp = 0;
+
+  for (const proj of Object.values(projects || {})) {
+    if (year != null && proj.creditYear != null && proj.creditYear !== year) continue;
+    const result = computeProjectCredits(proj);
+    totalCp += result.totalCp;
+    perProject.set(proj.id, { project: proj, ...result });
+    for (const [pic, val] of result.perPic.entries()) {
+      if (!perPic.has(pic)) perPic.set(pic, { earned: 0, projected: 0 });
+      const cur = perPic.get(pic);
+      cur.earned += val.earned;
+      cur.projected += val.projected;
+    }
+  }
+  return { totalCp, perPic, perProject };
+}
 
 function collectTasks(n) {
   if (!n) return [];
@@ -303,7 +906,16 @@ async function parseExcelFile(file) {
   const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
   if (!rows.length) throw new Error('No rows found in the spreadsheet.');
   const projectName = String(pickCol(rows[0], COL.project) || file.name.replace(/\.[^.]+$/, '') || 'Imported Project').trim();
-  const project = { id: uid('proj'), name: projectName, createdAt: new Date().toISOString(), programs: [], decisions: [], actionItems: [] };
+  const project = {
+    id: uid('proj'),
+    name: projectName,
+    createdAt: new Date().toISOString(),
+    programs: [], decisions: [], actionItems: [],
+    creditPoints: DEFAULT_CREDIT_POINTS,
+    creditYear: new Date().getFullYear(),
+    projectLeadShare: 10,
+    contributorRegistry: DEFAULT_DEPARTMENTS.map((name) => ({ name })),
+  };
   const progMap = new Map(), wsMap = new Map();
   for (const r of rows) {
     const tName = pickCol(r, COL.task);
@@ -320,6 +932,8 @@ async function parseExcelFile(file) {
       name: String(tName).trim(),
       status: normStatus(pickCol(r, COL.status)),
       pic: pickCol(r, COL.pic),
+      contributors: [],
+      creditSharesMode: 'auto',
       start: normDate(pickCol(r, COL.start)),
       end: normDate(pickCol(r, COL.end)),
       duration: (() => { const v = pickCol(r, COL.duration); if (v == null || v === '') return null; const n = Number(v); return isNaN(n) ? null : n; })(),
@@ -341,19 +955,19 @@ function projectToExcelBlob(project) {
     for (const ws of pg.workstreams || [])
       for (const t of ws.tasks || [])
         rows.push({
-          'Mail Project': project.name,
-          'Program Stream (PS)': pg.name,
-          'Work Stream': ws.name,
-          'Main Task': t.name,
+          'Project': sanitizeCell(project.name),
+          'Program Stream (PS)': sanitizeCell(pg.name),
+          'Work Stream': sanitizeCell(ws.name),
+          'Main Task': sanitizeCell(t.name),
           'Status': STATUS_LABEL[t.status || 'Planned'],
-          'PIC': t.pic || '',
+          'PIC': sanitizeCell(t.pic || ''),
           'Start date': t.start || '',
           'End date': t.end || '',
           'Durations': t.duration ?? '',
-          'Key Deliverables': t.deliverables || '',
-          'Dependencies': t.dependencies || '',
-          'References': (t.references || []).map((r) => `${r.url} | ${r.title || ''}`).join('; '),
-          'Latest check-in': (t.checkIns && t.checkIns[0]) ? `${fmtDateTime(t.checkIns[0].timestamp)} — ${t.checkIns[0].author}: ${t.checkIns[0].done || ''}` : '',
+          'Key Deliverables': sanitizeCell(t.deliverables || ''),
+          'Dependencies': sanitizeCell(t.dependencies || ''),
+          'References': sanitizeCell((t.references || []).map((r) => `${r.url} | ${r.title || ''}`).join('; ')),
+          'Latest check-in': sanitizeCell((t.checkIns && t.checkIns[0]) ? `${fmtDateTime(t.checkIns[0].timestamp)} — ${t.checkIns[0].author}: ${t.checkIns[0].done || ''}` : ''),
         });
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -412,6 +1026,14 @@ async function copyPlainText(text, showToast) {
 }
 
 // Escape user content for safe HTML rendering inside <table> cells, headings, etc.
+// CSV/Excel formula-injection guard. Cells starting with =+-@\t\r are interpreted
+// as formulas by Excel/Sheets/LibreOffice. Prefix with apostrophe to neutralize
+// (apostrophe is hidden in Excel and stripped on paste).
+function sanitizeCell(v) {
+  if (typeof v !== 'string') return v;
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+}
+
 function escapeHtml(s) {
   if (s == null) return '';
   return String(s)
@@ -511,7 +1133,7 @@ function Modal({ title, children, onClose, width = 480, zHigh = false, hideClose
 // Ctrl+C reliably copies BOTH text/html and text/plain to the clipboard (browser native
 // behavior), bypassing the iframe's clipboard API restrictions. The "Open Gmail" button
 // uses anchor click (proven to work) to open Gmail compose with subject + Cc.
-function CopyHelperModal({ html, title, gmailUrl, onClose }) {
+function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
   const contentRef = useRef(null);
   const [copyState, setCopyState] = useState('idle'); // 'idle' | 'success' | 'failed'
 
@@ -575,6 +1197,25 @@ function CopyHelperModal({ html, title, gmailUrl, onClose }) {
         }
       </div>
 
+      {attachmentName && (
+        <div style={{
+          background: '#E2F0DE',
+          padding: '10px 14px',
+          borderRadius: 6,
+          marginBottom: 12,
+          fontSize: 13,
+          color: '#1F5E1F',
+          lineHeight: 1.6,
+          border: '1px solid #A8D08B',
+        }}>
+          <strong>📎 Excel file auto-downloaded:</strong>{' '}
+          <code style={{ background: 'white', padding: '1px 6px', borderRadius: 3, fontSize: 12 }}>{attachmentName}</code>
+          <div style={{ fontSize: 11, color: '#3a6b3a', marginTop: 4 }}>
+            After opening Gmail, attach this file from your Downloads folder before sending.
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <Btn size="sm" onClick={selectAllContent}>Re-select all</Btn>
         <Btn size="sm" onClick={tryCopy}>📋 Try auto-copy</Btn>
@@ -611,9 +1252,9 @@ function CopyHelperModal({ html, title, gmailUrl, onClose }) {
   );
 }
 
-function Input({ value, onChange, placeholder, type = 'text', autoFocus, style = {} }) {
+function Input({ value, onChange, placeholder, type = 'text', autoFocus, style = {}, onKeyDown }) {
   return (
-    <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus}
+    <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoFocus={autoFocus} onKeyDown={onKeyDown}
       style={{ fontFamily: FONT_STACK, fontSize: 13, width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, outline: 'none', ...style }}
       onFocus={(e) => e.target.style.borderColor = TOK.accent}
       onBlur={(e) => e.target.style.borderColor = TOK.lineStrong} />
@@ -1234,8 +1875,641 @@ function ReferencesSection({ task, onUpdate, author }) {
   );
 }
 
+/* ═════════ CONTRIBUTOR EDITOR (v21 + v26 registry-aware) ═════════ */
+// Chip-style editor for task.contributors[]. Combined suggestion source:
+//   1) teamMembers (with email + Person row)
+//   2) project.contributorRegistry (Group/Registered badge)
+//   3) legacy `suggestions` (Used in tasks badge)
+// Chip styling reflects "known" vs "unknown" (not in members or registry).
+function ContributorEditor({ contributors, onChange, suggestions, primaryPic, project, teamMembersList }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const list = Array.isArray(contributors) ? contributors : [];
+
+  const registry = useMemo(
+    () => Array.isArray(project?.contributorRegistry) ? project.contributorRegistry : [],
+    [project]
+  );
+  const registryNames = useMemo(() => new Set(registry.map((r) => r.name)), [registry]);
+
+  const combinedSuggestions = useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const m of (teamMembersList || [])) {
+      if (!seen.has(m.name)) { seen.add(m.name); result.push({ name: m.name, email: m.email, isPerson: true }); }
+    }
+    for (const r of registry) {
+      if (!seen.has(r.name)) { seen.add(r.name); result.push({ name: r.name, isRegistered: true }); }
+    }
+    for (const s of (suggestions || [])) {
+      if (!seen.has(s)) { seen.add(s); result.push({ name: s, isLegacy: true }); }
+    }
+    return result;
+  }, [teamMembersList, registry, suggestions]);
+
+  const filteredSuggestions = useMemo(() => {
+    const q = (draft || '').trim().toLowerCase();
+    return combinedSuggestions
+      .filter((s) => s.name !== primaryPic && !list.includes(s.name))
+      .filter((s) => !q || s.name.toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [combinedSuggestions, draft, list, primaryPic]);
+
+  const addContributor = (name) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    if (trimmed === primaryPic) return;
+    if (list.includes(trimmed)) return;
+    onChange([...list, trimmed]);
+    setDraft('');
+    setAdding(false);
+  };
+
+  const removeContributor = (name) => {
+    onChange(list.filter((c) => c !== name));
+  };
+
+  const isKnown = (name) => {
+    if (registryNames.has(name)) return true;
+    if ((teamMembersList || []).some((m) => m.name === name)) return true;
+    return false;
+  };
+
+  return (
+    <div>
+      <FieldLabel>Contributors <span style={{ color: TOK.subtle, fontWeight: 400 }}>(optional, supporters)</span></FieldLabel>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
+        {list.map((c) => {
+          const known = isKnown(c);
+          const member = (teamMembersList || []).find((m) => m.name === c);
+          return (
+            <span key={c} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              background: known ? TOK.bg : '#FAEEDA',
+              border: '1px solid ' + (known ? TOK.line : '#E0BC75'),
+              borderRadius: 999,
+              padding: '3px 4px 3px 10px', fontSize: 12,
+            }} title={!known ? 'Not in team members or contributor registry. Owner can add to registry in Project Settings.' : (member?.email || '')}>
+              {!known && <span style={{ fontSize: 10, color: '#A8660C' }}>⚠</span>}
+              {c}
+              <button onClick={() => removeContributor(c)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex', alignItems: 'center' }}
+                title="Remove">
+                <X size={11} />
+              </button>
+            </span>
+          );
+        })}
+        {!adding && (
+          <button onClick={() => setAdding(true)} style={{
+            fontFamily: FONT_STACK, fontSize: 12, padding: '4px 10px',
+            border: '1px dashed ' + TOK.lineStrong, borderRadius: 999,
+            background: 'transparent', cursor: 'pointer', color: TOK.muted,
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+          }}>
+            <Plus size={11} /> Add contributor
+          </button>
+        )}
+        {!adding && list.length >= 1 && (
+          <button onClick={() => onChange([])} style={{
+            fontFamily: FONT_STACK, fontSize: 11, padding: '3px 8px',
+            border: '1px solid ' + TOK.lineStrong, borderRadius: 999,
+            background: 'transparent', cursor: 'pointer', color: TOK.muted,
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+          }} title="Clear all contributors">
+            <X size={10} /> Clear all ({list.length})
+          </button>
+        )}
+      </div>
+      {adding && (
+        <div style={{ marginTop: 6, position: 'relative' }}>
+          <Input
+            value={draft}
+            onChange={setDraft}
+            placeholder="Type name (e.g., Legal, HR, AF Team)"
+            autoFocus
+          />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0,
+            background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 6,
+            marginTop: 2, maxHeight: 220, overflowY: 'auto', zIndex: 50,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+          }}>
+            {filteredSuggestions.map((s) => (
+              <button key={s.name} onClick={() => addContributor(s.name)}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '7px 10px',
+                  fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                  background: 'transparent', cursor: 'pointer', color: TOK.ink,
+                  borderBottom: '1px solid ' + TOK.line,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                <span>{s.name}</span>
+                {s.email && <span style={{ color: TOK.muted, fontSize: 11 }}>{s.email}</span>}
+                {s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.accent, background: 'rgba(59,109,17,0.10)', padding: '1px 6px', borderRadius: 4 }}>Registered</span>}
+                {s.isLegacy && !s.isPerson && !s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: '#A8660C', background: '#FAEEDA', padding: '1px 6px', borderRadius: 4 }}>Used in tasks</span>}
+              </button>
+            ))}
+            {draft.trim() && !filteredSuggestions.some((s) => s.name.toLowerCase() === draft.trim().toLowerCase()) && (
+              <button onClick={() => addContributor(draft)}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '7px 10px',
+                  fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                  background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                  borderTop: filteredSuggestions.length > 0 ? '1px solid ' + TOK.line : 'none',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                <Plus size={10} style={{ verticalAlign: '-1px' }} /> Add "{draft.trim()}" as new ⚠ (not registered — owner should add to registry)
+              </button>
+            )}
+            <button onClick={() => { setDraft(''); setAdding(false); }}
+              style={{
+                width: '100%', textAlign: 'left', padding: '6px 10px',
+                fontFamily: FONT_STACK, fontSize: 11, border: 'none',
+                background: TOK.bg, cursor: 'pointer', color: TOK.muted,
+                borderTop: '1px solid ' + TOK.line,
+              }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═════════ PIC EDITOR (v26 — single-select autocomplete) ═════════ */
+// Single-select autocomplete from teamMembers ONLY (not registry — PIC needs
+// email for notifications). Free-text allowed but warned.
+function PicEditor({ value, onChange, teamMembersList, project, label, placeholder }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const combined = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const m of (Array.isArray(teamMembersList) ? teamMembersList : [])) {
+      if (!seen.has(m.name)) { seen.add(m.name); out.push({ name: m.name, email: m.email, kind: 'member' }); }
+    }
+    return out;
+  }, [teamMembersList]);
+
+  const filtered = useMemo(() => {
+    // Strip leading @ to support @-mention syntax (e.g., "@tr" → "tr")
+    const q = (draft || '').trim().replace(/^@+/, '').toLowerCase();
+    return combined
+      .filter((s) => !q || s.name.toLowerCase().includes(q) || (s.email || '').toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [combined, draft]);
+
+  const isKnown = !!(value && combined.some((s) => s.name === value));
+  const member = combined.find((m) => m.name === value);
+
+  const pick = (name) => {
+    // Strip leading @ if user typed @-mention syntax
+    const cleaned = (name || '').trim().replace(/^@+/, '');
+    onChange(cleaned || null);
+    setDraft('');
+    setEditing(false);
+  };
+
+  const cancel = () => { setEditing(false); setDraft(''); };
+
+  if (editing) {
+    return (
+      <div style={{ position: 'relative' }}>
+        <Input
+          value={draft}
+          onChange={setDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && filtered[0]) { e.preventDefault(); pick(filtered[0].name); }
+            else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+          }}
+          placeholder={placeholder || 'Type @ or name (e.g., @tr → trangvk@…)'}
+          autoFocus
+        />
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0,
+          background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 6,
+          marginTop: 2, maxHeight: 220, overflowY: 'auto', zIndex: 50,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+        }}>
+          {filtered.map((s) => (
+            <button key={s.name} onClick={() => pick(s.name)}
+              style={{
+                width: '100%', textAlign: 'left', padding: '7px 10px',
+                fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                background: 'transparent', cursor: 'pointer', color: TOK.ink,
+                borderBottom: '1px solid ' + TOK.line,
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+              <span>{s.name}</span>
+              {s.email && <span style={{ color: TOK.muted, fontSize: 11 }}>{s.email}</span>}
+            </button>
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ padding: '8px 10px', fontSize: 11, color: TOK.subtle }}>
+              No matching team members. Type to filter, or add members in Project Settings.
+            </div>
+          )}
+          {draft.trim() && !filtered.some((s) => s.name.toLowerCase() === draft.trim().toLowerCase()) && (
+            <button onClick={() => pick(draft)}
+              style={{
+                width: '100%', textAlign: 'left', padding: '7px 10px',
+                fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                borderTop: filtered.length > 0 ? '1px solid ' + TOK.line : 'none',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+              ⚠ Use "{draft.trim()}" as free text (not in team members)
+            </button>
+          )}
+          <button onClick={cancel}
+            style={{
+              width: '100%', textAlign: 'left', padding: '6px 10px',
+              fontFamily: FONT_STACK, fontSize: 11, border: 'none',
+              background: TOK.bg, cursor: 'pointer', color: TOK.muted,
+              borderTop: '1px solid ' + TOK.line,
+            }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, minHeight: 36,
+      padding: '4px 6px', borderRadius: 7, border: '1px solid ' + TOK.lineStrong,
+      background: TOK.surface,
+    }}>
+      {value ? (
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, flex: 1,
+          padding: '3px 8px', fontSize: 13,
+        }}>
+          <span style={{ fontWeight: 500 }}>{value}</span>
+          {member?.email && <span style={{ fontSize: 11, color: TOK.muted }}>({member.email})</span>}
+          {!isKnown && (
+            <span title="Not a team member with email — please re-select from members"
+              style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#A8660C', background: '#FAEEDA' }}>
+              ⚠ Not a team member
+            </span>
+          )}
+          <button onClick={() => setEditing(true)} title="Change PIC"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex', marginLeft: 'auto' }}>
+            <Edit2 size={11} />
+          </button>
+        </span>
+      ) : (
+        <button onClick={() => setEditing(true)}
+          style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, fontFamily: FONT_STACK, fontSize: 12, textAlign: 'left', padding: '6px 8px' }}>
+          {placeholder || 'Click to select PIC — type @ or name to filter…'}
+        </button>
+      )}
+      {value && (
+        <button onClick={() => onChange(null)} title="Clear"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 4, display: 'flex' }}>
+          <X size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ═════════ WEIGHT BADGE (v22) ═════════ */
+// Inline pill displaying effective % weight for a program/workstream/task.
+// Click (when isOwner && !locked) opens an inline number input. Empty saves null
+// (revert to equal split). cpValue prop is wired in v24 to show "X% · Ycp".
+function WeightBadge({ weight, effectiveWeight, onChange, locked, isOwner, label, cpValue }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const isExplicit = typeof weight === 'number' && !isNaN(weight) && weight >= 0;
+  const editable = isOwner && !locked;
+
+  const commit = () => {
+    const t = (draft || '').trim();
+    if (t === '') {
+      onChange(null);
+    } else {
+      const n = Number(t);
+      if (!isNaN(n) && n >= 0 && n <= 100) onChange(n);
+    }
+    setEditing(false);
+  };
+  const cancel = () => { setEditing(false); setDraft(''); };
+
+  if (editing) {
+    return (
+      <input
+        type="number"
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+          else if (e.key === 'Escape') cancel();
+        }}
+        placeholder={isExplicit ? String(weight) : ''}
+        min={0}
+        max={100}
+        style={{
+          fontFamily: FONT_STACK, fontSize: 11, width: 56,
+          padding: '2px 6px', borderRadius: 999,
+          border: '1px solid ' + TOK.accent, color: TOK.ink,
+          background: TOK.surface,
+        }}
+      />
+    );
+  }
+
+  const tip = label ? `Weight for ${label}` : 'Weight';
+  const pct = Math.round((effectiveWeight || 0) * 10) / 10;
+  const cpStr = (typeof cpValue === 'number' && cpValue > 0)
+    ? ` · ${Math.round(cpValue * 10) / 10}cp`
+    : '';
+  return (
+    <span
+      onClick={() => editable && setEditing(true)}
+      title={editable ? `${tip} — click to edit` : (locked ? `${tip} — locked` : tip)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        fontFamily: FONT_STACK, fontSize: 11,
+        padding: '2px 8px', borderRadius: 999,
+        background: isExplicit ? 'rgba(59,109,17,0.10)' : TOK.bg,
+        color: isExplicit ? TOK.accent : TOK.muted,
+        border: locked ? '1px dashed ' + TOK.lineStrong : '1px solid transparent',
+        cursor: editable ? 'pointer' : 'default',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      ⚖ {isExplicit ? `${pct}%` : `~${pct}%`}{cpStr}
+    </span>
+  );
+}
+
+/* ═════════ CREDIT SHARES EDITOR (v22 + v23 mode tracking) ═════════ */
+// Per-task editor for task.creditShares. Lives in TaskDetail edit form.
+// onChange receives `{ shares, mode }` where mode = 'auto' | 'manual'.
+// User editing a value flips mode → 'manual'. "Reset to default rule" reverts.
+function CreditSharesEditor({ task, onChange, locked, isOwner }) {
+  const primary = task.pic;
+  const contribs = Array.isArray(task.contributors) ? task.contributors : [];
+  const mode = task.creditSharesMode || 'auto';
+  const people = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    if (primary) { seen.add(primary); out.push(primary); }
+    for (const c of contribs) { if (!seen.has(c)) { seen.add(c); out.push(c); } }
+    return out;
+  }, [primary, contribs]);
+
+  const editable = isOwner && !locked;
+  const shares = task.creditShares || {};
+  const defaultRule = computeDefaultCreditShares(primary, contribs);
+
+  const setOne = (name, value) => {
+    const next = { ...shares };
+    if (value === '' || value == null) {
+      delete next[name];
+    } else {
+      const n = Number(value);
+      if (!isNaN(n) && n >= 0) next[name] = n;
+    }
+    onChange({ shares: next, mode: 'manual' });
+  };
+
+  const total = people.reduce((acc, n) => acc + (Number(shares[n]) || 0), 0);
+  const balanced = Math.abs(total - 100) < 0.5;
+
+  const autoBalance = () => {
+    if (people.length === 0) return;
+    const next = {};
+    const set = people.filter((n) => typeof shares[n] === 'number' && shares[n] > 0);
+    const unset = people.filter((n) => !(typeof shares[n] === 'number' && shares[n] > 0));
+    const setSum = set.reduce((acc, n) => acc + Number(shares[n] || 0), 0);
+    if (unset.length > 0 && setSum < 100) {
+      const remain = Math.max(0, 100 - setSum);
+      const each = Math.round((remain / unset.length) * 100) / 100;
+      for (const n of set) next[n] = shares[n];
+      for (const n of unset) next[n] = each;
+    } else if (setSum > 0) {
+      for (const n of set) next[n] = Math.round((shares[n] / setSum) * 10000) / 100;
+    } else {
+      const each = Math.round((100 / people.length) * 100) / 100;
+      for (const n of people) next[n] = each;
+    }
+    onChange({ shares: next, mode: 'manual' });
+  };
+
+  const resetToDefault = () => {
+    const next = defaultRule || (primary ? { [primary]: 100 } : {});
+    onChange({ shares: next, mode: 'auto' });
+  };
+
+  // Helper text dynamics
+  let helperText;
+  if (mode === 'manual') {
+    helperText = "Manually edited. Click 'Reset to default' to revert to the rule-based split.";
+  } else if (defaultRule) {
+    helperText = "Auto-applied per default rule (70/30, 70/15/15). Editing any value switches to manual override.";
+  } else if (contribs.length >= 3) {
+    helperText = "3+ contributors — no default rule. Enter shares manually.";
+  } else {
+    helperText = "Allocate credit % across primary PIC and contributors. Sum should equal 100%.";
+  }
+
+  return (
+    <div style={{ background: TOK.bg, padding: 10, borderRadius: 7, marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        <FieldLabel>Credit shares</FieldLabel>
+        {mode === 'auto' ? (
+          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#0F6E56', background: '#E1F5EE' }}>⚙ Auto</span>
+        ) : (
+          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#A8660C', background: '#FAEEDA' }}>✎ Manual override</span>
+        )}
+        {locked && <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 999, color: TOK.muted, background: TOK.bg, border: '1px dashed ' + TOK.lineStrong }}>🔒 Locked</span>}
+        {!isOwner && !locked && <span style={{ fontSize: 10, color: TOK.subtle }}>(workspace owner only)</span>}
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 8, lineHeight: 1.5 }}>
+        {helperText}
+      </div>
+
+      {people.length === 0 ? (
+        <div style={{ fontSize: 12, color: TOK.subtle, fontStyle: 'italic' }}>
+          No PIC or contributors set. Add them above to allocate credit shares.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {people.map((name) => (
+              <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 12 }}>
+                  {name}
+                  {name === primary && <span style={{ fontSize: 10, color: TOK.muted, marginLeft: 6 }}>(primary)</span>}
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.1"
+                  value={shares[name] != null ? shares[name] : ''}
+                  onChange={(e) => setOne(name, e.target.value)}
+                  disabled={!editable}
+                  placeholder="—"
+                  style={{
+                    fontFamily: FONT_STACK, fontSize: 12, width: 70,
+                    padding: '4px 8px', borderRadius: 6,
+                    border: '1px solid ' + TOK.lineStrong,
+                    background: editable ? TOK.surface : TOK.bg,
+                    color: TOK.ink,
+                    opacity: editable ? 1 : 0.7,
+                  }}
+                />
+                <span style={{ fontSize: 11, color: TOK.muted, width: 12 }}>%</span>
+              </div>
+            ))}
+          </div>
+          <div style={{
+            marginTop: 8, padding: '6px 10px', borderRadius: 6, fontSize: 12,
+            background: balanced ? TOK.healthGreenBg : TOK.healthAmberBg,
+            color: balanced ? TOK.healthGreen : TOK.healthAmber,
+          }}>
+            {balanced ? '✓ ' : '⚠ '}Total: {Math.round(total * 10) / 10}%{!balanced && ' (should = 100%)'}
+          </div>
+          {editable && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+              <Btn size="sm" onClick={autoBalance}>Auto-balance</Btn>
+              {(mode === 'manual' || defaultRule) && (
+                <Btn size="sm" variant="ghost" onClick={resetToDefault} title="Revert to default rule">Reset to default rule</Btn>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═════════ DEADLINE REQUEST (v27) ═════════ */
+// Modal for non-owners to submit a deadline change request.
+function DeadlineRequestDialog({ task, currentEnd, author, onClose, onSubmit }) {
+  const [newDate, setNewDate] = useState(currentEnd || '');
+  const [reason, setReason] = useState('');
+  const days = (newDate && currentEnd) ? daysBetween(currentEnd, newDate) : 0;
+  const action = days > 0 ? 'extend' : (days < 0 ? 'shorten' : null);
+  const canSubmit = !!newDate && newDate !== currentEnd && reason.trim().length >= 5;
+
+  const submit = () => {
+    if (!canSubmit) return;
+    onSubmit({
+      newDate,
+      reason: reason.trim(),
+      requestedBy: author,
+      requestedAt: new Date().toISOString(),
+      days,
+      action: action || 'extend',
+    });
+    onClose();
+  };
+
+  return (
+    <Modal title="Request deadline change" onClose={onClose} width={520} zHigh>
+      <div style={{ fontSize: 13, color: TOK.muted, marginBottom: 14, lineHeight: 1.5 }}>
+        Submit a deadline change for <strong style={{ color: TOK.ink }}>{task.name}</strong>. The workspace owner will review and approve or reject.
+      </div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <FieldLabel>Current end</FieldLabel>
+          <div style={{
+            padding: '8px 10px', borderRadius: 7, background: TOK.bg,
+            border: '1px solid ' + TOK.line, fontSize: 13, color: TOK.muted,
+          }}>{currentEnd ? fmtDateShort(currentEnd) : '—'}</div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <FieldLabel>Proposed new end</FieldLabel>
+          <Input type="date" value={newDate} onChange={setNewDate} />
+        </div>
+      </div>
+      {action && (
+        <div style={{ marginBottom: 12 }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500,
+            background: action === 'extend' ? '#FAEEDA' : '#E1F5EE',
+            color: action === 'extend' ? '#A8660C' : '#0F6E56',
+          }}>
+            {action === 'extend' ? `➡ ${days} days later` : `⬅ ${Math.abs(days)} days earlier`}
+          </span>
+        </div>
+      )}
+      <FieldLabel>Reason <span style={{ color: TOK.subtle, fontWeight: 400 }}>(required, ≥5 chars)</span></FieldLabel>
+      <Textarea value={reason} onChange={setReason} rows={3} placeholder="e.g., Vendor delay on contract review; need 2 more weeks" />
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn variant="primary" disabled={!canSubmit} onClick={submit}>Submit request</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// Banner displayed in TaskDetail when task.deadlineRequest is set.
+function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onReject, onCancel }) {
+  if (!request) return null;
+  const isRequester = request.requestedBy === author;
+  return (
+    <div style={{
+      marginTop: 12, padding: 12, borderRadius: 7,
+      background: '#FAEEDA', border: '1px solid #E0BC75',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 16 }}>⏳</span>
+        <div style={{ fontSize: 12, fontWeight: 500, color: '#A8660C' }}>
+          Deadline change request — pending owner review
+        </div>
+      </div>
+      <div style={{ fontSize: 12.5, color: TOK.ink, lineHeight: 1.5, marginBottom: 4 }}>
+        <strong>{request.requestedBy}</strong> requested to {request.action || 'change'} the deadline by {Math.abs(request.days || 0)} day{Math.abs(request.days || 0) === 1 ? '' : 's'}:
+      </div>
+      <div style={{ fontSize: 12, color: TOK.muted, marginBottom: 4 }}>
+        {fmtDateShort(task.end)} → <strong style={{ color: TOK.ink }}>{fmtDateShort(request.newDate)}</strong>
+      </div>
+      {request.reason && (
+        <div style={{ fontSize: 12, color: TOK.muted, fontStyle: 'italic', marginBottom: 4 }}>
+          "{request.reason}"
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: TOK.subtle, marginBottom: 8 }}>
+        Requested {fmtDateTime(request.requestedAt)}
+      </div>
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        {isOwner ? (
+          <>
+            <Btn size="sm" variant="primary" onClick={onApprove}>✓ Approve</Btn>
+            <Btn size="sm" onClick={onReject}>✕ Reject</Btn>
+          </>
+        ) : isRequester ? (
+          <Btn size="sm" onClick={onCancel}>Cancel my request</Btn>
+        ) : (
+          <span style={{ fontSize: 11, color: TOK.subtle, fontStyle: 'italic' }}>
+            Only the requester can cancel; only workspace owner can approve/reject.
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false }) {
   const loc = useMemo(() => findTaskInProject(project, taskId), [project, taskId]);
   // ── All hooks declared before any early return (Rules of Hooks)
   // Panel tab state
@@ -1246,6 +2520,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   const [editingAction, setEditingAction] = useState(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(loc?.task || null);
+  const [showDeadlineRequest, setShowDeadlineRequest] = useState(false);
 
   // Reset all panel state when switching to a different task
   useEffect(() => {
@@ -1254,6 +2529,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     setShowActionForm(false); setEditingAction(null);
     setEditing(false);
     setDraft(loc?.task || null);
+    setShowDeadlineRequest(false);
   }, [taskId]); // eslint-disable-line
 
   // Decisions linked to this milestone (task is in relatedTaskIds)
@@ -1261,6 +2537,20 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     () => (project.decisions || []).filter((d) => (d.relatedTaskIds || []).includes(taskId)).sort((a, b) => new Date(b.date) - new Date(a.date)),
     [project.decisions, taskId]
   );
+  // Suggestions for ContributorEditor: every PIC + contributor name already
+  // used anywhere in this project. Deduped, sorted.
+  const contributorSuggestions = useMemo(() => {
+    const set = new Set();
+    for (const pg of (project.programs || [])) {
+      for (const ws of (pg.workstreams || [])) {
+        for (const t of (ws.tasks || [])) {
+          if (t.pic) set.add(t.pic);
+          for (const c of (t.contributors || [])) set.add(c);
+        }
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [project]);
   // Action items linked to this milestone
   const linkedActions = useMemo(
     () => (project.actionItems || []).filter((a) => a.relatedTaskId === taskId).sort((a, b) => {
@@ -1274,8 +2564,92 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   if (!loc) return null;
   const { task, workstream, program } = loc;
 
-  const save = () => { onUpdate({ ...draft }); setEditing(false); };
+  const save = () => {
+    let toSave = { ...draft };
+    if (draft.end !== task.end) {
+      toSave = logDeadlineChange(toSave, draft.end, author);
+    }
+    onUpdate(toSave);
+    setEditing(false);
+  };
   const setStatus = (s) => onUpdate({ ...task, status: s });
+
+  // ─── Deadline request handlers (v27) ───
+  const submitDeadlineRequest = (req) => {
+    onUpdate({ ...task, deadlineRequest: req });
+  };
+  const approveDeadlineRequest = async () => {
+    if (!isOwner) return; // defense-in-depth: UI also gates the button
+    if (!task.deadlineRequest) return;
+    const req = task.deadlineRequest;
+    const ok = await dialogs.confirm({
+      title: `Approve deadline ${req.action || 'change'}?`,
+      message: `Apply new end date ${fmtDateShort(req.newDate)} to "${task.name}"? This will be recorded in the audit log.`,
+      okLabel: 'Approve',
+    });
+    if (!ok) return;
+    const histEntry = {
+      id: uid('dh'),
+      from: task.end || null,
+      to: req.newDate,
+      changedBy: req.requestedBy,
+      changedAt: new Date().toISOString(),
+      reason: req.reason,
+      approvedBy: author,
+      approvedAt: new Date().toISOString(),
+    };
+    const reqHistEntry = { ...req, status: 'approved', resolvedBy: author, resolvedAt: new Date().toISOString() };
+    onUpdate({
+      ...task,
+      end: req.newDate,
+      deadlineRequest: null,
+      deadlineHistory: [...(task.deadlineHistory || []), histEntry],
+      deadlineRequestHistory: [...(task.deadlineRequestHistory || []), reqHistEntry],
+    });
+  };
+  const rejectDeadlineRequest = async () => {
+    if (!isOwner) return; // defense-in-depth: UI also gates the button
+    if (!task.deadlineRequest) return;
+    const req = task.deadlineRequest;
+    const note = await dialogs.prompt({
+      title: 'Reject deadline change?',
+      message: `Optionally explain why "${req.requestedBy}" should keep the original deadline.`,
+      placeholder: 'e.g., Dependencies on this task; please re-prioritize',
+      okLabel: 'Reject',
+      allowEmpty: true,
+    });
+    if (note === null) return;
+    const reqHistEntry = {
+      ...req, status: 'rejected',
+      resolvedBy: author, resolvedAt: new Date().toISOString(),
+      resolverNote: (note || '').trim() || null,
+    };
+    onUpdate({
+      ...task,
+      deadlineRequest: null,
+      deadlineRequestHistory: [...(task.deadlineRequestHistory || []), reqHistEntry],
+    });
+  };
+  const cancelDeadlineRequest = async () => {
+    if (!task.deadlineRequest) return;
+    // Only the original requester or the workspace owner can cancel
+    if (task.deadlineRequest.requestedBy !== author && !isOwner) return;
+    const ok = await dialogs.confirm({
+      title: 'Cancel your request?',
+      message: 'Withdraw this deadline change request? You can submit a new one later.',
+      okLabel: 'Cancel request',
+    });
+    if (!ok) return;
+    const reqHistEntry = {
+      ...task.deadlineRequest, status: 'cancelled',
+      resolvedBy: author, resolvedAt: new Date().toISOString(),
+    };
+    onUpdate({
+      ...task,
+      deadlineRequest: null,
+      deadlineRequestHistory: [...(task.deadlineRequestHistory || []), reqHistEntry],
+    });
+  };
 
   const addUpdate = ({ text, isBlocker }) => {
     const newU = {
@@ -1432,23 +2806,203 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         {editing ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div><FieldLabel>PIC</FieldLabel><Input value={draft.pic} onChange={(v) => setDraft({ ...draft, pic: v })} /></div>
+            <div>
+              <FieldLabel>PIC <span style={{ color: TOK.subtle, fontWeight: 400 }}>(team member with email)</span></FieldLabel>
+              <PicEditor
+                value={draft.pic}
+                onChange={(v) => {
+                  const next = { ...draft, pic: v };
+                  const m = draft.creditSharesMode || 'auto';
+                  if (m === 'auto') {
+                    const def = computeDefaultCreditShares(v, draft.contributors || []);
+                    if (def) next.creditShares = def;
+                    else next.creditSharesMode = 'manual';
+                  }
+                  setDraft(next);
+                }}
+                teamMembersList={teamMembers || []}
+                project={project}
+              />
+            </div>
+            <ContributorEditor
+              contributors={draft.contributors || []}
+              onChange={(arr) => {
+                const next = { ...draft, contributors: arr };
+                const m = draft.creditSharesMode || 'auto';
+                if (m === 'auto') {
+                  const def = computeDefaultCreditShares(draft.pic, arr);
+                  if (def) next.creditShares = def;
+                  else next.creditSharesMode = 'manual';
+                }
+                setDraft(next);
+              }}
+              suggestions={contributorSuggestions}
+              primaryPic={draft.pic}
+              project={project}
+              teamMembersList={teamMembers || []}
+            />
             <div style={{ display: 'flex', gap: 8 }}>
               <div style={{ flex: 1 }}><FieldLabel>Start</FieldLabel><Input type="date" value={draft.start || ''} onChange={(v) => setDraft({ ...draft, start: v || null })} /></div>
-              <div style={{ flex: 1 }}><FieldLabel>End</FieldLabel><Input type="date" value={draft.end || ''} onChange={(v) => setDraft({ ...draft, end: v || null })} /></div>
+              <div style={{ flex: 1 }}>
+                <FieldLabel>
+                  End {!isOwner && <span style={{ color: TOK.subtle, fontWeight: 400 }}>(request change)</span>}
+                </FieldLabel>
+                {isOwner ? (
+                  <Input type="date" value={draft.end || ''} onChange={(v) => setDraft({ ...draft, end: v || null })} />
+                ) : (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{
+                      flex: 1, padding: '8px 10px', background: TOK.bg,
+                      border: '1px dashed ' + TOK.lineStrong, borderRadius: 7,
+                      fontSize: 13, color: TOK.muted, cursor: 'not-allowed',
+                    }}>
+                      🔒 {draft.end ? fmtDateShort(draft.end) : '—'}
+                    </div>
+                    <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
+                      {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                    </Btn>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <FieldLabel>Deadline type</FieldLabel>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {DEADLINE_TYPES.map((t) => {
+                  const isActive = (draft.deadlineType || DEFAULT_DEADLINE_TYPE) === t;
+                  return (
+                    <button key={t}
+                      onClick={() => isOwner && setDraft({ ...draft, deadlineType: t })}
+                      disabled={!isOwner}
+                      style={{ flex: 1, padding: '6px 10px', borderRadius: 6, fontSize: 12,
+                        border: '1px solid ' + (isActive ? TOK.ink : TOK.lineStrong),
+                        background: isActive ? TOK.bg : TOK.surface,
+                        fontWeight: isActive ? 500 : 400,
+                        color: TOK.ink,
+                        cursor: isOwner ? 'pointer' : 'not-allowed',
+                        opacity: !isOwner && !isActive ? 0.55 : 1,
+                        fontFamily: FONT_STACK }}>
+                      {t === 'hard' ? '🔒 Hard deadline' : '🎯 Soft target'}
+                    </button>
+                  );
+                })}
+              </div>
+              {!isOwner && (
+                <div style={{ fontSize: 10, color: TOK.subtle, marginTop: 3 }}>
+                  Only workspace owner can change deadline type.
+                </div>
+              )}
             </div>
             <div><FieldLabel>Duration (days)</FieldLabel><Input type="number" value={draft.duration ?? ''} onChange={(v) => setDraft({ ...draft, duration: v === '' ? null : Number(v) })} /></div>
             <div><FieldLabel>Key deliverables</FieldLabel><Textarea value={draft.deliverables} onChange={(v) => setDraft({ ...draft, deliverables: v })} rows={3} /></div>
             <div><FieldLabel>Dependencies</FieldLabel><Textarea value={draft.dependencies} onChange={(v) => setDraft({ ...draft, dependencies: v })} rows={2} /></div>
+            <CreditSharesEditor
+              task={draft}
+              onChange={({ shares, mode }) => setDraft({ ...draft, creditShares: shares, creditSharesMode: mode || draft.creditSharesMode || 'auto' })}
+              locked={!!project.weightsLocked}
+              isOwner={isOwner}
+            />
           </div>
         ) : (
           <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Row k="PIC" v={task.pic || '—'} />
+            {(task.contributors || []).length > 0 && (
+              <Row k="Contributors" v={(task.contributors || []).join(', ')} />
+            )}
             <Row k="Start" v={fmtDate(task.start)} />
             <Row k="End" v={fmtDate(task.end)} />
+            <Row k="Deadline" v={(task.deadlineType || DEFAULT_DEADLINE_TYPE) === 'hard' ? '🔒 Hard deadline' : '🎯 Soft target'} />
             <Row k="Duration" v={task.duration != null ? `${task.duration} days` : '—'} />
             <Row k="Deliverables" v={task.deliverables || '—'} multiline />
             <Row k="Dependencies" v={task.dependencies || '—'} multiline />
+            {(task.creditShares && Object.keys(task.creditShares).length > 0) ? (
+              <Row k="Credit shares" v={
+                Object.entries(task.creditShares).map(([n, v]) => `${n} ${Math.round(Number(v) * 10) / 10}%`).join(', ')
+                + ((task.creditSharesMode || 'auto') === 'manual' ? ' ✎ Manual' : ' ⚙ Auto')
+              } />
+            ) : (task.pic ? (
+              <Row k="Credit shares" v={`${task.pic} 100% (default)`} />
+            ) : null)}
+          </div>
+        )}
+
+        {/* Credit Projection panel (v24) */}
+        {(typeof project.creditPoints === 'number' || project.projectLead) && task.status !== 'Dropped' && (() => {
+          const projectCredits = computeProjectCredits(project);
+          const taskRows = projectCredits.breakdown.filter((b) => b.taskId === task.id);
+          if (taskRows.length === 0) return null;
+          const taskCp = taskRows[0].taskCp || 0;
+          const credited = taskRows[0].credited;
+          if (taskCp <= 0) return null;
+          const totalCp = projectCredits.totalCp || DEFAULT_CREDIT_POINTS;
+          const pctOfPool = (taskCp / totalCp) * 100;
+          return (
+            <div style={{
+              marginTop: 12, padding: 10, borderRadius: 7,
+              background: credited ? TOK.doneBg : TOK.bg,
+              border: '1px solid ' + (credited ? TOK.doneFg : TOK.line),
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                  Credit projection
+                </span>
+                {credited ? (
+                  <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: TOK.doneFg, background: TOK.surface, border: '1px solid ' + TOK.doneFg }}>
+                    ✓ Earned (task complete)
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: TOK.muted, background: TOK.surface, border: '1px solid ' + TOK.lineStrong }}>
+                    ○ Projected (not yet complete)
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: TOK.muted, marginBottom: 6 }}>
+                Task pool: <strong style={{ color: TOK.ink }}>{Math.round(taskCp * 10) / 10} cp</strong>
+                <span style={{ marginLeft: 6, opacity: 0.7 }}>({Math.round(pctOfPool * 10) / 10}% of {totalCp} cp project pool)</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {taskRows.map((b, i) => (
+                  <div key={i} style={{ display: 'flex', fontSize: 12, gap: 8 }}>
+                    <span style={{ flex: 1 }}>{b.picName} <span style={{ color: TOK.muted, fontSize: 11 }}>({Math.round(b.sharePct * 10) / 10}%)</span></span>
+                    <span style={{ color: credited ? TOK.doneFg : TOK.muted, fontWeight: credited ? 500 : 400 }}>
+                      {Math.round((b.actual || b.projected) * 100) / 100} cp
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {!credited && (
+                <div style={{ marginTop: 6, fontSize: 11, color: TOK.muted, fontStyle: 'italic' }}>
+                  Mark task as Completed to award these credits.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        <DeadlineRequestBanner
+          task={task}
+          request={task.deadlineRequest}
+          author={author}
+          isOwner={isOwner}
+          onApprove={approveDeadlineRequest}
+          onReject={rejectDeadlineRequest}
+          onCancel={cancelDeadlineRequest}
+        />
+
+        {(task.deadlineHistory || []).length > 0 && (
+          <div style={{ marginTop: 12, padding: 10, background: TOK.bg, borderRadius: 7 }}>
+            <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+              Deadline history ({(task.deadlineHistory || []).length})
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {(task.deadlineHistory || []).slice().reverse().map((dh) => (
+                <div key={dh.id} style={{ fontSize: 11, color: TOK.muted }}>
+                  <span style={{ color: TOK.ink }}>{fmtDate(dh.from)} → {fmtDate(dh.to)}</span>
+                  <span style={{ marginLeft: 6 }}>by {dh.changedBy} · {fmtDateTime(dh.changedAt)}</span>
+                  {dh.reason && <span style={{ marginLeft: 6, fontStyle: 'italic' }}>“{dh.reason}”</span>}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -1560,6 +3114,15 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           )}
         </div>
       </div>
+      {showDeadlineRequest && (
+        <DeadlineRequestDialog
+          task={task}
+          currentEnd={task.end}
+          author={author}
+          onClose={() => setShowDeadlineRequest(false)}
+          onSubmit={submitDeadlineRequest}
+        />
+      )}
     </div>
   );
 }
@@ -1606,6 +3169,149 @@ function projectTaskOptions(project) {
   return out;
 }
 
+/* ═════════ DECIDED-BY PICKER (multi-select members + @-mention) ═════════ */
+// Chip + autocomplete dropdown. Source: teamMembers ONLY.
+// Existing values not in teamMembers are shown as legacy ⚠ chips for cleanup.
+function DecidedByPicker({ value, onChange, teamMembers }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const list = Array.isArray(value) ? value : [];
+  const memberNames = useMemo(() => new Set((teamMembers || []).map((m) => m.name)), [teamMembers]);
+
+  const filtered = useMemo(() => {
+    const q = (draft || '').trim().replace(/^@+/, '').toLowerCase();
+    return (teamMembers || [])
+      .filter((m) => !list.includes(m.name))
+      .filter((m) => !q || m.name.toLowerCase().includes(q) || (m.email || '').toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [teamMembers, draft, list]);
+
+  const add = (name) => {
+    const trimmed = (name || '').trim().replace(/^@+/, '');
+    if (!trimmed || list.includes(trimmed)) return;
+    onChange([...list, trimmed]);
+    setDraft('');
+    setAdding(false);
+  };
+  const remove = (name) => onChange(list.filter((n) => n !== name));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <FieldLabel>Decided by * <span style={{ color: TOK.subtle, fontWeight: 400 }}>(individuals — team members)</span></FieldLabel>
+        {list.length >= 1 && (
+          <button onClick={() => onChange([])} style={{
+            fontFamily: FONT_STACK, fontSize: 11, padding: '2px 8px',
+            border: '1px solid ' + TOK.lineStrong, borderRadius: 999,
+            background: 'transparent', cursor: 'pointer', color: TOK.muted,
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+          }} title="Clear all">
+            <X size={10} /> Clear all ({list.length})
+          </button>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
+        {list.map((n) => {
+          const known = memberNames.has(n);
+          const member = (teamMembers || []).find((m) => m.name === n);
+          return (
+            <span key={n} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              background: known ? TOK.healthGreenBg : '#FAEEDA',
+              border: '1px solid ' + (known ? TOK.accent : '#E0BC75'),
+              borderRadius: 999,
+              padding: '3px 4px 3px 10px', fontSize: 12,
+              color: known ? TOK.accent : TOK.ink,
+            }} title={!known ? 'Legacy value — not a current team member. Click ✕ to remove.' : (member?.email || '')}>
+              {!known && <span style={{ fontSize: 10, color: '#A8660C' }}>⚠</span>}
+              {n}
+              <button onClick={() => remove(n)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}
+                title="Remove">
+                <X size={11} />
+              </button>
+            </span>
+          );
+        })}
+        {!adding && (
+          <button onClick={() => setAdding(true)} style={{
+            fontFamily: FONT_STACK, fontSize: 12, padding: '4px 10px',
+            border: '1px dashed ' + TOK.lineStrong, borderRadius: 999,
+            background: 'transparent', cursor: 'pointer', color: TOK.muted,
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+          }}>
+            <Plus size={11} /> Add decider
+          </button>
+        )}
+      </div>
+      {adding && (
+        <div style={{ marginTop: 6, position: 'relative' }}>
+          <Input
+            value={draft}
+            onChange={setDraft}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && filtered[0]) { e.preventDefault(); add(filtered[0].name); }
+              else if (e.key === 'Enter' && draft.trim()) { e.preventDefault(); add(draft); }
+              else if (e.key === 'Escape') { e.preventDefault(); setDraft(''); setAdding(false); }
+            }}
+            placeholder="Type @ or name (e.g., @tr → trangvk@…)"
+            autoFocus
+          />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0,
+            background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 6,
+            marginTop: 2, maxHeight: 220, overflowY: 'auto', zIndex: 50,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+          }}>
+            {filtered.map((m) => (
+              <button key={m.name} onClick={() => add(m.name)}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '7px 10px',
+                  fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                  background: 'transparent', cursor: 'pointer', color: TOK.ink,
+                  borderBottom: '1px solid ' + TOK.line,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                <span>{m.name}</span>
+                {m.email && <span style={{ color: TOK.muted, fontSize: 11 }}>{m.email}</span>}
+              </button>
+            ))}
+            {filtered.length === 0 && (
+              <div style={{ padding: '8px 10px', fontSize: 11, color: TOK.subtle }}>
+                No matching team members. Add members in Project Settings.
+              </div>
+            )}
+            {draft.trim() && !(teamMembers || []).some((m) => m.name.toLowerCase() === draft.trim().replace(/^@+/, '').toLowerCase()) && (
+              <button onClick={() => add(draft)}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '7px 10px',
+                  fontFamily: FONT_STACK, fontSize: 12, border: 'none',
+                  background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                  borderTop: filtered.length > 0 ? '1px solid ' + TOK.line : 'none',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                ⚠ Use "{draft.trim().replace(/^@+/, '')}" as free text (not in team members)
+              </button>
+            )}
+            <button onClick={() => { setDraft(''); setAdding(false); }}
+              style={{
+                width: '100%', textAlign: 'left', padding: '6px 10px',
+                fontFamily: FONT_STACK, fontSize: 11, border: 'none',
+                background: TOK.bg, cursor: 'pointer', color: TOK.muted,
+                borderTop: '1px solid ' + TOK.line,
+              }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DecisionForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel }) {
   const [text, setText] = useState(initial?.text || '');
   const [date, setDate] = useState(initial?.date || toISODate(new Date()));
@@ -1614,12 +3320,18 @@ function DecisionForm({ initial, project, teamMembers, author, defaultRelatedTas
   const [relatedTaskIds, setRelatedTaskIds] = useState(initial?.relatedTaskIds || (defaultRelatedTaskId ? [defaultRelatedTaskId] : []));
   const [followUpStatus, setFollowUpStatus] = useState(initial?.followUpStatus || 'Open');
   const [meetingRef, setMeetingRef] = useState(initial?.meetingRef || '');
+  const [expectedReviewDate, setExpectedReviewDate] = useState(
+    initial?.expectedReviewDate || addDays(initial?.date || toISODate(new Date()), DECISION_REVIEW_DAYS)
+  );
+  const [reviewDateManual, setReviewDateManual] = useState(!!initial?.expectedReviewDate);
+  useEffect(() => {
+    if (!reviewDateManual) {
+      setExpectedReviewDate(addDays(date, DECISION_REVIEW_DAYS));
+    }
+  }, [date, reviewDateManual]);
 
   const taskOptions = useMemo(() => projectTaskOptions(project), [project]);
 
-  const toggleDecidedBy = (name) => {
-    setDecidedBy(decidedBy.includes(name) ? decidedBy.filter((x) => x !== name) : [...decidedBy, name]);
-  };
 
   const toggleRelatedTask = (id) => {
     setRelatedTaskIds(relatedTaskIds.includes(id) ? relatedTaskIds.filter((x) => x !== id) : [...relatedTaskIds, id]);
@@ -1638,6 +3350,7 @@ function DecisionForm({ initial, project, teamMembers, author, defaultRelatedTas
       relatedTaskIds,
       followUpStatus,
       meetingRef: meetingRef.trim(),
+      expectedReviewDate,
       author: initial?.author || author,
     });
   };
@@ -1665,23 +3378,20 @@ function DecisionForm({ initial, project, teamMembers, author, defaultRelatedTas
       </div>
 
       <div style={{ height: 12 }} />
-      <FieldLabel>Decided by * (multi-select)</FieldLabel>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {teamMembers.map((m) => {
-          const active = decidedBy.includes(m.name);
-          return (
-            <button key={m.name} onClick={() => toggleDecidedBy(m.name)} style={{
-              fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 999,
-              border: '1px solid ' + (active ? TOK.accent : TOK.lineStrong),
-              background: active ? TOK.healthGreenBg : TOK.surface,
-              color: active ? TOK.accent : TOK.ink,
-              cursor: 'pointer', fontWeight: active ? 500 : 400,
-            }}>{active && '✓ '}{m.name}</button>
-          );
-        })}
-        {teamMembers.length === 0 && (
-          <span style={{ fontSize: 11, color: TOK.subtle }}>No team members yet — add via Project settings.</span>
-        )}
+      <FieldLabel>Review by date</FieldLabel>
+      <Input type="date" value={expectedReviewDate || ''} onChange={(v) => { setExpectedReviewDate(v); setReviewDateManual(true); }} />
+      <div style={{ marginTop: 4, fontSize: 11, color: TOK.subtle }}>
+        Auto-set to {DECISION_REVIEW_DAYS} days after decision date. Edit to override.
+      </div>
+
+      <div style={{ height: 12 }} />
+      <DecidedByPicker
+        value={decidedBy}
+        onChange={setDecidedBy}
+        teamMembers={teamMembers || []}
+      />
+      <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 4, lineHeight: 1.5 }}>
+        Decision-makers are individual team members (with email). Type <kbd style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 3, padding: '0 4px', fontSize: 10 }}>@</kbd> or name to search. Groups (departments) belong to <strong>Contributors</strong> on tasks, not here.
       </div>
 
       <div style={{ height: 12 }} />
@@ -1798,17 +3508,32 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
   const [expanded, setExpanded] = useState(false);
   const related = findRelatedTasks(project, decision.relatedTaskIds);
   const fc = followupColor(decision.followUpStatus);
+  const decay = getDecisionDecay(decision);
   return (
-    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 8 }}>
+    <div style={{
+      background: TOK.surface,
+      border: '1px solid ' + (decay.decayed ? '#E0A03C' : TOK.line),
+      borderRadius: 10, marginBottom: 8,
+      boxShadow: decay.decayed ? '0 0 0 1px #FAEEDA' : 'none',
+    }}>
       <div style={{ padding: '12px 14px', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
           <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>
             <MentionedText text={decision.text} teamMembers={teamMembers} />
           </span>
-          <span style={{
-            fontSize: 10.5, fontWeight: 500, padding: '2px 8px', borderRadius: 999,
-            color: fc.fg, background: fc.bg, whiteSpace: 'nowrap', height: 'fit-content',
-          }}>{FOLLOWUP_LABEL[decision.followUpStatus]}</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            {decay.decayed && (
+              <span title={`Review overdue by ${decay.daysOverdue} day${decay.daysOverdue === 1 ? '' : 's'}`}
+                style={{
+                  fontSize: 10.5, fontWeight: 500, padding: '2px 8px', borderRadius: 999,
+                  color: '#A8660C', background: '#FAEEDA', whiteSpace: 'nowrap',
+                }}>🕐 Review overdue {decay.daysOverdue}d</span>
+            )}
+            <span style={{
+              fontSize: 10.5, fontWeight: 500, padding: '2px 8px', borderRadius: 999,
+              color: fc.fg, background: fc.bg, whiteSpace: 'nowrap', height: 'fit-content',
+            }}>{FOLLOWUP_LABEL[decision.followUpStatus]}</span>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 12, fontSize: 11, color: TOK.muted, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>📅 {fmtDate(decision.date)}</span>
@@ -2009,12 +3734,13 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
       <div style={{ height: 12 }} />
       <div style={{ display: 'flex', gap: 12 }}>
         <div style={{ flex: 1 }}>
-          <FieldLabel>PIC / Assignee *</FieldLabel>
-          <select value={pic} onChange={(e) => setPic(e.target.value)}
-            style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink }}>
-            <option value="">— Select PIC —</option>
-            {teamMembers.map((m) => <option key={m.name} value={m.name}>{m.name}{m.email ? ` (${m.email})` : ''}</option>)}
-          </select>
+          <FieldLabel>PIC / Assignee * <span style={{ color: TOK.subtle, fontWeight: 400 }}>(team member with email)</span></FieldLabel>
+          <PicEditor
+            value={pic}
+            onChange={(v) => setPic(v || '')}
+            teamMembersList={teamMembers || []}
+            project={project}
+          />
         </div>
         <div style={{ flex: 1 }}>
           <FieldLabel>Priority</FieldLabel>
@@ -2142,7 +3868,7 @@ function buildPicEmailHtml(picName, list, project, author) {
     <tbody>${rows}</tbody>
   </table>
   <p style="margin: 16px 0 8px; font-size: 13px; color: #6e6c66;">
-    <em>Excel template (for OpenProject upload) is downloaded separately — please attach it before sending.</em>
+    <em>📎 An Excel file with these actions (OpenProject template) has been auto-downloaded. Please attach it from your Downloads folder before sending.</em>
   </p>
   <p style="margin: 16px 0 0;">
     Thanks,<br/>
@@ -2257,7 +3983,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
       if (a.dueDate) lines.push(`   Due: ${fmtDate(a.dueDate)}`);
       lines.push('');
     });
-    lines.push(`Excel template (for OpenProject upload) is downloaded separately — please attach it before sending.`);
+    lines.push(`📎 An Excel file with these actions has been auto-downloaded — please attach it from your Downloads folder before sending.`);
     lines.push(``);
     lines.push(`Thanks,`);
     lines.push(author);
@@ -2267,6 +3993,8 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   // Email PIC: opens an in-app modal with the formatted HTML email preview, content
   // auto-selected. User presses Ctrl+C (their own keyboard event — always works in iframes,
   // browser writes both text/html and text/plain to clipboard), then clicks Open Gmail.
+  // Also auto-downloads the per-PIC Excel template so the file is ready to attach in Gmail
+  // (browser security prevents pre-attaching to Gmail via URL — manual attach still required).
   const emailPic = (picName, list) => {
     const member = teamMembers.find((m) => m.name === picName);
     if (!member?.email) {
@@ -2277,10 +4005,16 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     const html = buildPicEmailHtml(picName, list, project, author);
     const meEmail = teamMembers.find((m) => m.name === author)?.email;
     const gmailUrl = buildGmailUrl({ to: member.email, subject, cc: meEmail });
+    // Auto-download per-PIC Excel — user attaches manually in Gmail
+    const blob = actionsToOpenProjectExcel(project, list);
+    const safePic = picName.replace(/[^a-z0-9]+/gi, '_');
+    const fname = `actions_${project.openProjectCode || project.name.replace(/[^a-z0-9]+/gi, '_')}_${safePic}_${toISODate(new Date())}.xlsx`;
+    downloadBlob(blob, fname);
     setCopyHelper({
       html,
       title: `Email to ${picName} — ${list.length} action${list.length === 1 ? '' : 's'}`,
       gmailUrl,
+      attachmentName: fname,
     });
     onActivity({ type: 'action_email', description: `Emailed ${list.length} action${list.length === 1 ? '' : 's'} to ${picName}` });
   };
@@ -2467,6 +4201,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           html={copyHelper.html}
           title={copyHelper.title}
           gmailUrl={copyHelper.gmailUrl}
+          attachmentName={copyHelper.attachmentName}
           onClose={() => setCopyHelper(null)}
         />
       )}
@@ -2481,28 +4216,29 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
 function actionsToOpenProjectExcel(project, actions) {
   // OpenProject priority map (their default priorities are typically Low/Normal/High/Immediate)
   const priorityMap = { High: 'High', Medium: 'Normal', Low: 'Low' };
+  // Build name → email map from project team members for Assignee column
+  const nameToEmail = new Map();
+  for (const m of (project.teamMembers || [])) {
+    if (m.name && m.email) nameToEmail.set(m.name, m.email);
+  }
   const headers = [
     'Project Code', 'Project Name',
     'Subject (recommended to keep WP Code prefix)',
     'Type', 'Description',
-    'Assignee (Role placeholder)', 'Reviewer (if any)',
+    'Assignee (email)', 'Reviewer (if any)',
     'Priority', 'Start date', 'Due date',
     'Entity/Company', 'Parent Task', 'Level',
   ];
   const rows = [headers];
-  // Replicate the 4 type-only blank reference rows from the original template
-  ['Epic', 'User Story', 'Task', 'Milestone'].forEach((tp) => {
-    rows.push(['', '', '', tp, '', '', '', '', '', '', '', '', '']);
-  });
-  // Then our actions (default Type = Task)
   for (const a of actions) {
+    const assigneeEmail = nameToEmail.get(a.pic || '') || a.pic || '';
     rows.push([
-      project.openProjectCode || '',
-      project.name || '',
-      a.title || '',
-      'Task',
-      a.description || '',
-      a.pic || '',
+      sanitizeCell(project.openProjectCode || ''),
+      sanitizeCell(project.name || ''),
+      sanitizeCell(a.title || ''),
+      'User Story',
+      sanitizeCell(a.description || ''),
+      sanitizeCell(assigneeEmail),
       '',
       priorityMap[a.priority] || 'Normal',
       '',
@@ -2520,9 +4256,9 @@ function actionsToOpenProjectExcel(project, actions) {
 }
 
 /* ═════════ AGGREGATION VIEW (cross-project decisions & actions) ═════════ */
-function AggregationView({ projects, currentProjectId, teamMembers, dialogs, showToast, author }) {
+function AggregationView({ projects, currentProjectId, teamMembers, dialogs, showToast, author, initialTab = 'decisions' }) {
   const [scope, setScope] = useState('all'); // all | current
-  const [tab, setTab] = useState('decisions'); // decisions | actions
+  const [tab, setTab] = useState(initialTab); // decisions | actions
   const [filterProject, setFilterProject] = useState('all');
   const [filterPic, setFilterPic] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -3709,7 +5445,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   const actAddTask = async (pg, ws) => {
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
-    const t = { id: uid('t'), name, status: 'Planned', pic: null, start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
     onProjectUpdate({
       ...project, programs: project.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...(w.tasks || []), t] } : w) } : p
@@ -3917,7 +5653,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId }) {
+function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false }) {
   // Filter programs by scope
   const visiblePrograms = useMemo(() => {
     if (!scopeProgramId) return project.programs || [];
@@ -4003,7 +5739,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   const addTask = async (pg, ws) => {
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
-    const t = { id: uid('t'), name, status: 'Planned', pic: null, start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
     onProjectUpdate({
       ...project, programs: project.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...w.tasks, t] } : w) } : p
@@ -4011,6 +5747,106 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     });
     onActivity({ type: 'task_add', description: `Added task "${t.name}" in "${ws.name}"` });
   };
+
+  // ─── Credit weight handlers (v22) ───
+  const weightsLocked = !!project.weightsLocked;
+  const appendWeightLog = (proj, level, id, to) => {
+    const log = Array.isArray(proj.weightChangeLog) ? proj.weightChangeLog : [];
+    const next = [...log, { ts: new Date().toISOString(), level, id, to }];
+    if (next.length > 200) next.splice(0, next.length - 200);
+    return { ...proj, weightChangeLog: next };
+  };
+  const updateProgramWeight = (pgId, newWeight) => {
+    if (!isOwner || weightsLocked) return;
+    const updated = {
+      ...project,
+      programs: project.programs.map((p) => p.id === pgId ? { ...p, weight: newWeight } : p),
+    };
+    const finalProj = appendWeightLog(updated, 'program', pgId, newWeight);
+    onProjectUpdate(finalProj);
+    onActivity({ type: 'weight_change', description: `Set program weight to ${newWeight == null ? 'auto' : newWeight + '%'}` });
+  };
+  const updateWorkstreamWeight = (pgId, wsId, newWeight) => {
+    if (!isOwner || weightsLocked) return;
+    const updated = {
+      ...project,
+      programs: project.programs.map((p) => p.id === pgId
+        ? { ...p, workstreams: p.workstreams.map((w) => w.id === wsId ? { ...w, weight: newWeight } : w) }
+        : p
+      ),
+    };
+    const finalProj = appendWeightLog(updated, 'workstream', wsId, newWeight);
+    onProjectUpdate(finalProj);
+    onActivity({ type: 'weight_change', description: `Set workstream weight to ${newWeight == null ? 'auto' : newWeight + '%'}` });
+  };
+  const updateTaskWeight = (pgId, wsId, taskId, newWeight) => {
+    if (!isOwner || weightsLocked) return;
+    const updated = {
+      ...project,
+      programs: project.programs.map((p) => p.id === pgId
+        ? { ...p, workstreams: p.workstreams.map((w) => w.id === wsId
+            ? { ...w, tasks: w.tasks.map((t) => t.id === taskId ? { ...t, weight: newWeight } : t) }
+            : w)
+          }
+        : p
+      ),
+    };
+    const finalProj = appendWeightLog(updated, 'task', taskId, newWeight);
+    onProjectUpdate(finalProj);
+    onActivity({ type: 'weight_change', description: `Set task weight to ${newWeight == null ? 'auto' : newWeight + '%'}` });
+  };
+
+  // Pre-compute effective weights at each level
+  const programWeights = useMemo(() => getEffectiveWeights(project.programs || []), [project.programs]);
+  const wsWeightsMap = useMemo(() => {
+    const m = new Map();
+    for (const pg of (project.programs || [])) m.set(pg.id, getEffectiveWeights(pg.workstreams || []));
+    return m;
+  }, [project.programs]);
+  const taskWeightsMap = useMemo(() => {
+    const m = new Map();
+    for (const pg of (project.programs || [])) {
+      for (const ws of (pg.workstreams || [])) {
+        const eligible = (ws.tasks || []).filter((t) => t.status !== 'Dropped');
+        m.set(ws.id, { eligible, weights: getEffectiveWeights(eligible) });
+      }
+    }
+    return m;
+  }, [project.programs]);
+
+  // Pre-compute credit allocation for inline cp display in WeightBadges + banner
+  const creditInfo = useMemo(() => {
+    const result = computeProjectCredits(project);
+    const programCp = new Map();
+    const workstreamCp = new Map();
+    const taskCp = new Map();
+    const programEarned = new Map();
+    let workspaceEarned = 0;
+    for (const b of result.breakdown) {
+      workspaceEarned += b.actual || 0;
+      if (b.isProjectLead) continue;
+      if (b.programId) {
+        programCp.set(b.programId, (programCp.get(b.programId) || 0) + (b.taskCp || 0));
+        programEarned.set(b.programId, (programEarned.get(b.programId) || 0) + (b.actual || 0));
+      }
+      if (b.workstreamId) workstreamCp.set(b.workstreamId, (workstreamCp.get(b.workstreamId) || 0) + (b.taskCp || 0));
+      if (b.taskId) taskCp.set(b.taskId, b.taskCp || 0);
+    }
+    // De-dupe taskCp to per-task total (sum across all PICs for same task)
+    const taskCpAgg = new Map();
+    for (const b of result.breakdown) {
+      if (b.isProjectLead || !b.taskId) continue;
+      const cur = taskCpAgg.get(b.taskId) || 0;
+      taskCpAgg.set(b.taskId, cur + 0); // taskCp is constant per task — set once
+      taskCpAgg.set(b.taskId, b.taskCp || 0);
+    }
+    // Top 3 PICs by projected
+    const topPics = Array.from(result.perPic.entries())
+      .map(([name, val]) => ({ name, ...val }))
+      .sort((a, b) => b.projected - a.projected)
+      .slice(0, 3);
+    return { result, programCp, workstreamCp, taskCp: taskCpAgg, programEarned, workspaceEarned, topPics };
+  }, [project]);
 
   const onDragStartTask = (e, task, pg, ws) => {
     setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id });
@@ -4092,6 +5928,39 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+        {(typeof project.creditPoints === 'number' || isOwner) && (
+          <div style={{
+            padding: '10px 12px', marginBottom: 10, borderRadius: 8,
+            background: weightsLocked ? '#FCEBEB' : '#E6F1FB',
+            border: '1px solid ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'),
+            fontSize: 12,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontWeight: 500, color: weightsLocked ? TOK.healthRed : TOK.programFg }}>
+                {weightsLocked ? '🔒' : '🔓'} Credit pool: {project.creditPoints ?? DEFAULT_CREDIT_POINTS} cp · Year {project.creditYear ?? new Date().getFullYear()}
+              </span>
+              <span style={{ flex: 1, color: TOK.muted }}>
+                {weightsLocked
+                  ? 'Weights are locked for this year. Owner can unlock in Project Settings.'
+                  : (isOwner ? 'Click ⚖ on any program/workstream/task to set explicit weights. Empty = equal split.' : 'Weights set by workspace owner.')}
+              </span>
+            </div>
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'), color: TOK.muted, display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+              {creditInfo.result.leadName ? (
+                <span>Lead: <strong style={{ color: TOK.ink }}>{creditInfo.result.leadName}</strong> · {Math.round(creditInfo.result.leadCp * 10) / 10} cp pool</span>
+              ) : (
+                <span style={{ opacity: 0.7 }}>No project lead</span>
+              )}
+              <span>Allocated: <strong style={{ color: TOK.ink }}>{Math.round(creditInfo.result.programPoolCp * 10) / 10} cp</strong></span>
+              <span>Earned so far: <strong style={{ color: TOK.healthGreen }}>{Math.round(creditInfo.workspaceEarned * 10) / 10} cp</strong> <span style={{ opacity: 0.7 }}>(only Completed tasks)</span></span>
+              {creditInfo.topPics.length > 0 && (
+                <span style={{ flex: 1, textAlign: 'right' }}>
+                  Top: {creditInfo.topPics.map((p) => `${p.name} ${Math.round(p.projected * 10) / 10}`).join(' · ')}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         {visiblePrograms.map((pg) => {
           const r = rollup(pg);
           const pgOpen = expanded.has(pg.id);
@@ -4099,6 +5968,8 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
           const pgHasMatches = !q || pgMatches || (pg.workstreams || []).some((w) => matches(w.name) || (w.tasks || []).some((t) => matches(t.name)));
           if (!pgHasMatches) return null;
           const dropOn = dragOver === 'pg_' + pg.id;
+          const pgIdx = (project.programs || []).findIndex((p) => p.id === pg.id);
+          const pgEffWeight = pgIdx >= 0 ? (programWeights[pgIdx] || 0) : 0;
           return (
             <div key={pg.id}
               onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id) onDragOverZone(e, 'pg_' + pg.id); }}
@@ -4110,6 +5981,15 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                   {pgOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
                 <span style={{ fontSize: 14, fontWeight: 500, color: TOK.programFg, flex: 1 }}>{pg.name}</span>
+                <WeightBadge
+                  weight={pg.weight}
+                  effectiveWeight={pgEffWeight}
+                  onChange={(v) => updateProgramWeight(pg.id, v)}
+                  locked={weightsLocked}
+                  isOwner={isOwner}
+                  label={`program "${pg.name}"`}
+                  cpValue={creditInfo.programCp.get(pg.id)}
+                />
                 <span style={{ fontSize: 11, color: TOK.programFg, opacity: 0.8 }}>{r.done}/{r.total} · {r.pct}%</span>
                 <div style={{ width: 100, height: 5, background: 'rgba(12,68,124,0.15)', borderRadius: 999, overflow: 'hidden' }}>
                   <div style={{ width: `${r.pct}%`, height: '100%', background: TOK.programFg }} />
@@ -4125,6 +6005,11 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                 const wsHasMatches = !q || pgMatches || wsMatches || (ws.tasks || []).some((t) => matches(t.name));
                 if (!wsHasMatches) return null;
                 const wsDragOver = dragOver === 'ws_' + ws.id;
+                const wsList = pg.workstreams || [];
+                const wsIdx = wsList.findIndex((w) => w.id === ws.id);
+                const wsEffWeights = wsWeightsMap.get(pg.id) || [];
+                const wsEffWeight = wsIdx >= 0 ? (wsEffWeights[wsIdx] || 0) : 0;
+                const taskWeightInfo = taskWeightsMap.get(ws.id) || { eligible: [], weights: [] };
                 return (
                   <div key={ws.id}
                     draggable onDragStart={(e) => onDragStartWs(e, ws, pg)}
@@ -4138,6 +6023,15 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                         {wsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </button>
                       <span style={{ fontSize: 13, fontWeight: 500, color: TOK.workstreamFg, flex: 1 }}>{ws.name}</span>
+                      <WeightBadge
+                        weight={ws.weight}
+                        effectiveWeight={wsEffWeight}
+                        onChange={(v) => updateWorkstreamWeight(pg.id, ws.id, v)}
+                        locked={weightsLocked}
+                        isOwner={isOwner}
+                        label={`workstream "${ws.name}"`}
+                        cpValue={creditInfo.workstreamCp.get(ws.id)}
+                      />
                       <span style={{ fontSize: 11, color: TOK.workstreamFg, opacity: 0.8 }}>{wsR.done}/{wsR.total} · {wsR.pct}%</span>
                       <div style={{ width: 80, height: 4, background: 'rgba(15,110,86,0.2)', borderRadius: 999, overflow: 'hidden' }}>
                         <div style={{ width: `${wsR.pct}%`, height: '100%', background: TOK.workstreamFg }} />
@@ -4152,6 +6046,8 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                       const dropped = t.status === 'Dropped';
                       const over = isOverdue(t);
                       const totalUpdates = (t.updates?.length || 0) + (t.checkIns?.length || 0);
+                      const tIdx = taskWeightInfo.eligible.findIndex((x) => x.id === t.id);
+                      const tEffWeight = tIdx >= 0 ? (taskWeightInfo.weights[tIdx] || 0) : 0;
                       return (
                         <div key={t.id}
                           draggable onDragStart={(e) => onDragStartTask(e, t, pg, ws)}
@@ -4173,6 +6069,19 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                           {t.pic && <span style={{ fontSize: 11, color: TOK.muted, background: TOK.bg, padding: '1px 6px', borderRadius: 4 }}>{t.pic}</span>}
                           {t.end && <span style={{ fontSize: 11, color: over ? TOK.overdueFg : TOK.muted }}>{fmtDateShort(t.end)}</span>}
                           {totalUpdates > 0 && <span style={{ fontSize: 11, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 2 }}><MessageSquare size={10} />{totalUpdates}</span>}
+                          {!dropped && (
+                            <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+                              <WeightBadge
+                                weight={t.weight}
+                                effectiveWeight={tEffWeight}
+                                onChange={(v) => updateTaskWeight(pg.id, ws.id, t.id, v)}
+                                locked={weightsLocked}
+                                isOwner={isOwner}
+                                label={`task "${t.name}"`}
+                                cpValue={creditInfo.taskCp.get(t.id)}
+                              />
+                            </span>
+                          )}
                           <Pill status={t.status || 'Planned'} overdue={over} size="sm" />
                         </div>
                       );
@@ -4366,6 +6275,1584 @@ function TaskRow({ task, project, onClick }) {
   );
 }
 
+/* ═════════ ACTIVITY DASHBOARD ═════════ */
+
+const COLOR_MAP = {
+  green:  { fg: TOK.healthGreen, bg: TOK.healthGreenBg },
+  amber:  { fg: TOK.healthAmber, bg: TOK.healthAmberBg },
+  red:    { fg: TOK.healthRed,   bg: TOK.healthRedBg },
+  subtle: { fg: TOK.subtle,      bg: TOK.bg },
+};
+
+function TrendArrow({ trend, size = 11 }) {
+  if (!trend) return null;
+  const map = {
+    up:   { ch: '↑', col: TOK.healthGreen },
+    flat: { ch: '→', col: TOK.muted },
+    down: { ch: '↓', col: TOK.healthRed },
+  };
+  const s = map[trend];
+  if (!s) return null;
+  return <span style={{ color: s.col, fontSize: size, marginLeft: 4 }}>{s.ch}</span>;
+}
+
+function MetricCell({ value, sub, color = 'subtle', trend }) {
+  const c = COLOR_MAP[color] || COLOR_MAP.subtle;
+  return (
+    <div style={{
+      padding: '6px 8px', borderRadius: 6, background: c.bg, color: c.fg,
+      minWidth: 70, textAlign: 'center', fontFamily: FONT_STACK,
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {value == null ? '—' : value}
+        <TrendArrow trend={trend} />
+      </div>
+      {sub && <div style={{ fontSize: 10, color: TOK.muted, marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function DetailMetric({ label, value, sub, color = 'subtle', trend }) {
+  const c = COLOR_MAP[color] || COLOR_MAP.subtle;
+  return (
+    <div style={{
+      padding: 12, borderRadius: 8, background: c.bg, fontFamily: FONT_STACK,
+    }}>
+      <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: c.fg, marginTop: 4, display: 'flex', alignItems: 'center' }}>
+        {value == null ? '—' : value}
+        <TrendArrow trend={trend} size={14} />
+      </div>
+      {sub && <div style={{ fontSize: 11, color: TOK.muted, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function CompositeCell({ score, trend, color = 'subtle' }) {
+  const c = COLOR_MAP[color] || COLOR_MAP.subtle;
+  return (
+    <div style={{
+      padding: '8px 10px', borderRadius: 8, background: c.bg, color: c.fg,
+      minWidth: 90, textAlign: 'center', fontFamily: FONT_STACK,
+      fontSize: 18, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {score == null ? '—' : score}
+      <TrendArrow trend={trend} size={13} />
+    </div>
+  );
+}
+
+function RadarChart({ dimensions, size = 180 }) {
+  const labels = ['Delivery', 'Cadence', 'Risk', 'Engagement'];
+  const keys = ['delivery', 'cadence', 'risk', 'engagement'];
+  const cx = size / 2, cy = size / 2, R = size / 2 - 24;
+  const angleFor = (i) => (-Math.PI / 2) + (i * 2 * Math.PI / keys.length);
+  const point = (i, v) => {
+    const a = angleFor(i);
+    const r = R * Math.max(0, Math.min(100, v || 0)) / 100;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const labelPoint = (i) => {
+    const a = angleFor(i);
+    return [cx + (R + 14) * Math.cos(a), cy + (R + 14) * Math.sin(a)];
+  };
+  const polyPoints = keys.map((k, i) => point(i, dimensions?.[k]).join(',')).join(' ');
+  const grid = [25, 50, 75, 100].map((pct) => {
+    const r = R * pct / 100;
+    const pts = keys.map((_, i) => {
+      const a = angleFor(i);
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)].join(',');
+    }).join(' ');
+    return <polygon key={pct} points={pts} fill="none" stroke={TOK.line} strokeWidth={1} />;
+  });
+  return (
+    <svg width={size} height={size} style={{ display: 'block' }}>
+      {grid}
+      {keys.map((_, i) => {
+        const [x, y] = point(i, 100);
+        return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke={TOK.line} strokeWidth={1} />;
+      })}
+      <polygon points={polyPoints} fill={TOK.accent} fillOpacity={0.18} stroke={TOK.accent} strokeWidth={1.5} />
+      {labels.map((lab, i) => {
+        const [x, y] = labelPoint(i);
+        return (
+          <text key={lab} x={x} y={y} fontSize={10} textAnchor="middle" dominantBaseline="middle" fill={TOK.muted} fontFamily={FONT_STACK}>
+            {lab}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+function CreditsCell({ credits }) {
+  if (!credits || (credits.earned <= 0 && credits.projected <= 0)) {
+    return <div style={{ textAlign: 'right' }}><div style={{ fontSize: 13, color: TOK.subtle }}>—</div></div>;
+  }
+  const earned = Math.round(credits.earned * 10) / 10;
+  const projected = Math.round(credits.projected * 10) / 10;
+  const pct = projected > 0 ? Math.round((earned / projected) * 100) : 0;
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <div style={{ fontSize: 13, fontWeight: 500 }}>
+        <span style={{ color: '#356512' }}>{earned}</span>
+        <span style={{ color: TOK.subtle, fontSize: 11 }}> / {projected}</span>
+      </div>
+      <div style={{ fontSize: 10, color: TOK.subtle }}>{pct}% earned (projected)</div>
+    </div>
+  );
+}
+
+function PICRow({ metrics, credits, onClick }) {
+  const m = metrics;
+  const dCount = m.sampleSize.actions + m.sampleSize.tasks;
+  const deliveryColor = sampleStatus(dCount) === 'ok' ? bucketColor(m.delivery.weightedRate, ACTIVITY_THRESHOLDS.delivery) : 'subtle';
+  const cadenceColor = m.cadence.activeTasks > 0 ? bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true }) : 'subtle';
+  const riskColor = sampleStatus(m.sampleSize.riskReports) === 'ok' ? bucketColor(m.risk.honestyRate, ACTIVITY_THRESHOLDS.risk) : 'subtle';
+  const engagementColor = m.engagement.total > 0 ? bucketColor(m.engagement.total, ACTIVITY_THRESHOLDS.engagement) : 'subtle';
+  const compositeColor = m.composite.score != null ? bucketColor(m.composite.score, ACTIVITY_THRESHOLDS.composite) : 'subtle';
+  return (
+    <tr onClick={onClick} style={{ cursor: 'pointer', borderTop: '1px solid ' + TOK.line }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = TOK.bg)}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+      <td style={{ padding: '10px 12px', fontSize: 13, fontWeight: 500 }}>{m.pic}</td>
+      <td style={{ padding: '8px 6px' }}>
+        <MetricCell
+          value={sampleStatus(dCount) === 'ok' && m.delivery.weightedRate != null ? `${m.delivery.weightedRate}%` : '—'}
+          sub={`${m.delivery.onTime}/${m.delivery.total} actions`}
+          color={deliveryColor}
+          trend={m.trend?.delivery}
+        />
+      </td>
+      <td style={{ padding: '8px 6px' }}>
+        <MetricCell
+          value={m.cadence.avgDaysSinceUpdate != null ? `${m.cadence.avgDaysSinceUpdate}d` : '—'}
+          sub={`${m.cadence.activeTasks} active${m.cadence.staleTasks ? ` · ${m.cadence.staleTasks} stale` : ''}`}
+          color={cadenceColor}
+          trend={m.trend?.cadence}
+        />
+      </td>
+      <td style={{ padding: '8px 6px' }}>
+        <MetricCell
+          value={sampleStatus(m.sampleSize.riskReports) === 'ok' && m.risk.honestyRate != null ? `${m.risk.honestyRate}%` : '—'}
+          sub={m.risk.greenButOverdue > 0 ? `${m.risk.greenButOverdue} green→overdue` : `${m.risk.totalReports} reports`}
+          color={riskColor}
+          trend={m.trend?.risk}
+        />
+      </td>
+      <td style={{ padding: '8px 6px' }}>
+        <MetricCell
+          value={m.engagement.total > 0 ? m.engagement.total : '—'}
+          sub={`${m.engagement.decisions}d · ${m.engagement.blockersResolvedForOthers}b · ${m.engagement.crossTaskUpdates}u`}
+          color={engagementColor}
+        />
+      </td>
+      <td style={{ padding: '8px 10px' }}>
+        <CompositeCell score={m.composite.score} trend={m.trend?.composite} color={compositeColor} />
+      </td>
+      <td style={{ padding: '8px 12px' }}>
+        <CreditsCell credits={credits} />
+      </td>
+    </tr>
+  );
+}
+
+function ActivityChart({ picList }) {
+  if (!picList.length) return null;
+  const top = picList.filter((m) => m.delivery.weightedRate != null).sort((a, b) => (b.delivery.weightedRate || 0) - (a.delivery.weightedRate || 0)).slice(0, 8);
+  if (!top.length) return null;
+  const W = 460, rowH = 22, padL = 80, barMax = W - padL - 50;
+  const H = top.length * rowH + 16;
+  return (
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block' }}>
+      {top.map((m, i) => {
+        const y = 8 + i * rowH;
+        const v = m.delivery.weightedRate || 0;
+        const w = barMax * v / 100;
+        const col = bucketColor(v, ACTIVITY_THRESHOLDS.delivery);
+        const fill = COLOR_MAP[col].fg;
+        return (
+          <g key={m.pic}>
+            <text x={padL - 6} y={y + 14} textAnchor="end" fontSize={11} fontFamily={FONT_STACK} fill={TOK.ink}>{m.pic}</text>
+            <rect x={padL} y={y + 4} width={barMax} height={rowH - 8} fill={TOK.bg} rx={3} />
+            <rect x={padL} y={y + 4} width={w} height={rowH - 8} fill={fill} rx={3} />
+            <text x={padL + w + 5} y={y + 14} fontSize={11} fontFamily={FONT_STACK} fill={TOK.muted}>{v}%</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function WorkstreamDifficultyConfig({ projects, onProjectUpdate, onClose }) {
+  return (
+    <div style={{ background: TOK.bg, padding: 14, borderRadius: 8, marginBottom: 14, fontFamily: FONT_STACK }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>⚖️ Workstream difficulty multipliers</div>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" variant="ghost" onClick={onClose}><X size={11} /></Btn>
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 10, lineHeight: 1.5 }}>
+        Higher multipliers give more credit for on-time delivery in difficult workstreams (Legal, R&D). Default 1.0.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {Object.values(projects).flatMap((p) => (p.programs || []).flatMap((pg) => (pg.workstreams || []).map((ws) => (
+          <div key={`${p.id}_${ws.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', background: TOK.surface, borderRadius: 6 }}>
+            <div style={{ fontSize: 11.5, flex: 1 }}>
+              <span style={{ color: TOK.muted }}>{p.name} › {pg.name} ›</span> <span style={{ fontWeight: 500 }}>{ws.name}</span>
+            </div>
+            <select
+              value={ws.difficultyPreset || 'standard'}
+              onChange={(e) => {
+                const preset = e.target.value;
+                const mult = DIFFICULTY_PRESETS[preset];
+                const updated = cloneDeep(p);
+                for (const upg of updated.programs || []) {
+                  for (const uws of upg.workstreams || []) {
+                    if (uws.id === ws.id) {
+                      uws.difficultyPreset = preset;
+                      uws.difficultyMultiplier = mult;
+                    }
+                  }
+                }
+                onProjectUpdate(updated);
+              }}
+              style={{ fontFamily: FONT_STACK, fontSize: 11, padding: '4px 22px 4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 5, background: TOK.surface }}>
+              {Object.entries(DIFFICULTY_LABELS).map(([k, lab]) => (
+                <option key={k} value={k}>{lab} ({DIFFICULTY_PRESETS[k]}x)</option>
+              ))}
+            </select>
+          </div>
+        ))))}
+      </div>
+    </div>
+  );
+}
+
+function PICDetailModal({ metrics, onClose }) {
+  const m = metrics;
+  const dCount = m.sampleSize.actions + m.sampleSize.tasks;
+  const deliveryColor = sampleStatus(dCount) === 'ok' ? bucketColor(m.delivery.weightedRate, ACTIVITY_THRESHOLDS.delivery) : 'subtle';
+  const cadenceColor = m.cadence.activeTasks > 0 ? bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true }) : 'subtle';
+  const riskColor = sampleStatus(m.sampleSize.riskReports) === 'ok' ? bucketColor(m.risk.honestyRate, ACTIVITY_THRESHOLDS.risk) : 'subtle';
+  const engagementColor = m.engagement.total > 0 ? bucketColor(m.engagement.total, ACTIVITY_THRESHOLDS.engagement) : 'subtle';
+  const compositeColor = m.composite.score != null ? bucketColor(m.composite.score, ACTIVITY_THRESHOLDS.composite) : 'subtle';
+  const compC = COLOR_MAP[compositeColor];
+  return (
+    <Modal title={`${m.pic} — Activity detail`} onClose={onClose} width={680}>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 18 }}>
+        <RadarChart dimensions={m.composite.dimensions} size={170} />
+        <div style={{ flex: 1, textAlign: 'center' }}>
+          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5 }}>Composite</div>
+          <div style={{ fontSize: 56, fontWeight: 700, color: compC.fg, lineHeight: 1, display: 'inline-flex', alignItems: 'baseline' }}>
+            {m.composite.score == null ? '—' : m.composite.score}
+            <TrendArrow trend={m.trend?.composite} size={20} />
+          </div>
+          <div style={{ fontSize: 11, color: TOK.muted, marginTop: 6 }}>0–100 weighted score</div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
+        <DetailMetric label="Delivery" value={m.delivery.weightedRate != null ? `${m.delivery.weightedRate}%` : '—'} sub={`${m.delivery.onTime}/${m.delivery.total} actions`} color={deliveryColor} trend={m.trend?.delivery} />
+        <DetailMetric label="Cadence" value={m.cadence.avgDaysSinceUpdate != null ? `${m.cadence.avgDaysSinceUpdate}d` : '—'} sub={`${m.cadence.activeTasks} active`} color={cadenceColor} trend={m.trend?.cadence} />
+        <DetailMetric label="Risk honesty" value={m.risk.honestyRate != null ? `${m.risk.honestyRate}%` : '—'} sub={m.risk.greenButOverdue > 0 ? `${m.risk.greenButOverdue} flagged` : `${m.risk.totalReports} reports`} color={riskColor} trend={m.trend?.risk} />
+        <DetailMetric label="Engagement" value={m.engagement.total} sub={`${m.engagement.decisions}d ${m.engagement.blockersResolvedForOthers}b ${m.engagement.crossTaskUpdates}u`} color={engagementColor} />
+      </div>
+
+      {(m.delivery.hardTotal + m.delivery.softTotal) > 0 && (
+        <div style={{ background: TOK.bg, padding: 10, borderRadius: 7, marginBottom: 12, fontSize: 12 }}>
+          <div style={{ fontWeight: 500, marginBottom: 4 }}>Hard/Soft delivery</div>
+          <div style={{ color: TOK.muted }}>
+            🔒 Hard: {m.delivery.hardOnTime}/{m.delivery.hardTotal} ·  🎯 Soft: {m.delivery.softOnTime}/{m.delivery.softTotal}
+          </div>
+        </div>
+      )}
+
+      {m.recentFlags.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Recent flags</div>
+          <ul style={{ margin: 0, padding: '0 0 0 18px', fontSize: 12, color: TOK.muted, lineHeight: 1.6 }}>
+            {m.recentFlags.map((f, i) => <li key={i}>{f.message}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {m.activeTasks.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Active tasks ({m.activeTasks.length})</div>
+          <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid ' + TOK.line, borderRadius: 6 }}>
+            {m.activeTasks.map((at, i) => (
+              <div key={i} style={{ padding: '7px 10px', fontSize: 12, borderTop: i ? '1px solid ' + TOK.line : 'none' }}>
+                <div style={{ fontWeight: 500 }}>{at.task.name}</div>
+                <div style={{ fontSize: 11, color: TOK.subtle }}>{at.project.name} › {at.program.name} › {at.workstream.name}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
+  const [selectedPic, setSelectedPic] = useState(null);
+  const [showDifficulty, setShowDifficulty] = useState(false);
+  const indexMap = useMemo(() => computeActivityIndexWithTrend(projects), [projects]);
+  const picCredits = useMemo(() => computeWorkspaceCredits(projects).perPic, [projects]);
+  const picList = Array.from(indexMap.values()).sort((a, b) => (b.composite.score || 0) - (a.composite.score || 0));
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14, gap: 8 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>Activity Dashboard</div>
+          <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>Per-PIC coaching metrics — not for performance reviews. Trailing {DEFAULT_DASHBOARD_WINDOW.actionWeeks}w actions / {DEFAULT_DASHBOARD_WINDOW.taskWeeks}w tasks.</div>
+          {!isOwner && (
+            <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 4 }}>
+              🔒 Sort & window settings managed by workspace owner
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1 }} />
+        {onProjectUpdate && isOwner && (
+          <Btn size="sm" onClick={() => setShowDifficulty(!showDifficulty)} title="Configure workstream difficulty multipliers">⚖️ Difficulty</Btn>
+        )}
+      </div>
+
+      {showDifficulty && onProjectUpdate && isOwner && (
+        <WorkstreamDifficultyConfig projects={projects} onProjectUpdate={onProjectUpdate} onClose={() => setShowDifficulty(false)} />
+      )}
+
+      {picList.length === 0 ? (
+        <div style={{ padding: 30, textAlign: 'center', color: TOK.muted, fontSize: 13, background: TOK.surface, borderRadius: 8 }}>
+          No PIC activity yet. Once tasks have owners and updates, metrics will appear here.
+        </div>
+      ) : (
+        <>
+          <div style={{ background: TOK.surface, borderRadius: 8, marginBottom: 14, overflow: 'hidden', border: '1px solid ' + TOK.line }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: FONT_STACK }}>
+              <thead>
+                <tr style={{ background: TOK.bg }}>
+                  <th style={{ textAlign: 'left', padding: '10px 12px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>PIC</th>
+                  <th style={{ padding: '10px 6px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Delivery</th>
+                  <th style={{ padding: '10px 6px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Communication</th>
+                  <th style={{ padding: '10px 6px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Risk Honesty</th>
+                  <th style={{ padding: '10px 6px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Engagement</th>
+                  <th style={{ padding: '10px 10px', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Composite</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.4 }}>Credits (cp)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {picList.map((m) => (
+                  <PICRow key={m.pic} metrics={m} credits={picCredits.get(m.pic)} onClick={() => setSelectedPic(m.pic)} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
+            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8 }}>Top delivery rates</div>
+            <ActivityChart picList={picList} />
+          </div>
+        </>
+      )}
+
+      {selectedPic && indexMap.get(selectedPic) && (
+        <PICDetailModal metrics={indexMap.get(selectedPic)} onClose={() => setSelectedPic(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ═════════ PORTFOLIO METRICS + COMPONENTS ═════════ */
+
+function computePortfolioMetrics(projects, options = {}) {
+  const now = options.now || new Date();
+  const projectList = Object.values(projects);
+
+  const projectHealth = projectList.map((p) => {
+    const r = rollup(p);
+    let hg = 0, ha = 0, hr = 0;
+    let nextMilestone = null;
+    let earliestUpcomingDate = null;
+    for (const t of collectTasks(p)) {
+      if (t.status === 'Dropped' || t.status === 'Completed') continue;
+      if (t.health === 'red') hr++;
+      else if (t.health === 'amber') ha++;
+      else hg++;
+      if (t.end && t.status !== 'Completed' && t.status !== 'Dropped') {
+        const endDate = new Date(t.end);
+        if (!isNaN(endDate) && endDate >= now) {
+          if (!earliestUpcomingDate || endDate < earliestUpcomingDate) {
+            earliestUpcomingDate = endDate;
+            nextMilestone = t;
+          }
+        }
+      }
+    }
+    let healthLevel = 'green';
+    if (r.overdue > 0 || hr > 0) healthLevel = 'red';
+    else if (ha > 0 || r.pct < 25) healthLevel = 'amber';
+    const sparkline = [];
+    for (let w = 7; w >= 0; w--) {
+      const weekEnd = new Date(now);
+      weekEnd.setDate(weekEnd.getDate() - w * 7);
+      let done = 0, total = 0;
+      for (const t of collectTasks(p)) {
+        if (t.status === 'Dropped') continue;
+        if (!t.end) continue;
+        const tEnd = new Date(t.end);
+        if (isNaN(tEnd)) continue;
+        if (tEnd > weekEnd) continue;
+        total++;
+        if (t.status === 'Completed') done++;
+      }
+      sparkline.push(total > 0 ? Math.round(100 * done / total) : 0);
+    }
+    return {
+      project: p,
+      pct: r.pct,
+      done: r.done,
+      total: r.total,
+      overdue: r.overdue,
+      hg, ha, hr,
+      healthLevel,
+      nextMilestone: nextMilestone ? {
+        name: nextMilestone.name,
+        end: nextMilestone.end,
+        daysUntil: daysBetween(now, new Date(nextMilestone.end)),
+      } : null,
+      sparkline,
+    };
+  });
+
+  const workloadByPic = new Map();
+  for (const project of projectList) {
+    for (const pg of project.programs || []) {
+      for (const ws of pg.workstreams || []) {
+        for (const t of ws.tasks || []) {
+          if (!t.pic) continue;
+          if (t.status === 'Dropped' || t.status === 'Completed') continue;
+          if (!workloadByPic.has(t.pic)) {
+            workloadByPic.set(t.pic, { pic: t.pic, perProject: new Map(), totalActive: 0, overdueCount: 0, statusLevel: 'balanced' });
+          }
+          const wl = workloadByPic.get(t.pic);
+          if (!wl.perProject.has(project.id)) {
+            wl.perProject.set(project.id, { project, count: 0, tasks: [] });
+          }
+          wl.perProject.get(project.id).count++;
+          wl.perProject.get(project.id).tasks.push(t);
+          wl.totalActive++;
+          if (t.end && new Date(t.end) < now) wl.overdueCount++;
+        }
+      }
+    }
+  }
+  for (const wl of workloadByPic.values()) {
+    if (wl.totalActive >= 6 || wl.overdueCount >= 2) wl.statusLevel = 'overloaded';
+    else if (wl.totalActive >= 3) wl.statusLevel = 'stretched';
+    else wl.statusLevel = 'balanced';
+  }
+  const workload = Array.from(workloadByPic.values()).sort((a, b) => b.totalActive - a.totalActive);
+
+  const calendar = [];
+  for (let w = 0; w < 12; w++) {
+    const weekStart = new Date(now);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1 + w * 7);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    let hardCount = 0, softCount = 0, actionCount = 0;
+    const items = [];
+
+    for (const project of projectList) {
+      for (const pg of project.programs || []) {
+        for (const ws of pg.workstreams || []) {
+          for (const t of ws.tasks || []) {
+            if (!t.end || t.status === 'Completed' || t.status === 'Dropped') continue;
+            const end = new Date(t.end);
+            if (end >= weekStart && end <= weekEnd) {
+              const deadlineType = t.deadlineType || DEFAULT_DEADLINE_TYPE;
+              if (deadlineType === 'hard') hardCount++; else softCount++;
+              items.push({ kind: deadlineType === 'hard' ? 'task-hard' : 'task-soft', name: t.name, project: project.name, pic: t.pic });
+            }
+          }
+        }
+      }
+      for (const a of project.actionItems || []) {
+        if (!a.dueDate || a.status === 'Done' || a.status === 'Cancelled') continue;
+        const due = new Date(a.dueDate);
+        if (due >= weekStart && due <= weekEnd) {
+          actionCount++;
+          items.push({ kind: 'action', name: a.title, project: project.name, pic: a.pic });
+        }
+      }
+    }
+    const total = hardCount + softCount + actionCount;
+    let intensity = 'low';
+    if (total >= 15) intensity = 'peak';
+    else if (total >= 8) intensity = 'high';
+    else if (total >= 3) intensity = 'medium';
+
+    calendar.push({
+      weekStart, weekEnd, hardCount, softCount, actionCount, total, intensity, items,
+      label: `Week of ${fmtDateShort(weekStart.toISOString().slice(0, 10))}`,
+    });
+  }
+
+  const signals = [];
+  for (const wl of workload) {
+    if (wl.totalActive >= 6) {
+      signals.push({
+        severity: 'high',
+        kind: 'overload',
+        message: `${wl.pic} has ${wl.totalActive} active tasks across ${wl.perProject.size} project${wl.perProject.size === 1 ? '' : 's'}`,
+        suggestion: 'Consider redistributing or descoping',
+      });
+    }
+    if (wl.overdueCount >= 2) {
+      signals.push({
+        severity: 'high',
+        kind: 'overdue',
+        message: `${wl.pic} has ${wl.overdueCount} overdue tasks`,
+        suggestion: 'Direct check-in to identify blockers',
+      });
+    }
+  }
+  for (const ph of projectHealth) {
+    if (ph.total > 0 && (ph.overdue / ph.total) > 0.30) {
+      signals.push({
+        severity: 'high',
+        kind: 'project_overdue',
+        message: `${ph.project.name}: ${ph.overdue} of ${ph.total} milestones overdue (${Math.round(100 * ph.overdue / ph.total)}%)`,
+        suggestion: 'Project may need re-planning',
+      });
+    }
+    for (const pg of ph.project.programs || []) {
+      for (const ws of pg.workstreams || []) {
+        let amber = 0, red = 0;
+        for (const t of ws.tasks || []) {
+          if (t.status === 'Dropped') continue;
+          if (t.health === 'red') red++;
+          else if (t.health === 'amber') amber++;
+        }
+        if (red >= 2 || (amber + red) >= 3) {
+          signals.push({
+            severity: red >= 2 ? 'high' : 'medium',
+            kind: 'workstream_health',
+            message: `${ph.project.name} › ${pg.name} › ${ws.name}: ${red} off-track, ${amber} at-risk`,
+            suggestion: 'Workstream needs review',
+          });
+        }
+      }
+    }
+  }
+  for (const wk of calendar) {
+    if (wk.intensity === 'peak') {
+      signals.push({
+        severity: 'medium',
+        kind: 'peak_week',
+        message: `${wk.label}: ${wk.total} deadlines (${wk.hardCount} hard, ${wk.softCount} soft, ${wk.actionCount} actions)`,
+        suggestion: 'Negotiate moving non-critical deadlines earlier',
+      });
+    }
+  }
+  for (const project of projectList) {
+    for (const pg of project.programs || []) {
+      for (const ws of pg.workstreams || []) {
+        for (const t of ws.tasks || []) {
+          for (const u of (t.updates || [])) {
+            if (!u.isBlocker || !u.resolvedAt) continue;
+            if (u.resolvedBy !== u.author) continue;
+            const hours = (new Date(u.resolvedAt) - new Date(u.timestamp)) / 3600000;
+            if (hours > 0 && hours < 24) {
+              signals.push({
+                severity: 'low',
+                kind: 'silent_struggle',
+                message: `${u.author} self-resolved blocker on "${t.name}" within ${Math.round(hours)}h`,
+                suggestion: 'May indicate struggling alone — check in',
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  const sevOrder = { high: 0, medium: 1, low: 2 };
+  signals.sort((a, b) => sevOrder[a.severity] - sevOrder[b.severity]);
+
+  return { projectHealth, workload, calendar, signals };
+}
+
+function Sparkline({ data, width = 80, height = 24, color = TOK.accent }) {
+  if (!data || data.length === 0) return null;
+  const max = Math.max(100, ...data);
+  const min = 0;
+  const dx = width / Math.max(1, data.length - 1);
+  const pts = data.map((v, i) => {
+    const x = i * dx;
+    const y = height - ((v - min) / (max - min || 1)) * height;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return (
+    <svg width={width} height={height} style={{ display: 'block' }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} />
+    </svg>
+  );
+}
+
+function HealthHeatmap({ projectHealth, onProjectClick }) {
+  return (
+    <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
+      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4, color: TOK.muted }}>Project Health</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+        {projectHealth.map((ph) => {
+          const c = COLOR_MAP[ph.healthLevel] || COLOR_MAP.subtle;
+          return (
+            <div key={ph.project.id} onClick={() => onProjectClick && onProjectClick(ph.project.id)} style={{
+              padding: 12, background: TOK.surface, border: `2px solid ${c.fg}`, borderRadius: 8, cursor: 'pointer',
+            }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = TOK.bg)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = TOK.surface)}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{ph.project.name}</div>
+                <Sparkline data={ph.sparkline} width={56} height={18} color={c.fg} />
+              </div>
+              <div style={{ fontSize: 11, color: TOK.muted, marginTop: 6 }}>
+                {ph.pct}% · {ph.done}/{ph.total}{ph.overdue ? ` · ${ph.overdue} overdue` : ''}
+              </div>
+              <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
+                🟢{ph.hg} 🟡{ph.ha} 🔴{ph.hr}
+              </div>
+              {ph.nextMilestone && (
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 6 }}>
+                  Next: <span style={{ color: TOK.ink }}>{ph.nextMilestone.name}</span> in {ph.nextMilestone.daysUntil}d
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WorkloadDistribution({ workload }) {
+  if (!workload.length) return null;
+  const maxActive = Math.max(...workload.map((w) => w.totalActive), 1);
+  const STATUS_COLOR = {
+    overloaded: { fg: TOK.healthRed, bg: TOK.healthRedBg },
+    stretched: { fg: TOK.healthAmber, bg: TOK.healthAmberBg },
+    balanced: { fg: TOK.healthGreen, bg: TOK.healthGreenBg },
+  };
+  return (
+    <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
+      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4, color: TOK.muted }}>Workload Distribution</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {workload.map((wl) => {
+          const sc = STATUS_COLOR[wl.statusLevel];
+          return (
+            <div key={wl.pic} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ width: 90, fontSize: 12, fontWeight: 500 }}>{wl.pic}</div>
+              <div style={{ flex: 1, height: 18, background: TOK.bg, borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
+                {Array.from(wl.perProject.values()).map((pp, i) => (
+                  <div key={i} title={`${pp.project.name}: ${pp.count} tasks`}
+                    style={{ width: `${100 * pp.count / maxActive}%`, background: sc.fg, opacity: 0.4 + 0.6 * (i % 3 === 0 ? 1 : i % 3 === 1 ? 0.7 : 0.5), borderRight: '1px solid ' + TOK.surface }} />
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: TOK.muted, minWidth: 56 }}>{wl.totalActive} act</div>
+              <div style={{ fontSize: 10, fontWeight: 500, padding: '2px 8px', borderRadius: 999, color: sc.fg, background: sc.bg }}>
+                {wl.statusLevel}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PeakSeasonCalendar({ calendar }) {
+  const [hover, setHover] = useState(null);
+  const INTENSITY_BG = {
+    peak: '#A32D2D',
+    high: '#E0A03C',
+    medium: '#7AAA7A',
+    low: '#E5E3DC',
+  };
+  return (
+    <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
+      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4, color: TOK.muted }}>Peak Season (Next 12 Weeks)</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 4 }}>
+        {calendar.map((wk, i) => (
+          <div key={i}
+            onMouseEnter={() => setHover(i)}
+            onMouseLeave={() => setHover(null)}
+            style={{
+              padding: 6, borderRadius: 4, background: INTENSITY_BG[wk.intensity],
+              color: wk.intensity === 'peak' || wk.intensity === 'high' ? '#fff' : TOK.ink,
+              fontSize: 10, textAlign: 'center', cursor: 'default', minHeight: 38, position: 'relative',
+            }}>
+            <div style={{ fontWeight: 500 }}>W{i + 1}</div>
+            <div style={{ marginTop: 2, opacity: 0.85 }}>{wk.total}</div>
+          </div>
+        ))}
+      </div>
+      {hover != null && (
+        <div style={{ marginTop: 10, padding: 10, background: TOK.bg, borderRadius: 6, fontSize: 12 }}>
+          <div style={{ fontWeight: 500 }}>{calendar[hover].label}</div>
+          <div style={{ color: TOK.muted, marginTop: 2 }}>
+            {calendar[hover].hardCount} hard · {calendar[hover].softCount} soft · {calendar[hover].actionCount} actions
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StressSignals({ signals }) {
+  const SEV_BG = {
+    high: TOK.healthRedBg,
+    medium: TOK.healthAmberBg,
+    low: TOK.bg,
+  };
+  const SEV_FG = {
+    high: TOK.healthRed,
+    medium: TOK.healthAmber,
+    low: TOK.muted,
+  };
+  return (
+    <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
+      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4, color: TOK.muted }}>Stress Signals ({signals.length})</div>
+      {signals.length === 0 && (
+        <div style={{ fontSize: 12, color: TOK.muted }}>No stress signals detected. 👍</div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {signals.map((s, i) => (
+          <div key={i} style={{ padding: '8px 10px', background: SEV_BG[s.severity], borderRadius: 6, borderLeft: `3px solid ${SEV_FG[s.severity]}` }}>
+            <div style={{ fontSize: 12, color: TOK.ink, fontWeight: 500 }}>{s.message}</div>
+            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{s.suggestion}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PortfolioView({ projects, onProjectClick }) {
+  const data = useMemo(() => computePortfolioMetrics(projects), [projects]);
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>Portfolio Overview</div>
+        <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>Workspace-owner view across all projects.</div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <HealthHeatmap projectHealth={data.projectHealth} onProjectClick={onProjectClick} />
+        <WorkloadDistribution workload={data.workload} />
+        <PeakSeasonCalendar calendar={data.calendar} />
+        <StressSignals signals={data.signals} />
+      </div>
+    </div>
+  );
+}
+
+/* ═════════ CREDIT REPORT (v25 — owner-only) ═════════ */
+
+// Small summary card for the report header
+function SummaryCard({ label, value, sub, accent }) {
+  return (
+    <div style={{
+      background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, padding: 12,
+    }}>
+      <div style={{ fontSize: 11, color: TOK.muted, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 500, color: accent || TOK.ink, marginBottom: 2 }}>{value}</div>
+      <div style={{ fontSize: 11, color: TOK.subtle }}>{sub}</div>
+    </div>
+  );
+}
+
+// Sortable column header for PIC table
+function SortableHeader({ label, field, sortBy, onSort, align = 'left' }) {
+  const isActive = sortBy === field;
+  return (
+    <div onClick={() => onSort(field)}
+      style={{
+        textAlign: align, cursor: 'pointer', userSelect: 'none',
+        color: isActive ? TOK.accent : TOK.muted,
+        display: 'flex', alignItems: 'center',
+        justifyContent: align === 'right' ? 'flex-end' : 'flex-start', gap: 3,
+      }}>
+      <span>{label}</span>
+      {isActive && <span style={{ fontSize: 9 }}>▼</span>}
+    </div>
+  );
+}
+
+function CreditReportView({ projects, isOwner }) {
+  // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
+  const thisYear = new Date().getFullYear();
+  const allYears = useMemo(() => {
+    const years = new Set();
+    for (const proj of Object.values(projects || {})) {
+      if (typeof proj.creditYear === 'number') years.add(proj.creditYear);
+    }
+    if (years.size === 0) years.add(thisYear);
+    years.add(thisYear);
+    return Array.from(years).sort((a, b) => b - a);
+  }, [projects, thisYear]);
+
+  const [selectedYear, setSelectedYear] = useState(allYears[0] || thisYear);
+  const [sortBy, setSortBy] = useState('projected');
+  const [selectedPic, setSelectedPic] = useState(null);
+
+  const report = useMemo(() => computeWorkspaceCredits(projects, selectedYear), [projects, selectedYear]);
+
+  const picRows = useMemo(() => {
+    const rows = Array.from(report.perPic.entries()).map(([name, val]) => ({
+      name,
+      earned: val.earned,
+      projected: val.projected,
+      pct: report.totalCp > 0 ? (val.projected / report.totalCp) * 100 : 0,
+      pctEarned: val.projected > 0 ? (val.earned / val.projected) * 100 : 0,
+    }));
+    if (sortBy === 'name') rows.sort((a, b) => a.name.localeCompare(b.name));
+    else if (sortBy === 'earned') rows.sort((a, b) => b.earned - a.earned);
+    else if (sortBy === 'pct') rows.sort((a, b) => b.pct - a.pct);
+    else rows.sort((a, b) => b.projected - a.projected);
+    return rows;
+  }, [report, sortBy]);
+
+  const drilldown = useMemo(() => {
+    if (!selectedPic) return null;
+    const byProject = new Map();
+    for (const [projId, projData] of report.perProject.entries()) {
+      const myEntries = projData.breakdown.filter((b) => b.picName === selectedPic);
+      if (myEntries.length === 0) continue;
+      const proj = projData.project;
+      const projTotalProjected = myEntries.reduce((s, e) => s + e.projected, 0);
+      const projTotalActual = myEntries.reduce((s, e) => s + e.actual, 0);
+      const byProgram = new Map();
+      for (const e of myEntries) {
+        const pgKey = e.programId || '__lead__';
+        if (!byProgram.has(pgKey)) {
+          byProgram.set(pgKey, { name: e.programName, entries: [], projected: 0, actual: 0, isLead: e.isProjectLead });
+        }
+        const pg = byProgram.get(pgKey);
+        pg.entries.push(e);
+        pg.projected += e.projected;
+        pg.actual += e.actual;
+      }
+      byProject.set(projId, {
+        project: proj,
+        projected: projTotalProjected,
+        actual: projTotalActual,
+        programs: Array.from(byProgram.values()).sort((a, b) => b.projected - a.projected),
+      });
+    }
+    return Array.from(byProject.values()).sort((a, b) => b.projected - a.projected);
+  }, [selectedPic, report]);
+
+  const summary = useMemo(() => {
+    let projectCount = 0;
+    let lockedCount = 0;
+    let totalEarned = 0;
+    let totalProjected = 0;
+    for (const [, pd] of report.perProject.entries()) {
+      projectCount++;
+      if (pd.project.weightsLocked) lockedCount++;
+    }
+    for (const [, val] of report.perPic.entries()) {
+      totalEarned += val.earned;
+      totalProjected += val.projected;
+    }
+    const overallEarnedPct = totalProjected > 0 ? (totalEarned / totalProjected) * 100 : 0;
+    return { projectCount, lockedCount, totalEarned, totalProjected, overallEarnedPct };
+  }, [report]);
+
+  // Owner gate AFTER all hooks
+  if (!isOwner) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
+        Credit report is workspace-owner only.
+      </div>
+    );
+  }
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const picSheet = picRows.map((r) => ({
+      'PIC': sanitizeCell(r.name),
+      'Earned (cp)': Math.round(r.earned * 100) / 100,
+      'Projected (cp)': Math.round(r.projected * 100) / 100,
+      '% of total': Math.round(r.pct * 10) / 10 + '%',
+      '% earned (vs projected)': Math.round(r.pctEarned * 10) / 10 + '%',
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(picSheet), 'PIC summary');
+
+    const fullRows = [];
+    for (const [, pd] of report.perProject.entries()) {
+      for (const b of pd.breakdown) {
+        fullRows.push({
+          'Project': sanitizeCell(pd.project.name),
+          'Program': sanitizeCell(b.programName),
+          'Workstream': sanitizeCell(b.workstreamName || ''),
+          'Task': sanitizeCell(b.taskName),
+          'Status': b.taskStatus || (b.isProjectLead ? 'Project Lead' : ''),
+          'PIC': sanitizeCell(b.picName),
+          'Share (%)': Math.round(b.sharePct * 10) / 10,
+          'Task pool (cp)': Math.round((b.taskCp || 0) * 100) / 100,
+          'Projected (cp)': Math.round(b.projected * 100) / 100,
+          'Earned (cp)': Math.round(b.actual * 100) / 100,
+          'Credited?': b.credited ? 'Yes' : 'No',
+        });
+      }
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(fullRows), 'Full breakdown');
+
+    const projRows = [];
+    for (const [, pd] of report.perProject.entries()) {
+      projRows.push({
+        'Project': sanitizeCell(pd.project.name),
+        'Year': pd.project.creditYear || '',
+        'Total pool (cp)': pd.totalCp,
+        'Project Lead': sanitizeCell(pd.project.projectLead || '—'),
+        'Lead share (%)': pd.leadSharePct,
+        'Lead pool (cp)': Math.round(pd.leadCp * 100) / 100,
+        'Locked?': pd.project.weightsLocked ? 'Yes' : 'No',
+      });
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(projRows), 'Projects');
+
+    XLSX.writeFile(wb, `Credit_Report_${selectedYear}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, fontFamily: FONT_STACK, background: TOK.bg }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>
+              Credit Report <span style={{ fontSize: 11, color: TOK.accent, fontWeight: 500, marginLeft: 6 }}>OWNER ONLY</span>
+            </h2>
+            <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4, lineHeight: 1.5 }}>
+              Year-end performance attribution. <strong>Earned</strong> = credit from Completed tasks (real). <strong>Projected</strong> = credit if all tasks complete. Effort-based: only Completed tasks earn credit, except Project Lead (proportional to overall completion).
+            </div>
+          </div>
+          <select
+            value={selectedYear}
+            onChange={(e) => { setSelectedYear(Number(e.target.value)); setSelectedPic(null); }}
+            style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '8px 12px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, outline: 'none' }}>
+            {allYears.map((y) => <option key={y} value={y}>Year {y}</option>)}
+          </select>
+          <Btn variant="primary" onClick={exportExcel} disabled={picRows.length === 0}>
+            <Download size={12} /> Export Excel
+          </Btn>
+        </div>
+
+        {/* Summary cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+          <SummaryCard label="Total credit pool" value={`${Math.round(summary.totalProjected * 10) / 10} cp`} sub={`${summary.projectCount} project${summary.projectCount === 1 ? '' : 's'}`} />
+          <SummaryCard label="Earned so far" value={`${Math.round(summary.totalEarned * 10) / 10} cp`} sub={`${Math.round(summary.overallEarnedPct * 10) / 10}% of projected`} accent="#356512" />
+          <SummaryCard label="Locked projects" value={`${summary.lockedCount} / ${summary.projectCount}`} sub={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? 'All locked' : 'Partial'} accent={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? '#A32D2D' : TOK.muted} />
+          <SummaryCard label="Distinct PICs" value={String(picRows.length)} sub="With credit allocation" />
+        </div>
+
+        {picRows.length === 0 ? (
+          <div style={{ background: TOK.surface, padding: 40, borderRadius: 8, textAlign: 'center', border: '1px solid ' + TOK.line }}>
+            <div style={{ fontSize: 32 }}>📊</div>
+            <div style={{ fontSize: 14, color: TOK.muted, marginTop: 8 }}>
+              No credit allocation for year {selectedYear} yet.
+            </div>
+            <div style={{ fontSize: 12, color: TOK.subtle, marginTop: 6, maxWidth: 400, margin: '6px auto 0', lineHeight: 1.5 }}>
+              Set <strong>Credit points</strong>, <strong>Year</strong>, and weights in Project Settings + Outline view. PICs with credit shares on tasks will appear here.
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Per-PIC table */}
+            <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, overflow: 'hidden', marginBottom: 16 }}>
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr 1fr 0.5fr', gap: 10,
+                padding: '10px 14px', background: TOK.bg, fontSize: 11, fontWeight: 500,
+                color: TOK.muted, letterSpacing: 0.3, textTransform: 'uppercase', borderBottom: '1px solid ' + TOK.line,
+              }}>
+                <SortableHeader label="PIC" field="name" sortBy={sortBy} onSort={setSortBy} align="left" />
+                <SortableHeader label="Earned (cp)" field="earned" sortBy={sortBy} onSort={setSortBy} align="right" />
+                <SortableHeader label="Projected (cp)" field="projected" sortBy={sortBy} onSort={setSortBy} align="right" />
+                <SortableHeader label="% of total" field="pct" sortBy={sortBy} onSort={setSortBy} align="right" />
+                <div style={{ textAlign: 'right' }}>% earned</div>
+                <div></div>
+              </div>
+              {picRows.map((r) => (
+                <div key={r.name}
+                  onClick={() => setSelectedPic(selectedPic === r.name ? null : r.name)}
+                  style={{
+                    display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr 1fr 0.5fr', gap: 10,
+                    padding: '12px 14px', borderBottom: '1px solid ' + TOK.line,
+                    cursor: 'pointer', alignItems: 'center',
+                    background: selectedPic === r.name ? '#E6F1FB' : 'transparent',
+                    transition: 'background .12s',
+                  }}
+                  onMouseEnter={(e) => { if (selectedPic !== r.name) e.currentTarget.style.background = TOK.bg; }}
+                  onMouseLeave={(e) => { if (selectedPic !== r.name) e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: '#356512', fontWeight: 500 }}>
+                    {Math.round(r.earned * 100) / 100}
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.ink }}>
+                    {Math.round(r.projected * 100) / 100}
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.muted }}>
+                    {Math.round(r.pct * 10) / 10}%
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ display: 'inline-block', width: 60, height: 5, background: 'rgba(0,0,0,0.08)', borderRadius: 999, overflow: 'hidden', verticalAlign: 'middle' }}>
+                      <div style={{ width: `${Math.min(100, r.pctEarned)}%`, height: '100%', background: '#356512' }} />
+                    </div>
+                    <span style={{ fontSize: 11, color: TOK.muted, marginLeft: 6 }}>{Math.round(r.pctEarned)}%</span>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: 11, color: TOK.subtle }}>
+                    {selectedPic === r.name ? '▼' : '▶'}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Drill-down panel */}
+            {selectedPic && drilldown && drilldown.length > 0 && (
+              <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>
+                    {selectedPic} — Breakdown
+                  </h3>
+                  <span style={{ fontSize: 12, color: TOK.muted }}>
+                    ({Math.round((picRows.find((r) => r.name === selectedPic)?.earned || 0) * 10) / 10} earned · {Math.round((picRows.find((r) => r.name === selectedPic)?.projected || 0) * 10) / 10} projected)
+                  </span>
+                  <span style={{ flex: 1 }} />
+                  <Btn size="sm" onClick={() => setSelectedPic(null)}>Close</Btn>
+                </div>
+                {drilldown.map((projData, pi) => (
+                  <div key={pi} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: pi < drilldown.length - 1 ? '1px solid ' + TOK.line : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 500 }}>{projData.project.name}</span>
+                      <span style={{ fontSize: 11, color: TOK.muted }}>Year {projData.project.creditYear || '—'}</span>
+                      <span style={{ flex: 1 }} />
+                      <span style={{ fontSize: 12, color: '#356512', fontWeight: 500 }}>
+                        {Math.round(projData.actual * 100) / 100} cp earned
+                      </span>
+                      <span style={{ fontSize: 11, color: TOK.muted }}>
+                        / {Math.round(projData.projected * 100) / 100} projected
+                      </span>
+                    </div>
+                    {projData.programs.map((pg, pgi) => (
+                      <div key={pgi} style={{ marginLeft: 16, marginBottom: 8, paddingLeft: 12, borderLeft: '2px solid ' + (pg.isLead ? '#E6B800' : TOK.line) }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 12 }}>
+                          <span style={{ fontWeight: 500, color: pg.isLead ? '#856100' : TOK.programFg }}>
+                            {pg.isLead ? '👑 ' : ''}{pg.name}
+                          </span>
+                          <span style={{ flex: 1 }} />
+                          <span style={{ color: '#356512', fontWeight: 500 }}>
+                            {Math.round(pg.actual * 100) / 100} / {Math.round(pg.projected * 100) / 100} cp
+                          </span>
+                        </div>
+                        {!pg.isLead && (
+                          <div style={{ marginLeft: 12, fontSize: 11, color: TOK.muted }}>
+                            {pg.entries.slice(0, 20).map((e, ei) => (
+                              <div key={ei} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+                                <span style={{ color: TOK.subtle, minWidth: 70 }}>{e.workstreamName}</span>
+                                <span style={{ flex: 1, color: e.credited ? TOK.ink : TOK.muted, textDecoration: e.taskStatus === 'Dropped' ? 'line-through' : 'none' }}>
+                                  {e.credited ? '✓ ' : '○ '}{e.taskName}
+                                  {' '}<span style={{ fontSize: 10, color: TOK.subtle }}>({Math.round(e.sharePct * 10) / 10}%)</span>
+                                </span>
+                                <span style={{ color: e.credited ? '#356512' : TOK.subtle, fontVariantNumeric: 'tabular-nums' }}>
+                                  {Math.round(e.projected * 100) / 100} cp
+                                </span>
+                              </div>
+                            ))}
+                            {pg.entries.length > 20 && (
+                              <div style={{ fontSize: 10, color: TOK.subtle, fontStyle: 'italic', marginTop: 4 }}>
+                                +{pg.entries.length - 20} more tasks (see Excel export)
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {pg.isLead && (
+                          <div style={{ marginLeft: 12, fontSize: 11, color: TOK.subtle, fontStyle: 'italic' }}>
+                            Awarded proportional to overall project completion (effort tied to lead role oversight).
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        <div style={{ marginTop: 14, fontSize: 11, color: TOK.subtle, lineHeight: 1.6 }}>
+          <strong>Read this report:</strong> Sort by any column. Click a PIC row to drill down by project → program → tasks. Excel export contains 3 sheets: PIC summary, full task breakdown, and project metadata (lock status, lead info). Use export for year-end calibration discussions and HR review.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═════════ BRIEFING PACK ═════════ */
+
+function generateBriefingMarkdown({ projects, daysBack = 7, ownerName = null }) {
+  const now = new Date();
+  const from = new Date(now);
+  from.setDate(from.getDate() - daysBack);
+  from.setHours(0, 0, 0, 0);
+
+  const inWindow = (ts) => {
+    if (!ts) return false;
+    const d = new Date(ts);
+    return !isNaN(d) && d >= from && d <= now;
+  };
+  const inWindowDate = (dateStr) => {
+    if (!dateStr) return false;
+    const d = parseDate(dateStr);
+    return d && d >= from && d <= now;
+  };
+
+  const lines = [];
+  const headerDate = `${fmtDate(from)} → ${fmtDate(now)}`;
+  lines.push(`# 📋 Weekly Briefing — ${headerDate}`);
+  lines.push('');
+  if (ownerName) {
+    lines.push(`**Owner:** ${ownerName}`);
+    lines.push('');
+  }
+
+  const newDecisions = [];
+  const decayedDecisions = [];
+  const newActions = [];
+  const completedActions = [];
+  const newBlockers = [];
+  const resolvedBlockers = [];
+  const overdueTasks = [];
+  const completedTasks = [];
+
+  for (const project of Object.values(projects)) {
+    for (const d of (project.decisions || [])) {
+      const decay = getDecisionDecay(d, now);
+      if (decay.decayed) decayedDecisions.push({ project, decision: d, decay });
+      if (inWindowDate(d.date)) newDecisions.push({ project, decision: d });
+    }
+    for (const a of (project.actionItems || [])) {
+      if (inWindow(a.timestamp)) newActions.push({ project, action: a });
+      if (a.status === 'Done' && inWindow(a.completedAt || a.timestamp)) completedActions.push({ project, action: a });
+    }
+    for (const pg of project.programs || []) {
+      for (const ws of pg.workstreams || []) {
+        for (const t of ws.tasks || []) {
+          for (const u of (t.updates || [])) {
+            if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
+            if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
+          }
+          if (t.end && t.status !== 'Completed' && t.status !== 'Dropped' && new Date(t.end) < now) {
+            const lateDays = daysBetween(t.end, now);
+            if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
+          }
+          if (t.status === 'Completed' && t.end && inWindowDate(t.end)) {
+            completedTasks.push({ project, program: pg, workstream: ws, task: t });
+          }
+        }
+      }
+    }
+  }
+
+  lines.push(`## 📊 At a glance`);
+  lines.push('');
+  lines.push(`- **${newDecisions.length}** new decision${newDecisions.length === 1 ? '' : 's'} logged this week`);
+  lines.push(`- **${newActions.length}** new action item${newActions.length === 1 ? '' : 's'} created · **${completedActions.length}** completed`);
+  lines.push(`- **${newBlockers.length}** new blocker${newBlockers.length === 1 ? '' : 's'} raised · **${resolvedBlockers.length}** resolved`);
+  if (completedTasks.length > 0) lines.push(`- ✅ **${completedTasks.length}** milestone${completedTasks.length === 1 ? '' : 's'} completed`);
+  if (overdueTasks.length > 0) lines.push(`- 🔴 **${overdueTasks.length}** milestone${overdueTasks.length === 1 ? '' : 's'} overdue right now`);
+  if (decayedDecisions.length > 0) lines.push(`- 🕐 **${decayedDecisions.length}** decision${decayedDecisions.length === 1 ? '' : 's'} need review (past expected review date)`);
+  lines.push('');
+
+  const talkingPoints = [];
+  if (overdueTasks.length > 0) {
+    const top = overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 3);
+    for (const o of top) talkingPoints.push(`**${o.task.name}** is ${o.lateDays}d overdue (${o.project.name})`);
+  }
+  if (decayedDecisions.length > 0) {
+    talkingPoints.push(`Review ${decayedDecisions.length} decision${decayedDecisions.length === 1 ? '' : 's'} past expected review date`);
+  }
+  const unresolvedNew = newBlockers.filter((b) => !b.update.resolvedAt);
+  if (unresolvedNew.length > 0) {
+    talkingPoints.push(`${unresolvedNew.length} blocker${unresolvedNew.length === 1 ? '' : 's'} still unresolved`);
+  }
+  if (newDecisions.length === 0 && newActions.length === 0) {
+    talkingPoints.push(`Quiet week — confirm each program is making progress`);
+  }
+  if (talkingPoints.length > 0) {
+    lines.push(`## 💬 Suggested talking points`);
+    lines.push('');
+    for (const tp of talkingPoints) lines.push(`- ${tp}`);
+    lines.push('');
+  }
+
+  if (overdueTasks.length > 0) {
+    lines.push(`## 🔴 Overdue right now`);
+    lines.push('');
+    lines.push(`| Milestone | Program | PIC | Days late |`);
+    lines.push(`|---|---|---|---|`);
+    overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 10).forEach((o) => {
+      lines.push(`| ${o.task.name} | ${o.program.name} | ${o.task.pic || '—'} | ${o.lateDays}d |`);
+    });
+    if (overdueTasks.length > 10) lines.push(`| _… and ${overdueTasks.length - 10} more_ | | | |`);
+    lines.push('');
+  }
+
+  if (decayedDecisions.length > 0) {
+    lines.push(`## 🕐 Decisions need review`);
+    lines.push('');
+    lines.push(`| Decision | Project | Days overdue | Decided by |`);
+    lines.push(`|---|---|---|---|`);
+    decayedDecisions.sort((a, b) => b.decay.daysOverdue - a.decay.daysOverdue).slice(0, 10).forEach((d) => {
+      lines.push(`| ${(d.decision.text || '').slice(0, 80)} | ${d.project.name} | ${d.decay.daysOverdue}d | ${(d.decision.decidedBy || []).join(', ')} |`);
+    });
+    lines.push('');
+  }
+
+  if (newDecisions.length > 0) {
+    lines.push(`## 📋 New decisions this week`);
+    lines.push('');
+    for (const { project, decision } of newDecisions) {
+      lines.push(`- **${decision.text}** _(${project.name})_`);
+      const meta = [];
+      if (decision.decidedBy && decision.decidedBy.length) meta.push(`by ${decision.decidedBy.join(', ')}`);
+      if (decision.meetingRef) meta.push(decision.meetingRef);
+      if (meta.length) lines.push(`  - ${meta.join(' · ')}`);
+    }
+    lines.push('');
+  }
+
+  const activeBlockers = newBlockers.filter((b) => !b.update.resolvedAt);
+  if (activeBlockers.length > 0) {
+    lines.push(`## 🚩 Active blockers`);
+    lines.push('');
+    for (const b of activeBlockers) {
+      lines.push(`- **${b.task.name}** (${b.project.name}): ${b.update.text || ''}`);
+      lines.push(`  - Raised by ${b.update.author} on ${fmtDateTime(b.update.timestamp)}`);
+    }
+    lines.push('');
+  }
+
+  if (resolvedBlockers.length > 0) {
+    lines.push(`## ✓ Blockers resolved this week`);
+    lines.push('');
+    for (const b of resolvedBlockers) {
+      lines.push(`- ${b.task.name} (${b.project.name}) — resolved by ${b.update.resolvedBy}`);
+    }
+    lines.push('');
+  }
+
+  if (completedTasks.length > 0 || completedActions.length > 0) {
+    lines.push(`## ✅ Completed this week`);
+    lines.push('');
+    for (const c of completedTasks) lines.push(`- 🎯 ${c.task.name} (${c.project.name})`);
+    for (const c of completedActions) lines.push(`- ✓ ${c.action.title} (${c.project.name})`);
+    lines.push('');
+  }
+
+  lines.push(`---`);
+  lines.push('');
+  lines.push(`_Generated ${fmtDateTime(now)} from AF Master Project Tracker._`);
+
+  return lines.join('\n');
+}
+
+function generateBriefingHtml({ projects, daysBack = 7, ownerName = null }) {
+  const FONT = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;`;
+  const cell = `border: 1px solid #e5e3dc; padding: 8px 10px; vertical-align: top;`;
+  const cellHead = `${cell} background: #f7f5ef; font-weight: 600; text-align: left;`;
+
+  const now = new Date();
+  const from = new Date(now);
+  from.setDate(from.getDate() - daysBack);
+  from.setHours(0, 0, 0, 0);
+
+  const inWindow = (ts) => {
+    if (!ts) return false;
+    const d = new Date(ts);
+    return !isNaN(d) && d >= from && d <= now;
+  };
+  const inWindowDate = (dateStr) => {
+    if (!dateStr) return false;
+    const d = parseDate(dateStr);
+    return d && d >= from && d <= now;
+  };
+
+  const newDecisions = [];
+  const decayedDecisions = [];
+  const newActions = [];
+  const completedActions = [];
+  const newBlockers = [];
+  const resolvedBlockers = [];
+  const overdueTasks = [];
+  const completedTasks = [];
+
+  for (const project of Object.values(projects)) {
+    for (const d of (project.decisions || [])) {
+      const decay = getDecisionDecay(d, now);
+      if (decay.decayed) decayedDecisions.push({ project, decision: d, decay });
+      if (inWindowDate(d.date)) newDecisions.push({ project, decision: d });
+    }
+    for (const a of (project.actionItems || [])) {
+      if (inWindow(a.timestamp)) newActions.push({ project, action: a });
+      if (a.status === 'Done' && inWindow(a.completedAt || a.timestamp)) completedActions.push({ project, action: a });
+    }
+    for (const pg of project.programs || []) {
+      for (const ws of pg.workstreams || []) {
+        for (const t of ws.tasks || []) {
+          for (const u of (t.updates || [])) {
+            if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
+            if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
+          }
+          if (t.end && t.status !== 'Completed' && t.status !== 'Dropped' && new Date(t.end) < now) {
+            const lateDays = daysBetween(t.end, now);
+            if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
+          }
+          if (t.status === 'Completed' && t.end && inWindowDate(t.end)) {
+            completedTasks.push({ project, program: pg, workstream: ws, task: t });
+          }
+        }
+      }
+    }
+  }
+
+  const parts = [];
+  const headerDate = `${fmtDate(from)} → ${fmtDate(now)}`;
+  parts.push(`<div style="${FONT} font-size: 14px; line-height: 1.55; color: #1a1a19; max-width: 900px;">`);
+  parts.push(`<h1 style="font-size: 22px; font-weight: 600; margin: 0 0 8px;">📋 Weekly Briefing — ${escapeHtml(headerDate)}</h1>`);
+  if (ownerName) {
+    parts.push(`<p style="margin: 0 0 16px; color: #6e6c66;"><strong>Owner:</strong> ${escapeHtml(ownerName)}</p>`);
+  }
+
+  parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">📊 At a glance</h2>`);
+  parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+  parts.push(`<li><strong>${newDecisions.length}</strong> new decision${newDecisions.length === 1 ? '' : 's'} logged this week</li>`);
+  parts.push(`<li><strong>${newActions.length}</strong> new action${newActions.length === 1 ? '' : 's'} created · <strong>${completedActions.length}</strong> completed</li>`);
+  parts.push(`<li><strong>${newBlockers.length}</strong> new blocker${newBlockers.length === 1 ? '' : 's'} raised · <strong>${resolvedBlockers.length}</strong> resolved</li>`);
+  if (completedTasks.length > 0) parts.push(`<li>✅ <strong>${completedTasks.length}</strong> milestone${completedTasks.length === 1 ? '' : 's'} completed</li>`);
+  if (overdueTasks.length > 0) parts.push(`<li>🔴 <strong>${overdueTasks.length}</strong> milestone${overdueTasks.length === 1 ? '' : 's'} overdue right now</li>`);
+  if (decayedDecisions.length > 0) parts.push(`<li>🕐 <strong>${decayedDecisions.length}</strong> decision${decayedDecisions.length === 1 ? '' : 's'} need review</li>`);
+  parts.push(`</ul>`);
+
+  const talkingPoints = [];
+  if (overdueTasks.length > 0) {
+    const top = overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 3);
+    for (const o of top) talkingPoints.push(`<strong>${escapeHtml(o.task.name)}</strong> is ${o.lateDays}d overdue (${escapeHtml(o.project.name)})`);
+  }
+  if (decayedDecisions.length > 0) talkingPoints.push(`Review ${decayedDecisions.length} decision${decayedDecisions.length === 1 ? '' : 's'} past expected review date`);
+  const unresolvedNew = newBlockers.filter((b) => !b.update.resolvedAt);
+  if (unresolvedNew.length > 0) talkingPoints.push(`${unresolvedNew.length} blocker${unresolvedNew.length === 1 ? '' : 's'} still unresolved`);
+  if (newDecisions.length === 0 && newActions.length === 0) talkingPoints.push(`Quiet week — confirm each program is making progress`);
+
+  if (talkingPoints.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">💬 Suggested talking points</h2>`);
+    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+    for (const tp of talkingPoints) parts.push(`<li>${tp}</li>`);
+    parts.push(`</ul>`);
+  }
+
+  if (overdueTasks.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🔴 Overdue right now</h2>`);
+    parts.push(`<table style="border-collapse: collapse; width: 100%; margin: 0 0 16px; font-size: 13px; ${FONT}">`);
+    parts.push(`<thead><tr><th style="${cellHead}">Milestone</th><th style="${cellHead}">Program</th><th style="${cellHead}">PIC</th><th style="${cellHead}">Days late</th></tr></thead><tbody>`);
+    overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 10).forEach((o) => {
+      parts.push(`<tr><td style="${cell}">${escapeHtml(o.task.name)}</td><td style="${cell}">${escapeHtml(o.program.name)}</td><td style="${cell}">${escapeHtml(o.task.pic || '—')}</td><td style="${cell} color: #A32D2D; font-weight: 500;">${o.lateDays}d</td></tr>`);
+    });
+    parts.push(`</tbody></table>`);
+  }
+
+  if (decayedDecisions.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🕐 Decisions need review</h2>`);
+    parts.push(`<table style="border-collapse: collapse; width: 100%; margin: 0 0 16px; font-size: 13px; ${FONT}">`);
+    parts.push(`<thead><tr><th style="${cellHead}">Decision</th><th style="${cellHead}">Project</th><th style="${cellHead}">Days overdue</th><th style="${cellHead}">Decided by</th></tr></thead><tbody>`);
+    decayedDecisions.sort((a, b) => b.decay.daysOverdue - a.decay.daysOverdue).slice(0, 10).forEach((d) => {
+      parts.push(`<tr><td style="${cell}">${escapeHtml((d.decision.text || '').slice(0, 80))}</td><td style="${cell}">${escapeHtml(d.project.name)}</td><td style="${cell} color: #A8660C; font-weight: 500;">${d.decay.daysOverdue}d</td><td style="${cell}">${escapeHtml((d.decision.decidedBy || []).join(', '))}</td></tr>`);
+    });
+    parts.push(`</tbody></table>`);
+  }
+
+  if (newDecisions.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">📋 New decisions this week</h2>`);
+    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+    for (const { project, decision } of newDecisions) {
+      parts.push(`<li><strong>${escapeHtml(decision.text)}</strong> <em style="color: #6e6c66;">(${escapeHtml(project.name)})</em>`);
+      if ((decision.decidedBy || []).length || decision.meetingRef) {
+        parts.push(`<div style="font-size: 12px; color: #6e6c66; margin-top: 2px;">${escapeHtml((decision.decidedBy || []).join(', '))}${decision.meetingRef ? ' · ' + escapeHtml(decision.meetingRef) : ''}</div>`);
+      }
+      parts.push(`</li>`);
+    }
+    parts.push(`</ul>`);
+  }
+
+  const activeB = newBlockers.filter((b) => !b.update.resolvedAt);
+  if (activeB.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🚩 Active blockers</h2>`);
+    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+    for (const b of activeB) {
+      parts.push(`<li><strong>${escapeHtml(b.task.name)}</strong> <em style="color: #6e6c66;">(${escapeHtml(b.project.name)})</em>: ${escapeHtml(b.update.text || '')}<div style="font-size: 12px; color: #95938c; margin-top: 2px;">Raised by ${escapeHtml(b.update.author)} on ${escapeHtml(fmtDateTime(b.update.timestamp))}</div></li>`);
+    }
+    parts.push(`</ul>`);
+  }
+
+  if (resolvedBlockers.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">✓ Blockers resolved this week</h2>`);
+    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+    for (const b of resolvedBlockers) {
+      parts.push(`<li>${escapeHtml(b.task.name)} <em style="color: #6e6c66;">(${escapeHtml(b.project.name)})</em> — resolved by ${escapeHtml(b.update.resolvedBy)}</li>`);
+    }
+    parts.push(`</ul>`);
+  }
+
+  if (completedTasks.length > 0 || completedActions.length > 0) {
+    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">✅ Completed this week</h2>`);
+    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
+    for (const c of completedTasks) parts.push(`<li>🎯 ${escapeHtml(c.task.name)} <em style="color: #6e6c66;">(${escapeHtml(c.project.name)})</em></li>`);
+    for (const c of completedActions) parts.push(`<li>✓ ${escapeHtml(c.action.title)} <em style="color: #6e6c66;">(${escapeHtml(c.project.name)})</em></li>`);
+    parts.push(`</ul>`);
+  }
+
+  parts.push(`<hr style="border: none; border-top: 1px solid #e5e3dc; margin: 24px 0;" />`);
+  parts.push(`<p style="font-size: 11px; color: #95938c; font-style: italic; margin: 0;">Generated ${escapeHtml(fmtDateTime(now))} from AF Master Project Tracker.</p>`);
+  parts.push(`</div>`);
+  return parts.join('');
+}
+
+function BriefingDialog({ projects, isOwnerMode = false, ownerName = null, teamMembers = [], onClose, showToast }) {
+  const [daysBack, setDaysBack] = useState(BRIEFING_DEFAULT_WINDOW_DAYS);
+  const [preview, setPreview] = useState('');
+  const [generated, setGenerated] = useState(false);
+
+  const generate = () => {
+    const md = generateBriefingMarkdown({ projects, daysBack, ownerName: isOwnerMode ? ownerName : null });
+    setPreview(md);
+    setGenerated(true);
+  };
+
+  const copyMarkdown = async () => {
+    try { await navigator.clipboard.writeText(preview); showToast?.('Markdown copied'); } catch { showToast?.('Copy failed'); }
+  };
+  const copyRich = async () => {
+    const html = generateBriefingHtml({ projects, daysBack, ownerName: isOwnerMode ? ownerName : null });
+    try {
+      if (window.ClipboardItem) {
+        const blob = new Blob([html], { type: 'text/html' });
+        const textBlob = new Blob([preview], { type: 'text/plain' });
+        await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob })]);
+        showToast?.('Rich text copied — paste into Gmail');
+      } else {
+        await navigator.clipboard.writeText(html);
+        showToast?.('HTML source copied');
+      }
+    } catch { showToast?.('Copy failed'); }
+  };
+  const download = () => {
+    const blob = new Blob([preview], { type: 'text/markdown' });
+    downloadBlob(blob, `briefing-${todayISODate()}.md`);
+  };
+  const openGmail = () => {
+    const cc = isOwnerMode ? (teamMembers || []).map((m) => m.email).filter(Boolean).join(',') : '';
+    const url = buildGmailUrl({
+      to: '',
+      cc,
+      subject: `📋 Weekly Briefing — ${fmtDate(new Date())}`,
+      body: preview,
+    });
+    openLinkInNewTab(url);
+  };
+
+  return (
+    <Modal title={isOwnerMode ? '📨 Weekly digest (owner)' : '📋 Weekly briefing'} onClose={onClose} width={720}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <FieldLabel>Look-back window</FieldLabel>
+        <select value={daysBack} onChange={(e) => { setDaysBack(Number(e.target.value)); setGenerated(false); }}
+          style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '5px 22px 5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface }}>
+          <option value={3}>Last 3 days</option>
+          <option value={7}>Last 7 days</option>
+          <option value={14}>Last 14 days</option>
+        </select>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" variant="primary" onClick={generate}>{generated ? 'Regenerate' : 'Generate preview'}</Btn>
+      </div>
+
+      {generated && (
+        <>
+          <Textarea value={preview} onChange={setPreview} rows={18} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+            <Btn size="sm" onClick={copyMarkdown}>Copy Markdown</Btn>
+            <Btn size="sm" onClick={copyRich}>✨ Copy rich text</Btn>
+            <Btn size="sm" onClick={download}>Download .md</Btn>
+            <Btn size="sm" variant="primary" onClick={openGmail}>📧 Open in Gmail</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/* ═════════ TRANSFER OWNER DIALOG ═════════ */
+
+function TransferOwnerDialog({ teamMembers, currentOwner, projects, onClose, onTransfer }) {
+  const [pickedName, setPickedName] = useState('');
+  const [typedConfirm, setTypedConfirm] = useState('');
+  const candidates = useMemo(() => {
+    const seen = new Map();
+    for (const p of Object.values(projects)) {
+      for (const m of (p.teamMembers || [])) {
+        if (m.name === currentOwner) continue;
+        if (!seen.has(m.name)) seen.set(m.name, m);
+      }
+    }
+    for (const m of (teamMembers || [])) {
+      if (m.name === currentOwner) continue;
+      if (!seen.has(m.name)) seen.set(m.name, m);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [teamMembers, currentOwner, projects]);
+  const canTransfer = pickedName && typedConfirm.trim().toLowerCase() === pickedName.toLowerCase();
+  return (
+    <Modal title="Transfer workspace owner" onClose={onClose} width={460}>
+      <div style={{ padding: 10, background: TOK.healthAmberBg, color: TOK.healthAmber, borderRadius: 6, fontSize: 12, marginBottom: 14 }}>
+        Transfer is permanent. The new owner gains full workspace access; you become a regular user. Audit trail is logged.
+      </div>
+      <FieldLabel>New owner</FieldLabel>
+      <select value={pickedName} onChange={(e) => setPickedName(e.target.value)}
+        style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '7px 26px 7px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, width: '100%' }}>
+        <option value="">— pick a teammate —</option>
+        {candidates.map((m) => <option key={m.name} value={m.name}>{m.name}{m.email ? ` (${m.email})` : ''}</option>)}
+      </select>
+      {pickedName && (
+        <>
+          <div style={{ height: 14 }} />
+          <FieldLabel>Type the recipient's name to confirm</FieldLabel>
+          <Input value={typedConfirm} onChange={setTypedConfirm} placeholder={pickedName} />
+        </>
+      )}
+      <div style={{ marginTop: 16, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn variant="primary" disabled={!canTransfer} onClick={() => {
+          // Prefer verified email as owner identifier; fall back to display name
+          const picked = candidates.find((c) => c.name === pickedName);
+          onTransfer(picked?.email || pickedName);
+        }}>Transfer ownership</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 /* ═════════ MAIN APP ═════════ */
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -4390,6 +7877,10 @@ export default function App() {
   const [showMeetingExport, setShowMeetingExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [showBriefingDialog, setShowBriefingDialog] = useState(false);
+  const [briefingDialogIsOwnerMode, setBriefingDialogIsOwnerMode] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [showTransferOwner, setShowTransferOwner] = useState(false);
   useSearchHotkey(() => setShowSearch(true));
   const { user: authUser, logOut } = useAuth();
   const fileInputRef = useRef(null);
@@ -4451,7 +7942,16 @@ export default function App() {
     })();
   }, []);
 
-  const project = currentId ? projects[currentId] : null;
+  const project = (currentId && currentId !== '__all__') ? projects[currentId] : null;
+  const isAllProjectsMode = currentId === '__all__';
+  // Owner check prefers verified Firebase email (authUser.email) over the
+  // display-name in localStorage (which a malicious user could spoof). For
+  // backward compat, also accept legacy claims that wrote display name.
+  const verifiedEmail = authUser?.email || authorEmail || null;
+  const isOwner = !!(meta?.workspaceOwner && (
+    (verifiedEmail && meta.workspaceOwner === verifiedEmail) ||
+    (author && meta.workspaceOwner === author)
+  ));
 
   const showToast = (message) => {
     setToast({ message, id: uid('t') });
@@ -4522,6 +8022,50 @@ export default function App() {
     if (oldTask.name !== updatedTask.name) {
       logActivity({ type: 'task_rename', description: `Renamed task "${oldTask.name}" → "${updatedTask.name}"` });
     }
+    // Credit shares mode change
+    const oldMode = oldTask.creditSharesMode || 'auto';
+    const newMode = updatedTask.creditSharesMode || 'auto';
+    if (oldMode !== newMode) {
+      logActivity({
+        type: 'credit_mode_change',
+        description: `Credit shares for "${updatedTask.name}": ${oldMode} → ${newMode}`,
+      });
+    }
+    // Manual share edit
+    const oldShares = JSON.stringify(oldTask.creditShares || {});
+    const newShares = JSON.stringify(updatedTask.creditShares || {});
+    if (oldShares !== newShares && newMode === 'manual') {
+      const fmt = (s) => Object.entries(JSON.parse(s)).map(([n, v]) => `${n}:${Math.round(Number(v) * 10) / 10}%`).join(', ') || '—';
+      logActivity({
+        type: 'credit_shares_change',
+        description: `Credit shares manually edited on "${updatedTask.name}": ${fmt(oldShares)} → ${fmt(newShares)}`,
+      });
+    }
+    // Deadline request lifecycle (v27)
+    const oldReq = oldTask.deadlineRequest;
+    const newReq = updatedTask.deadlineRequest;
+    if (!oldReq && newReq) {
+      logActivity({
+        type: 'deadline_request',
+        description: `${newReq.requestedBy} requested to ${newReq.action || 'change'} "${updatedTask.name}" deadline by ${Math.abs(newReq.days || 0)}d → ${fmtDateShort(newReq.newDate)}`,
+      });
+    } else if (oldReq && !newReq) {
+      const lastHist = (updatedTask.deadlineRequestHistory || []).slice(-1)[0];
+      if (lastHist) {
+        const verb = lastHist.status === 'approved' ? 'Approved' : lastHist.status === 'rejected' ? 'Rejected' : 'Cancelled';
+        logActivity({
+          type: 'deadline_request_' + lastHist.status,
+          description: `${verb} ${oldReq.requestedBy}'s deadline request on "${updatedTask.name}"${lastHist.resolverNote ? ' — ' + lastHist.resolverNote : ''}`,
+        });
+      }
+    }
+    // Deadline type change
+    if ((oldTask.deadlineType || 'hard') !== (updatedTask.deadlineType || 'hard')) {
+      logActivity({
+        type: 'deadline_type_change',
+        description: `Changed "${updatedTask.name}" deadline type: ${oldTask.deadlineType || 'hard'} → ${updatedTask.deadlineType || 'hard'}`,
+      });
+    }
   };
 
   const onTaskDelete = async (task) => {
@@ -4542,11 +8086,42 @@ export default function App() {
     setCurrentId(id);
     setSelectedTaskId(null);
     setScopeProgramId(null);
-    const a = await loadActivity(id);
-    setActivity(a);
+    if (id === '__all__') {
+      setActivity([]);
+    } else {
+      const a = await loadActivity(id);
+      setActivity(a);
+    }
     const m2 = { ...meta, currentProjectId: id };
     setMeta(m2);
     await saveMeta(m2);
+  };
+
+  const changeOwnership = async (action, newOwner) => {
+    const oldOwner = meta?.workspaceOwner || null;
+    const entry = {
+      id: uid('own'),
+      ts: new Date().toISOString(),
+      by: authUser?.email || author,
+      action,
+      from: oldOwner,
+      to: newOwner,
+    };
+    const m2 = {
+      ...meta,
+      workspaceOwner: newOwner,
+      ownershipLog: [...(meta?.ownershipLog || []), entry],
+    };
+    setMeta(m2);
+    await saveMeta(m2);
+    if (currentId && currentId !== '__all__') {
+      const desc = action === 'claim'
+        ? `Claimed workspace owner role`
+        : action === 'release'
+        ? `Released workspace owner role`
+        : `Transferred workspace owner: ${oldOwner} → ${newOwner}`;
+      await logActivity({ type: 'ownership_change', description: desc });
+    }
   };
 
   const renameCurrentProject = async () => {
@@ -4561,7 +8136,16 @@ export default function App() {
   };
 
   const createNewProject = async (name) => {
-    const p = { id: uid('proj'), name: name.trim(), createdAt: new Date().toISOString(), programs: [], decisions: [], actionItems: [] };
+    const p = {
+      id: uid('proj'),
+      name: name.trim(),
+      createdAt: new Date().toISOString(),
+      programs: [], decisions: [], actionItems: [],
+      creditPoints: DEFAULT_CREDIT_POINTS,
+      creditYear: new Date().getFullYear(),
+      projectLeadShare: 10,
+      contributorRegistry: DEFAULT_DEPARTMENTS.map((nm) => ({ name: nm })),
+    };
     await saveProject(p);
     const m2 = { ...meta, projectIds: [...meta.projectIds, p.id], currentProjectId: p.id };
     setMeta(m2); await saveMeta(m2);
@@ -4598,6 +8182,54 @@ export default function App() {
       setActivity([entry]);
       setShowImport(false);
       showToast(`Imported "${imported.name}" · ${tasks} tasks`);
+
+      // Post-import validation: detect unrecognized PICs/contributors (v29)
+      const registryNames = new Set((imported.contributorRegistry || []).map((r) => r.name.toLowerCase()));
+      const memberNames = new Set((imported.teamMembers || []).map((m) => m.name.toLowerCase()));
+      const unknownContributors = new Map();
+      const unknownPics = new Map();
+      for (const pg of (imported.programs || [])) {
+        for (const ws of (pg.workstreams || [])) {
+          for (const t of (ws.tasks || [])) {
+            for (const c of (t.contributors || [])) {
+              const cs = String(c).toLowerCase();
+              if (!registryNames.has(cs) && !memberNames.has(cs)) {
+                unknownContributors.set(String(c), (unknownContributors.get(String(c)) || 0) + 1);
+              }
+            }
+            if (t.pic) {
+              const ps = String(t.pic).toLowerCase();
+              if (!memberNames.has(ps)) {
+                unknownPics.set(String(t.pic), (unknownPics.get(String(t.pic)) || 0) + 1);
+              }
+            }
+          }
+        }
+      }
+      if (unknownContributors.size > 0 || unknownPics.size > 0) {
+        const lines = [];
+        if (unknownPics.size > 0) {
+          lines.push(`PICs not in team members (${unknownPics.size} unique):`);
+          for (const [n, c] of Array.from(unknownPics.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+            lines.push(`  • ${n} — ${c} task${c === 1 ? '' : 's'}`);
+          }
+          if (unknownPics.size > 8) lines.push(`  ... and ${unknownPics.size - 8} more`);
+          lines.push('');
+        }
+        if (unknownContributors.size > 0) {
+          lines.push(`Contributors not in registry (${unknownContributors.size} unique):`);
+          for (const [n, c] of Array.from(unknownContributors.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+            lines.push(`  • ${n} — ${c} task${c === 1 ? '' : 's'}`);
+          }
+          if (unknownContributors.size > 8) lines.push(`  ... and ${unknownContributors.size - 8} more`);
+          lines.push('');
+        }
+        lines.push('→ Open Project Settings to add these to team members / contributor registry, or use the Cleanup tool to merge with existing entries.');
+        await dialogs.alert({
+          title: '⚠ Import warnings — unrecognized names',
+          message: lines.join('\n'),
+        });
+      }
     } catch (err) {
       await dialogs.alert({ title: 'Import failed', message: err.message || 'Could not parse the file.' });
     }
@@ -4695,6 +8327,8 @@ export default function App() {
             <ChevronRight size={12} color={TOK.muted} />
             <select value={currentId || ''} onChange={(e) => switchProject(e.target.value)}
               style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '6px 24px 6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, cursor: 'pointer', fontWeight: 500 }}>
+              <option value="__all__">🌐 All projects</option>
+              <option disabled>──────────</option>
               {meta.projectIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
             </select>
             <Btn size="sm" variant="ghost" onClick={(e) => {
@@ -4740,17 +8374,22 @@ export default function App() {
               { id: 'decisions', label: 'Decisions', icon: <CheckCircle2 size={12} />, count: (project?.decisions?.length || 0) },
               { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
               { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
+              { id: 'activity', label: 'Activity', icon: <Activity size={12} /> },
+              ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
+              ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
             ].map((v) => (
               <button key={v.id} onClick={() => setView(v.id)} style={{
                 fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
-                border: 'none', background: view === v.id ? TOK.surface : 'transparent', color: TOK.ink, cursor: 'pointer',
+                border: 'none', background: view === v.id ? TOK.surface : 'transparent',
+                color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                 display: 'inline-flex', alignItems: 'center', gap: 5,
                 boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-              }}>{v.icon}{v.label}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
+              }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
             ))}
           </div>
 
           <Btn size="sm" variant="primary" onClick={() => setMeetingMode(true)} title="Enter meeting mode (presentation view)">▶ Meeting</Btn>
+          <Btn size="sm" onClick={() => { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); }} title="Generate weekly briefing pack">📋 Briefing</Btn>
           <Btn size="sm" onClick={() => setShowMeetingExport(true)} title="Generate meeting minutes"><FileText size={12} /> Minutes</Btn>
           <Btn size="sm" onClick={exportExcel} title="Export to Excel"><FileSpreadsheet size={12} /> Excel</Btn>
           <Btn size="sm" onClick={backupJson} title="Backup all workspace data to JSON"><Download size={12} /></Btn>
@@ -4774,18 +8413,80 @@ export default function App() {
           </button>
         </div>
 
+        {/* Monday banner */}
+        {!bannerDismissed && isMonday() && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
+          <div style={{
+            padding: '10px 16px',
+            background: isOwner ? '#e8f0fe' : '#fff8e1',
+            borderBottom: '1px solid ' + (isOwner ? '#c8dcf0' : '#f0e3a0'),
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <span style={{ fontSize: 18 }}>{isOwner ? '📨' : '📋'}</span>
+            <div style={{ flex: 1, fontSize: 13, color: isOwner ? '#1f4e8c' : '#7a5d00' }}>
+              <strong>{isOwner ? 'Time to send the weekly digest' : 'Weekly briefing ready'}</strong>
+              <span style={{ marginLeft: 8, opacity: 0.85 }}>
+                {isOwner
+                  ? 'As workspace owner, generate this week\'s digest to share with the team.'
+                  : 'Review what changed last week before today\'s meeting.'}
+              </span>
+            </div>
+            <Btn size="sm" variant="primary" onClick={() => {
+              setBriefingDialogIsOwnerMode(isOwner);
+              setShowBriefingDialog(true);
+            }}>
+              {isOwner ? 'Generate digest' : 'Generate briefing'}
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={async () => {
+              const dismissed = [...(meta?.dismissedBriefingDates || []), todayISODate()];
+              const m2 = { ...meta, dismissedBriefingDates: dismissed };
+              setMeta(m2); await saveMeta(m2);
+              setBannerDismissed(true);
+            }} title="Dismiss for today">
+              <X size={14} />
+            </Btn>
+          </div>
+        )}
+
         {/* Main area: view + optional task detail */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <ErrorBoundary>
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} />}
+              {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
+              {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
               {view === 'aggregation' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} />}
-              {!project && view !== 'aggregation' && (
+              {view === 'activity' && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} />}
+              {view === 'portfolio' && isOwner && (
+                <PortfolioView projects={projects} onProjectClick={(pid) => switchProject(pid)} />
+              )}
+              {view === 'portfolio' && !isOwner && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
+                  Portfolio view is workspace-owner only.
+                </div>
+              )}
+              {view === 'credit-report' && isOwner && (
+                <CreditReportView projects={projects} isOwner={isOwner} />
+              )}
+              {view === 'credit-report' && !isOwner && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
+                  Credit report is workspace-owner only.
+                </div>
+              )}
+              {isAllProjectsMode && (view === 'mindmap' || view === 'outline' || view === 'dashboard' || view === 'gantt') && (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13, gap: 10 }}>
+                  <div>🌐 This view is project-specific.</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Btn size="sm" onClick={() => setView('aggregation')}>Open Aggregation</Btn>
+                    <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn>
+                  </div>
+                </div>
+              )}
+              {!project && !isAllProjectsMode && view !== 'aggregation' && view !== 'activity' && view !== 'portfolio' && view !== 'credit-report' && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: TOK.muted, fontSize: 13 }}>No project selected.</div>
               )}
             </ErrorBoundary>
@@ -4795,7 +8496,8 @@ export default function App() {
               onClose={() => setSelectedTaskId(null)}
               onUpdate={onTaskUpdate}
               onDelete={onTaskDelete}
-              onProjectUpdate={updateProject} />
+              onProjectUpdate={updateProject}
+              isOwner={isOwner} />
           )}
         </div>
 
@@ -4814,7 +8516,6 @@ export default function App() {
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
             items={[
               { label: 'Manage members & related parties', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
-              { label: 'Rename project', icon: <Edit2 size={13} />, onClick: renameCurrentProject },
               { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
               { separator: true },
               { label: meta.projectIds.length > 1 ? 'Delete project' : 'Delete project (need 2+)', icon: <Trash2 size={13} />, danger: true, onClick: deleteCurrentProject },
@@ -4854,6 +8555,7 @@ export default function App() {
             onClose={() => setShowProjectSettings(false)}
             onSave={(updated) => { updateProject(updated); logActivity({ type: 'project_settings', description: `Updated project settings for "${updated.name}"` }); showToast('Project settings saved'); }}
             dialogs={dialogs}
+            isOwner={isOwner}
           />
         )}
         {showMeetingExport && (
@@ -4881,11 +8583,49 @@ export default function App() {
               position: 'absolute', top: 50, right: 16, zIndex: 200,
               background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 8,
               boxShadow: '0 8px 20px rgba(0,0,0,0.15)', fontFamily: FONT_STACK,
-              minWidth: 240, overflow: 'hidden',
+              minWidth: 280, overflow: 'hidden',
             }}>
               <div style={{ padding: '12px 14px', borderBottom: '1px solid ' + TOK.line }}>
                 <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>{author}</div>
                 {authorEmail && <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{authorEmail}</div>}
+              </div>
+              <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
+                <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Workspace owner</div>
+                {meta?.workspaceOwner ? (
+                  <>
+                    <div style={{ color: TOK.ink, marginBottom: 6 }}>
+                      {isOwner ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : meta.workspaceOwner}
+                    </div>
+                    {isOwner ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <Btn size="sm" onClick={async () => {
+                          setUserMenuOpen(false);
+                          setShowTransferOwner(true);
+                        }}>Transfer</Btn>
+                        <Btn size="sm" variant="ghost" onClick={async () => {
+                          const ok = await dialogs.confirm({ title: 'Release ownership?', message: 'You will give up workspace owner role. The workspace will have no owner until someone claims it.', danger: true, okLabel: 'Release' });
+                          if (!ok) return;
+                          setUserMenuOpen(false);
+                          await changeOwnership('release', null);
+                          showToast('Released workspace ownership');
+                        }}>Release</Btn>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: TOK.subtle }}>Owner-only changes</div>
+                    )}
+                  </>
+                ) : (
+                  <Btn size="sm" variant="primary" onClick={async () => {
+                    const ok = await dialogs.confirm({ title: 'Become workspace owner?', message: `You'll be able to access the Portfolio view, send weekly digests, and transfer ownership later. All ownership changes are logged.`, okLabel: 'Become owner' });
+                    if (!ok) return;
+                    setUserMenuOpen(false);
+                    await changeOwnership('claim', authUser?.email || author);
+                    showToast(`You are now the workspace owner`);
+                  }}>Become owner</Btn>
+                )}
+                {(meta?.ownershipLog || []).length > 0 && (
+                  <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 6 }}>{(meta?.ownershipLog || []).length} change{(meta?.ownershipLog || []).length === 1 ? '' : 's'} logged</div>
+                )}
               </div>
               <button
                 onClick={signOut}
@@ -4903,17 +8643,80 @@ export default function App() {
             </div>
           </>
         )}
+
+        {showBriefingDialog && (
+          <BriefingDialog
+            projects={projects}
+            isOwnerMode={briefingDialogIsOwnerMode}
+            ownerName={meta?.workspaceOwner || null}
+            teamMembers={teamMembers}
+            onClose={() => setShowBriefingDialog(false)}
+            showToast={showToast}
+          />
+        )}
+        {showTransferOwner && (
+          <TransferOwnerDialog
+            teamMembers={teamMembers}
+            currentOwner={meta?.workspaceOwner}
+            projects={projects}
+            onClose={() => setShowTransferOwner(false)}
+            onTransfer={async (newOwner) => {
+              setShowTransferOwner(false);
+              await changeOwnership('transfer', newOwner);
+              showToast(`Ownership transferred to ${newOwner}`);
+            }}
+          />
+        )}
       </div>
     </>
   );
 }
 
-function ProjectSettingsModal({ project, onClose, onSave, dialogs }) {
+function ProjectSettingsModal({ project, onClose, onSave, dialogs, isOwner = false }) {
   const [name, setName] = useState(project.name);
   const [opCode, setOpCode] = useState(project.openProjectCode || '');
   const [members, setMembers] = useState(project.teamMembers || []);
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
+  // Credit allocation (v22)
+  const [creditPoints, setCreditPoints] = useState(
+    typeof project.creditPoints === 'number' ? String(project.creditPoints) : String(DEFAULT_CREDIT_POINTS)
+  );
+  const [creditYear, setCreditYear] = useState(
+    typeof project.creditYear === 'number' ? project.creditYear : new Date().getFullYear()
+  );
+  const [weightsLocked, setWeightsLocked] = useState(!!project.weightsLocked);
+  const [weightsLockHistory] = useState(Array.isArray(project.weightsLockHistory) ? project.weightsLockHistory : []);
+  const [showLockHistory, setShowLockHistory] = useState(false);
+  const [projectLead, setProjectLead] = useState(project.projectLead || '');
+  const [projectLeadShare, setProjectLeadShare] = useState(
+    typeof project.projectLeadShare === 'number' ? String(project.projectLeadShare) : '10'
+  );
+  // Contributor registry (v26)
+  const [contributorRegistry, setContributorRegistry] = useState(
+    Array.isArray(project.contributorRegistry) ? project.contributorRegistry : []
+  );
+  const [newContribName, setNewContribName] = useState('');
+  const [mergeFrom, setMergeFrom] = useState('');
+  const [mergeTo, setMergeTo] = useState('');
+
+  // Compute contributors actually used in tasks (for cleanup tool)
+  const usedContributors = useMemo(() => {
+    const seen = new Map();
+    for (const pg of (project.programs || [])) {
+      for (const ws of (pg.workstreams || [])) {
+        for (const t of (ws.tasks || [])) {
+          for (const c of (t.contributors || [])) {
+            if (!seen.has(c)) seen.set(c, { count: 0, taskIds: [] });
+            const entry = seen.get(c);
+            entry.count++;
+            entry.taskIds.push(t.id);
+          }
+        }
+      }
+    }
+    return seen;
+  }, [project]);
 
   const addMember = () => {
     const n = newName.trim();
@@ -4938,8 +8741,152 @@ function ProjectSettingsModal({ project, onClose, onSave, dialogs }) {
     setMembers(members.filter((_, j) => j !== i));
   };
 
+  // ─── Contributor registry handlers (v26) ───
+  const addContributorToRegistry = () => {
+    const n = newContribName.trim();
+    if (!n) return;
+    if (contributorRegistry.some((r) => r.name.toLowerCase() === n.toLowerCase())) {
+      dialogs.alert({ title: 'Duplicate', message: `"${n}" is already in the registry.` });
+      return;
+    }
+    setContributorRegistry([...contributorRegistry, { name: n }]);
+    setNewContribName('');
+  };
+  const removeContributorFromRegistry = (rname) => {
+    setContributorRegistry(contributorRegistry.filter((r) => r.name !== rname));
+  };
+  const adoptToRegistry = (rname) => {
+    if (contributorRegistry.some((r) => r.name === rname)) return;
+    setContributorRegistry([...contributorRegistry, { name: rname }]);
+  };
+  const seedDefaultDepartments = () => {
+    const existing = new Set(contributorRegistry.map((r) => r.name.toLowerCase()));
+    const toAdd = DEFAULT_DEPARTMENTS.filter((d) => !existing.has(d.toLowerCase()));
+    if (toAdd.length === 0) {
+      dialogs.alert({ title: 'Already seeded', message: 'All default departments are already in the registry.' });
+      return;
+    }
+    setContributorRegistry([...contributorRegistry, ...toAdd.map((nm) => ({ name: nm }))]);
+  };
+  // Build a payload that includes ALL current modal state — important per pitfall #4
+  // so unsaved modal edits aren't lost when calling onSave from cleanup actions.
+  const buildModalSnapshot = (overrides = {}) => {
+    const cpNum = Number(creditPoints);
+    const finalCp = (!isNaN(cpNum) && cpNum >= 0) ? cpNum : DEFAULT_CREDIT_POINTS;
+    const leadShareNum = Number(projectLeadShare);
+    const finalLeadShare = (!isNaN(leadShareNum) && leadShareNum >= 0 && leadShareNum <= 100) ? leadShareNum : 10;
+    return {
+      ...project,
+      name: name.trim(),
+      openProjectCode: opCode.trim() || null,
+      teamMembers: members,
+      creditPoints: finalCp,
+      creditYear,
+      weightsLocked,
+      weightsLockHistory,
+      projectLead: projectLead.trim() || null,
+      projectLeadShare: finalLeadShare,
+      contributorRegistry,
+      ...overrides,
+    };
+  };
+  const performMerge = async () => {
+    const from = (mergeFrom || '').trim();
+    const to = (mergeTo || '').trim();
+    if (!from || !to || from === to) return;
+    let touched = 0;
+    const updatedPrograms = (project.programs || []).map((pg) => ({
+      ...pg,
+      workstreams: (pg.workstreams || []).map((ws) => ({
+        ...ws,
+        tasks: (ws.tasks || []).map((t) => {
+          let next = t;
+          if ((t.contributors || []).includes(from)) {
+            const cs = new Set([...(t.contributors || [])]);
+            cs.delete(from);
+            cs.add(to);
+            next = { ...next, contributors: Array.from(cs).filter((c) => c !== next.pic) };
+            touched++;
+          }
+          if (t.creditShares && Object.prototype.hasOwnProperty.call(t.creditShares, from)) {
+            const nsh = { ...t.creditShares };
+            const fromVal = Number(nsh[from]) || 0;
+            delete nsh[from];
+            nsh[to] = (Number(nsh[to]) || 0) + fromVal;
+            next = { ...next, creditShares: nsh };
+          }
+          return next;
+        }),
+      })),
+    }));
+    const ok = await dialogs.confirm({
+      title: 'Merge contributor names?',
+      message: `Replace "${from}" with "${to}" across all tasks (and credit shares). ${touched} task occurrences affected.`,
+      okLabel: 'Merge',
+    });
+    if (!ok) return;
+    onSave(buildModalSnapshot({ programs: updatedPrograms }));
+    setMergeFrom(''); setMergeTo('');
+    dialogs.alert({ title: 'Merge complete', message: `Replaced "${from}" with "${to}" in ${touched} task occurrence${touched === 1 ? '' : 's'}.` });
+  };
+  const performDeleteFromTasks = async (rname) => {
+    const ok = await dialogs.confirm({
+      title: `Remove "${rname}" from all tasks?`,
+      message: `Remove "${rname}" from contributors and credit shares of every task. The registry stays unchanged. This cannot be undone.`,
+      danger: true,
+      okLabel: 'Remove',
+    });
+    if (!ok) return;
+    let touched = 0;
+    const updatedPrograms = (project.programs || []).map((pg) => ({
+      ...pg,
+      workstreams: (pg.workstreams || []).map((ws) => ({
+        ...ws,
+        tasks: (ws.tasks || []).map((t) => {
+          let next = t;
+          if ((t.contributors || []).includes(rname)) {
+            next = { ...next, contributors: (next.contributors || []).filter((c) => c !== rname) };
+            touched++;
+          }
+          if (t.creditShares && Object.prototype.hasOwnProperty.call(t.creditShares, rname)) {
+            const nsh = { ...t.creditShares };
+            delete nsh[rname];
+            next = { ...next, creditShares: nsh };
+          }
+          return next;
+        }),
+      })),
+    }));
+    onSave(buildModalSnapshot({ programs: updatedPrograms }));
+    dialogs.alert({ title: 'Remove complete', message: `Removed "${rname}" from ${touched} task occurrence${touched === 1 ? '' : 's'}.` });
+  };
+
   const save = () => {
-    onSave({ ...project, name: name.trim(), openProjectCode: opCode.trim() || null, teamMembers: members });
+    const cpNum = Number(creditPoints);
+    const finalCp = (!isNaN(cpNum) && cpNum >= 0) ? cpNum : DEFAULT_CREDIT_POINTS;
+    const leadShareNum = Number(projectLeadShare);
+    const finalLeadShare = (!isNaN(leadShareNum) && leadShareNum >= 0 && leadShareNum <= 100) ? leadShareNum : 10;
+    let lockHist = weightsLockHistory;
+    if (!!project.weightsLocked !== weightsLocked) {
+      lockHist = [...weightsLockHistory, {
+        ts: new Date().toISOString(),
+        action: weightsLocked ? 'lock' : 'unlock',
+        year: creditYear,
+      }];
+    }
+    onSave({
+      ...project,
+      name: name.trim(),
+      openProjectCode: opCode.trim() || null,
+      teamMembers: members,
+      creditPoints: finalCp,
+      creditYear,
+      weightsLocked,
+      weightsLockHistory: lockHist,
+      projectLead: projectLead.trim() || null,
+      projectLeadShare: finalLeadShare,
+      contributorRegistry,
+    });
     onClose();
   };
 
@@ -4956,29 +8903,143 @@ function ProjectSettingsModal({ project, onClose, onSave, dialogs }) {
       </div>
 
       <div style={{ height: 20 }} />
+      <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, padding: 12, background: TOK.bg }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <FieldLabel>⚖ Credit allocation</FieldLabel>
+          {!isOwner && <span style={{ fontSize: 10, color: TOK.subtle }}>(workspace owner only)</span>}
+        </div>
+        <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
+          Total credit points decided by BoD/HR upfront. Default rules: 1 PIC + 0 contrib → 100/0; +1 contrib → 70/30; +2 → 70/15/15; +3+ → enter manually.
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <FieldLabel>Total credit points</FieldLabel>
+            <input type="number" value={creditPoints} onChange={(e) => setCreditPoints(e.target.value)} placeholder="100" disabled={!isOwner}
+              style={{ fontFamily: FONT_STACK, fontSize: 13, width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: isOwner ? TOK.surface : TOK.bg, color: TOK.ink, opacity: isOwner ? 1 : 0.7 }} />
+          </div>
+          <div style={{ width: 120 }}>
+            <FieldLabel>Year</FieldLabel>
+            <select
+              value={creditYear}
+              onChange={(e) => setCreditYear(Number(e.target.value))}
+              disabled={!isOwner}
+              style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, opacity: isOwner ? 1 : 0.7 }}
+            >
+              {[creditYear - 2, creditYear - 1, creditYear, creditYear + 1, creditYear + 2].map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <FieldLabel>Project lead <span style={{ color: TOK.subtle, fontWeight: 400 }}>(receives a share of total pool, tied to overall completion)</span></FieldLabel>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
+          <select
+            value={projectLead}
+            onChange={(e) => setProjectLead(e.target.value)}
+            disabled={!isOwner || members.length === 0}
+            style={{ flex: 1, fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, opacity: (isOwner && members.length > 0) ? 1 : 0.5 }}
+          >
+            <option value="">— No project lead —</option>
+            {members.map((m) => <option key={m.name} value={m.name}>{m.name}{m.email ? ` (${m.email})` : ''}</option>)}
+          </select>
+          <div style={{ width: 110, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 11, color: TOK.muted, whiteSpace: 'nowrap' }}>Lead share:</span>
+            <input type="number" value={projectLeadShare} onChange={(e) => setProjectLeadShare(e.target.value)} placeholder="10" disabled={!isOwner}
+              style={{ fontFamily: FONT_STACK, fontSize: 13, width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: isOwner ? TOK.surface : TOK.bg, color: TOK.ink, opacity: isOwner ? 1 : 0.7 }} />
+            <span style={{ fontSize: 11, color: TOK.muted }}>%</span>
+          </div>
+        </div>
+        {members.length === 0 ? (
+          <div style={{ fontSize: 11, color: '#A8660C', marginTop: 3 }}>
+            ⚠ Add team members below first, then return to pick project lead.
+          </div>
+        ) : projectLead ? (
+          <div style={{ fontSize: 11, color: TOK.muted, lineHeight: 1.5 }}>
+            ℹ️ {projectLead} will earn up to {Math.round(Number(projectLeadShare) || 10)} cp based on overall project completion.
+            Remaining {100 - (Math.round(Number(projectLeadShare) || 10))}% ({(Number(creditPoints) || DEFAULT_CREDIT_POINTS) * (100 - (Number(projectLeadShare) || 10)) / 100} cp) is split among programs/workstreams/tasks.
+          </div>
+        ) : null}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            fontSize: 12, padding: '4px 10px', borderRadius: 999,
+            background: weightsLocked ? TOK.healthRedBg : TOK.healthGreenBg,
+            color: weightsLocked ? TOK.healthRed : TOK.healthGreen,
+          }}>
+            {weightsLocked ? `🔒 Locked for ${creditYear}` : '🔓 Unlocked'}
+          </span>
+          <Btn size="sm" disabled={!isOwner} onClick={async () => {
+            if (!isOwner) return;
+            const ok = await dialogs.confirm({
+              title: weightsLocked ? `Unlock weights for ${creditYear}?` : `Lock weights for ${creditYear}?`,
+              message: weightsLocked
+                ? 'Unlocking allows owners to change weights again. The change is recorded in the lock history.'
+                : 'Locking prevents anyone (including owners) from changing weights until unlocked. The change is recorded in the lock history.',
+              okLabel: weightsLocked ? 'Unlock' : 'Lock',
+            });
+            if (!ok) return;
+            setWeightsLocked(!weightsLocked);
+          }}>
+            {weightsLocked ? 'Unlock' : 'Lock'}
+          </Btn>
+          {weightsLockHistory.length > 0 && (
+            <button onClick={() => setShowLockHistory(!showLockHistory)}
+              style={{ background: 'none', border: 'none', fontSize: 11, color: TOK.muted, cursor: 'pointer' }}>
+              {showLockHistory ? '▾' : '▸'} Lock history ({weightsLockHistory.length})
+            </button>
+          )}
+        </div>
+        {showLockHistory && weightsLockHistory.length > 0 && (
+          <div style={{ marginTop: 8, padding: 8, background: TOK.surface, borderRadius: 6, fontSize: 11, color: TOK.muted }}>
+            {weightsLockHistory.slice().reverse().map((h, i) => (
+              <div key={i}>
+                {h.action === 'lock' ? '🔒 Locked' : '🔓 Unlocked'} year {h.year} — {fmtDateTime(h.ts)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ height: 20 }} />
       <FieldLabel>Team members & emails</FieldLabel>
       <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
         Names here are autocomplete-able with @mention. Emails are used for action-item emails. PIC names already used in tasks are picked up automatically — add their emails here.
       </div>
 
       {/* Add row — inline form, no chained dialogs */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 8, padding: 8, background: TOK.bg, borderRadius: 7 }}>
-        <Input
-          value={newName}
-          onChange={setNewName}
-          placeholder="Name (e.g., An Nguyen)"
-          style={{ flex: 1 }}
-        />
-        <Input
-          value={newEmail}
-          onChange={setNewEmail}
-          placeholder="email@smartosc.com"
-          type="email"
-          style={{ flex: 1.4 }}
-        />
-        <Btn size="sm" variant="primary" onClick={addMember} disabled={!newName.trim()}>
-          <Plus size={11} /> Add
-        </Btn>
+      <div style={{ padding: 8, background: TOK.bg, borderRadius: 7, marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <Input
+            value={newName}
+            onChange={setNewName}
+            onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) { e.preventDefault(); addMember(); } }}
+            placeholder="Name * (e.g., An Nguyen)"
+            style={{ flex: 1 }}
+          />
+          <Input
+            value={newEmail}
+            onChange={(v) => {
+              setNewEmail(v);
+              // Auto-derive name from email prefix if name is empty
+              if (!newName.trim() && v && v.includes('@')) {
+                const prefix = v.split('@')[0].trim();
+                if (prefix) setNewName(prefix);
+              }
+            }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) { e.preventDefault(); addMember(); } }}
+            placeholder="email@smartosc.com"
+            type="email"
+            style={{ flex: 1.4 }}
+          />
+          <Btn size="sm" variant="primary" onClick={addMember} disabled={!newName.trim()}>
+            <Plus size={11} /> Add
+          </Btn>
+        </div>
+        {!newName.trim() && newEmail.trim() && (
+          <div style={{ fontSize: 11, color: '#A8660C', marginTop: 4 }}>
+            ⚠ Name is required to add this member.
+          </div>
+        )}
       </div>
 
       {members.length === 0 && (
@@ -4996,6 +9057,126 @@ function ProjectSettingsModal({ project, onClose, onSave, dialogs }) {
             </Btn>
           </div>
         ))}
+      </div>
+
+      {/* Contributor Registry (v26) */}
+      <div style={{ height: 20 }} />
+      <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, padding: 12, background: TOK.bg }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <FieldLabel>📋 Contributor registry</FieldLabel>
+          {!isOwner && <span style={{ fontSize: 10, color: TOK.subtle }}>(workspace owner only)</span>}
+        </div>
+        <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
+          Standard list of contributor names (teams, roles, external parties). Used for autocomplete in task editor and to detect typos in legacy data.
+        </div>
+        {isOwner && (
+          <>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
+              <Input
+                value={newContribName}
+                onChange={setNewContribName}
+                onKeyDown={(e) => { if (e.key === 'Enter' && newContribName.trim()) { e.preventDefault(); addContributorToRegistry(); } }}
+                placeholder="Add custom name: e.g., Marketing, Sales, Vendor X"
+                style={{ flex: 1 }}
+              />
+              <Btn size="sm" variant="primary" onClick={addContributorToRegistry} disabled={!newContribName.trim()}>
+                <Plus size={11} /> Add
+              </Btn>
+              <Btn size="sm" onClick={seedDefaultDepartments} title={`Add common company departments: ${DEFAULT_DEPARTMENTS.join(', ')}`}>
+                ✨ Seed defaults
+              </Btn>
+            </div>
+            <div style={{ fontSize: 11, color: TOK.subtle, marginBottom: 10, lineHeight: 1.5 }}>
+              Type a custom contributor name then press <kbd style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 3, padding: '0 4px', fontSize: 10 }}>Enter</kbd> or click <strong>+ Add</strong>. To attach a contributor to a specific task, edit the task → ContributorEditor.
+            </div>
+          </>
+        )}
+        {contributorRegistry.length === 0 ? (
+          <div style={{ fontSize: 12, color: TOK.subtle, padding: 12, textAlign: 'center', background: TOK.surface, borderRadius: 6, lineHeight: 1.6 }}>
+            <div style={{ marginBottom: 4 }}>📋 Empty registry</div>
+            <div>
+              Click <strong>✨ Seed defaults</strong> above to add common departments<br />
+              ({DEFAULT_DEPARTMENTS.join(', ')}), or type a custom name and click <strong>+ Add</strong>.
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {contributorRegistry.map((r) => {
+              const usage = usedContributors.get(r.name);
+              return (
+                <span key={r.name} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 999,
+                  padding: '3px 4px 3px 10px', fontSize: 12,
+                }}>
+                  {r.name}
+                  {usage && <span style={{ fontSize: 10, color: TOK.muted }}>({usage.count})</span>}
+                  {isOwner && (
+                    <button onClick={() => removeContributorFromRegistry(r.name)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}
+                      title="Remove from registry">
+                      <X size={11} />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Cleanup section: unregistered names */}
+        {(() => {
+          const registrySet = new Set(contributorRegistry.map((r) => r.name));
+          const memberSet = new Set(members.map((m) => m.name));
+          const unregistered = Array.from(usedContributors.entries())
+            .filter(([n]) => !registrySet.has(n) && !memberSet.has(n))
+            .sort((a, b) => b[1].count - a[1].count);
+          if (unregistered.length === 0) return null;
+          return (
+            <div style={{ marginTop: 10, padding: 10, background: '#FAEEDA', borderRadius: 6, border: '1px solid #E0BC75' }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: '#A8660C', marginBottom: 6 }}>
+                ⚠ Unregistered contributor names found in tasks ({unregistered.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {unregistered.map(([n, info]) => (
+                  <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <span style={{ flex: 1 }}>{n} <span style={{ color: TOK.muted, fontSize: 11 }}>({info.count} task{info.count === 1 ? '' : 's'})</span></span>
+                    {isOwner && (
+                      <>
+                        <Btn size="sm" onClick={() => adoptToRegistry(n)} title="Add to registry as-is">Adopt</Btn>
+                        <Btn size="sm" onClick={() => { setMergeFrom(n); setMergeTo(''); }} title="Replace with another name">Merge…</Btn>
+                        <Btn size="sm" variant="ghost" onClick={() => performDeleteFromTasks(n)} title="Delete from all tasks">Remove</Btn>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {mergeFrom && isOwner && (
+                <div style={{ marginTop: 10, padding: 10, background: TOK.surface, borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>Merge "{mergeFrom}" → ?</div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <select value={mergeTo} onChange={(e) => setMergeTo(e.target.value)}
+                      style={{ flex: 1, fontFamily: FONT_STACK, fontSize: 12, padding: '6px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface }}>
+                      <option value="">— pick target name —</option>
+                      <optgroup label="Team members">
+                        {members.filter((m) => m.name !== mergeFrom).map((m) => (
+                          <option key={m.name} value={m.name}>{m.name}{m.email ? ` (${m.email})` : ''}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Registry">
+                        {contributorRegistry.filter((r) => r.name !== mergeFrom).map((r) => (
+                          <option key={r.name} value={r.name}>{r.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                    <Btn size="sm" variant="primary" onClick={performMerge} disabled={!mergeTo}>Merge</Btn>
+                    <Btn size="sm" variant="ghost" onClick={() => { setMergeFrom(''); setMergeTo(''); }}>Cancel</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div style={{ marginTop: 20, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -5028,7 +9209,7 @@ function ImportModal({ onClose, onImport }) {
   return (
     <Modal title="Import Excel / CSV" onClose={onClose} width={520}>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: TOK.muted, lineHeight: 1.55 }}>
-        Upload an Excel (.xlsx) or CSV file using the CRP template columns: Mail Project, Program Stream (PS), Work Stream, Main Task, Status, PIC, Start date, End date, Durations, Key Deliverables, Dependencies.
+        Upload an Excel (.xlsx) or CSV file using the CRP template columns: Project, Program Stream (PS), Work Stream, Main Task, Status, PIC, Start date, End date, Durations, Key Deliverables, Dependencies.
       </p>
       <div onClick={pick}
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }}

@@ -21,6 +21,15 @@ backup-*.json
 # Local backup of secured-version App.jsx (kept on disk, not committed)
 src/App.secured-backup.jsx
 
+# Pre-version backups (kept on disk for rollback, not committed)
+src/App.jsx.before-*.backup
+
+# Reference implementations (large, kept locally for spec lookups, not committed)
+src/CRP_Project_Tracker_*.jsx
+
+# Duplicated/relocated spec docs (canonical copies live in Specs/)
+TODAYS_FEATURES_SPEC.md
+
 # Superpowers brainstorming/visual companion artifacts
 .superpowers/
 .vercel
