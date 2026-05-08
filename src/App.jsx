@@ -796,23 +796,55 @@ function MentionedText({ text, teamMembers }) {
 //      through MembersModal — they have verified emails from sign-in)
 //   3) p.teamMembers[] (legacy manual list in Project Settings)
 //   4) PICs / check-in authors / update authors observed in tasks
-// Same name across sources is deduped (first email wins; later sources only
-// fill in missing emails).
+//
+// Dedup is email-first when an email is known: anchoring on email collapses
+// "hattt4" + "Hà Trương Thị Thu" with same email into a single roster entry,
+// using the directory name as canonical (Firebase displayName wins over
+// free-text typed into the welcome dialog). Names without email keep using
+// name-based dedup so legacy free-text PICs still appear.
 function deriveTeamMembers(projects, currentAuthor, currentUserEmail, directory) {
+  // Build email → canonical name map from authoritative sources first
+  // (directory > project.teamMembers with email > observed). Any later add()
+  // call that supplies the same email will reuse the canonical name.
+  const emailToCanonical = new Map();
+  const seedCanonical = (name, email) => {
+    if (!email) return;
+    const k = String(email).trim().toLowerCase();
+    if (!k) return;
+    if (!emailToCanonical.has(k) && name) emailToCanonical.set(k, String(name).trim());
+  };
+  for (const u of (Array.isArray(directory) ? directory : [])) {
+    if (u?.email) seedCanonical(u.name || (u.email || '').split('@')[0], u.email);
+  }
+  if (currentAuthor && currentUserEmail) seedCanonical(currentAuthor, currentUserEmail);
+  for (const p of Object.values(projects || {})) {
+    for (const m of p.teamMembers || []) seedCanonical(m.name, m.email);
+  }
+
   const map = new Map();
   const add = (name, email) => {
-    if (!name) return;
-    const trimmed = String(name).trim();
-    if (!trimmed) return;
-    const key = trimmed.toLowerCase();
+    const trimmedName = (name == null ? '' : String(name)).trim();
+    const trimmedEmail = (email == null ? '' : String(email)).trim();
+    if (!trimmedName && !trimmedEmail) return;
+    // If we have an email, resolve to canonical name (directory wins)
+    const canonical = trimmedEmail
+      ? (emailToCanonical.get(trimmedEmail.toLowerCase()) || trimmedName)
+      : trimmedName;
+    if (!canonical) return;
+    const key = trimmedEmail
+      ? 'e:' + trimmedEmail.toLowerCase()
+      : 'n:' + canonical.toLowerCase();
     const existing = map.get(key);
-    if (existing) { if (email && !existing.email) existing.email = email; }
-    else map.set(key, { name: trimmed, email: email || null });
+    if (existing) {
+      if (trimmedEmail && !existing.email) existing.email = trimmedEmail;
+    } else {
+      map.set(key, { name: canonical, email: trimmedEmail || null });
+    }
   };
+
   if (currentAuthor) add(currentAuthor, currentUserEmail);
   const dirByUid = new Map((Array.isArray(directory) ? directory : []).map((u) => [u.uid, u]));
   for (const p of Object.values(projects || {})) {
-    // RBAC members (from MembersModal) — resolved via the user directory
     for (const uid of (p.memberIds || [])) {
       const entry = dirByUid.get(uid);
       if (!entry) continue;
@@ -7960,6 +7992,21 @@ export default function App() {
     })();
   }, []);
 
+  // Auto-derive identity from Firebase profile whenever authUser arrives
+  // without a local cached identity. After sign-out → sign-in, localStorage
+  // is cleared but Firebase displayName + email are still authoritative —
+  // no welcome dialog re-prompt needed. Persists to localStorage so the
+  // next reload is fast and survives offline.
+  useEffect(() => {
+    if (!authUser || author) return;
+    const fbName = authUser.name || (authUser.email || '').split('@')[0];
+    if (!fbName) return;
+    setAuthor(fbName);
+    setAuthorEmail(authUser.email || null);
+    setSignedOut(false);
+    ssetLocal(K.userLocal, JSON.stringify({ name: fbName, email: authUser.email || '' })).catch(() => { /* ignore */ });
+  }, [authUser, author]);
+
   const project = (currentId && currentId !== '__all__') ? projects[currentId] : null;
   const isAllProjectsMode = currentId === '__all__';
   // Owner check prefers verified Firebase email (authUser.email) over the
@@ -8306,11 +8353,23 @@ export default function App() {
     );
   }
 
-  // Auth gate. Three branches:
-  //   1) author present → main app (continues below)
-  //   2) no author + signedOut + !showNameDialog → calm landing page
-  //   3) no author + (!signedOut OR showNameDialog) → NameDialog
+  // Auth gate.
+  //   - With Firebase signed in (authUser present): identity auto-derives from
+  //     Google profile via the effect above; render a brief loading state in
+  //     the small race window before author state catches up.
+  //   - Without Firebase user (e.g. legacy localStorage-only flow or after
+  //     sign-out before AuthGate unmounts us): fall back to NameDialog /
+  //     SignedOutLanding so the app stays usable.
   if (!author) {
+    if (authUser) {
+      // Firebase identity exists; the auto-derive effect will set author
+      // imminently. Show loading rather than the welcome dialog.
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
+          Signing you in as {authUser.email}…
+        </div>
+      );
+    }
     if (signedOut && !showNameDialog) {
       return <SignedOutLanding onSignIn={() => setShowNameDialog(true)} />;
     }
@@ -8834,6 +8893,115 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
       ...overrides,
     };
   };
+  // ─── Legacy-name merge by email (issue 3 fix) ───
+  // Detect team members whose email matches a directory entry but whose name
+  // differs (e.g. "hattt4" vs Firebase "Hà Trương Thị Thu"). Same email = same
+  // person; merging rewrites every reference under the project so PIC, credit
+  // shares, decisions, action items, check-in/update authors, projectLead, and
+  // weightChangeLog all switch to the canonical (Firebase) name.
+  const legacyMismatches = useMemo(() => {
+    const dirByEmail = new Map();
+    for (const u of (directory || [])) {
+      if (u?.email && u?.name) dirByEmail.set(u.email.toLowerCase(), u.name);
+    }
+    const out = [];
+    for (const m of members) {
+      const em = (m.email || '').trim().toLowerCase();
+      if (!em) continue;
+      const canonical = dirByEmail.get(em);
+      if (canonical && canonical !== (m.name || '').trim()) {
+        out.push({ from: m.name, to: canonical, email: m.email });
+      }
+    }
+    return out;
+  }, [members, directory]);
+
+  const performLegacyMerge = async ({ from, to, email }) => {
+    if (!from || !to || from === to) return;
+    let touched = 0;
+    const renameAuthors = (arr) => Array.isArray(arr)
+      ? arr.map((e) => (e && e.author === from ? { ...e, author: to } : e))
+      : arr;
+    const updatedPrograms = (project.programs || []).map((pg) => ({
+      ...pg,
+      workstreams: (pg.workstreams || []).map((ws) => ({
+        ...ws,
+        tasks: (ws.tasks || []).map((t) => {
+          let next = t;
+          let dirty = false;
+          if (t.pic === from) { next = { ...next, pic: to }; dirty = true; }
+          if (Array.isArray(t.contributors) && t.contributors.includes(from)) {
+            const cs = new Set(t.contributors);
+            cs.delete(from);
+            if (to !== (next.pic || t.pic)) cs.add(to);
+            next = { ...next, contributors: Array.from(cs) };
+            dirty = true;
+          }
+          if (t.creditShares && Object.prototype.hasOwnProperty.call(t.creditShares, from)) {
+            const nsh = { ...t.creditShares };
+            const v = Number(nsh[from]) || 0;
+            delete nsh[from];
+            nsh[to] = (Number(nsh[to]) || 0) + v;
+            next = { ...next, creditShares: nsh };
+            dirty = true;
+          }
+          const newCheckIns = renameAuthors(t.checkIns);
+          const newUpdates = renameAuthors(t.updates);
+          if (newCheckIns !== t.checkIns || newUpdates !== t.updates) {
+            next = { ...next, checkIns: newCheckIns, updates: newUpdates };
+            dirty = true;
+          }
+          if (dirty) touched++;
+          return next;
+        }),
+      })),
+    }));
+    const updatedLead = project.projectLead === from ? to : project.projectLead;
+    const updatedDecisions = (project.decisions || []).map((d) => {
+      let nd = d;
+      if (Array.isArray(d.decidedBy) && d.decidedBy.includes(from)) {
+        const s = new Set(d.decidedBy); s.delete(from); s.add(to);
+        nd = { ...nd, decidedBy: Array.from(s) };
+      }
+      return nd;
+    });
+    const updatedActions = (project.actionItems || []).map((a) => {
+      let na = a;
+      if (a.pic === from) na = { ...na, pic: to };
+      if (Array.isArray(a.decidedBy) && a.decidedBy.includes(from)) {
+        const s = new Set(a.decidedBy); s.delete(from); s.add(to);
+        na = { ...na, decidedBy: Array.from(s) };
+      }
+      return na;
+    });
+    const updatedLog = Array.isArray(project.weightChangeLog)
+      ? project.weightChangeLog.map((l) => (l && l.by === from ? { ...l, by: to } : l))
+      : project.weightChangeLog;
+
+    // Update teamMembers: drop the old entry; ensure canonical exists with email
+    const withoutFrom = members.filter((m) => m.name !== from);
+    const finalMembers = withoutFrom.some((m) => m.name === to)
+      ? withoutFrom
+      : [...withoutFrom, { name: to, email: email || '' }];
+
+    const ok = await dialogs.confirm({
+      title: 'Merge legacy name?',
+      message: `Replace "${from}" with "${to}" across this project — ${touched} task occurrence${touched === 1 ? '' : 's'}, plus decisions, action items, check-ins, updates, project lead, weight log, and team list. Cannot be undone.`,
+      okLabel: 'Merge',
+    });
+    if (!ok) return;
+    setMembers(finalMembers);
+    onSave(buildModalSnapshot({
+      programs: updatedPrograms,
+      decisions: updatedDecisions,
+      actionItems: updatedActions,
+      projectLead: updatedLead,
+      weightChangeLog: updatedLog,
+      teamMembers: finalMembers,
+    }));
+    dialogs.alert({ title: 'Merge complete', message: `Renamed "${from}" → "${to}" across this project.` });
+  };
+
   const performMerge = async () => {
     const from = (mergeFrom || '').trim();
     const to = (mergeTo || '').trim();
@@ -9139,6 +9307,33 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
           </div>
         )}
       </div>
+
+      {legacyMismatches.length > 0 && isOwner && (
+        <div style={{
+          background: '#FAEEDA', border: '1px solid #E0BC75', borderRadius: 7,
+          padding: '10px 12px', marginBottom: 8,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: '#A8660C', marginBottom: 4 }}>
+            ⚠ Legacy name mismatch detected
+          </div>
+          <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 8, lineHeight: 1.5 }}>
+            Same email is registered in this project under a different name than the user's Google profile.
+            Merge to consolidate task PIC, contributors, decisions, action items, check-ins/updates, and credit shares under the canonical name.
+          </div>
+          {legacyMismatches.map((mm) => (
+            <div key={mm.email} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+              <span style={{ fontSize: 12, fontFamily: 'monospace', color: TOK.ink }}>
+                <span style={{ textDecoration: 'line-through', color: TOK.muted }}>{mm.from}</span>
+                {' → '}
+                <span style={{ fontWeight: 500 }}>{mm.to}</span>
+              </span>
+              <span style={{ fontSize: 11, color: TOK.muted }}>({mm.email})</span>
+              <span style={{ flex: 1 }} />
+              <Btn size="sm" variant="primary" onClick={() => performLegacyMerge(mm)}>Merge</Btn>
+            </div>
+          ))}
+        </div>
+      )}
 
       {members.length === 0 && (
         <div style={{ fontSize: 12, color: TOK.subtle, padding: 12, textAlign: 'center', background: TOK.bg, borderRadius: 6 }}>
