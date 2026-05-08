@@ -519,6 +519,30 @@ function computeActivityIndexWithTrend(projectsMap, options = {}) {
   return current;
 }
 
+// Top-K PICs needing support, ordered by signal weight. Used by the dashboard
+// banner. Score adds: red delivery (3), amber delivery (1), red cadence (2),
+// amber cadence (1), and one point per unresolved blocker.
+function rankCoachingPriorities(metricsMap, limit = 3) {
+  const scored = [];
+  for (const m of metricsMap.values()) {
+    let score = 0;
+    if (sampleStatus(m.sampleSize.actions) === 'ok') {
+      const c = bucketColor(m.delivery.rate, ACTIVITY_THRESHOLDS.delivery);
+      if (c === 'red') score += 3;
+      else if (c === 'amber') score += 1;
+    }
+    if (m.cadence.activeTasks > 0) {
+      const c = bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true });
+      if (c === 'red') score += 2;
+      else if (c === 'amber') score += 1;
+    }
+    if (m.blocker.unresolved > 0) score += m.blocker.unresolved;
+    if (score > 0) scored.push({ pic: m.pic, score, metrics: m });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit);
+}
+
 // Decision decay check: returns { decayed, daysOverdue?, reviewDate? }
 function getDecisionDecay(decision, now = new Date()) {
   if (!decision.expectedReviewDate) {
@@ -6646,23 +6670,91 @@ function PICDetailModal({ metrics, onClose }) {
 function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
   const [selectedPic, setSelectedPic] = useState(null);
   const [showDifficulty, setShowDifficulty] = useState(false);
-  const indexMap = useMemo(() => computeActivityIndexWithTrend(projects), [projects]);
+  // Window + sort controls. Owner-editable; non-owners see them disabled and
+  // viewable for transparency. Local state — does not persist across reloads;
+  // future improvement: hoist to meta so the workspace owner can pin a default
+  // for the team.
+  const [actionWeeks, setActionWeeks] = useState(DEFAULT_DASHBOARD_WINDOW.actionWeeks);
+  const [taskWeeks, setTaskWeeks] = useState(DEFAULT_DASHBOARD_WINDOW.taskWeeks);
+  const [sortBy, setSortBy] = useState('priority');
+
+  const indexMap = useMemo(
+    () => computeActivityIndexWithTrend(projects, { actionWeeks, taskWeeks }),
+    [projects, actionWeeks, taskWeeks]
+  );
   const picCredits = useMemo(() => computeWorkspaceCredits(projects).perPic, [projects]);
-  const picList = Array.from(indexMap.values()).sort((a, b) => (b.composite.score || 0) - (a.composite.score || 0));
+  const priorities = useMemo(() => rankCoachingPriorities(indexMap, 3), [indexMap]);
+
+  const picList = useMemo(() => {
+    const arr = Array.from(indexMap.values());
+    if (sortBy === 'name') arr.sort((a, b) => a.pic.localeCompare(b.pic));
+    else if (sortBy === 'composite') arr.sort((a, b) => (b.composite.score ?? -1) - (a.composite.score ?? -1));
+    else if (sortBy === 'delivery') arr.sort((a, b) => (b.delivery.weightedRate ?? b.delivery.rate ?? -1) - (a.delivery.weightedRate ?? a.delivery.rate ?? -1));
+    else if (sortBy === 'cadence') arr.sort((a, b) => (a.cadence.avgDaysSinceUpdate ?? 999) - (b.cadence.avgDaysSinceUpdate ?? 999));
+    else if (sortBy === 'risk') arr.sort((a, b) => (b.risk.honestyRate ?? -1) - (a.risk.honestyRate ?? -1));
+    else if (sortBy === 'recent') arr.sort((a, b) => (a.cadence.avgDaysSinceUpdate ?? 999) - (b.cadence.avgDaysSinceUpdate ?? 999));
+    else {
+      // 'priority' (default): low composite + recent flags + open blockers
+      const score = (m) => {
+        let s = 0;
+        if (m.composite.score != null && m.composite.score < ACTIVITY_THRESHOLDS.composite.amber) s += 3;
+        if (m.cadence.staleTasks > 0) s += 2;
+        if (m.blocker.unresolved > 0) s += m.blocker.unresolved;
+        if (m.risk.greenButOverdue > 0) s += m.risk.greenButOverdue * 2;
+        if (m.trend?.composite === 'down') s += 2;
+        return s;
+      };
+      arr.sort((a, b) => score(b) - score(a));
+    }
+    return arr;
+  }, [indexMap, sortBy]);
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14, gap: 8 }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>Activity Dashboard</div>
-          <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>Per-PIC coaching metrics — not for performance reviews. Trailing {DEFAULT_DASHBOARD_WINDOW.actionWeeks}w actions / {DEFAULT_DASHBOARD_WINDOW.taskWeeks}w tasks.</div>
-          {!isOwner && (
-            <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 4 }}>
-              🔒 Sort & window settings managed by workspace owner
-            </div>
-          )}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>Team Activity Dashboard</div>
+        <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4, lineHeight: 1.5, maxWidth: 720 }}>
+          Read-only coaching view — surfaces who's delivering, who's communicating, and who may need support. Not a performance score. Calibrate thresholds after 4-8 weeks of data.
         </div>
-        <div style={{ flex: 1 }} />
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, marginBottom: 14, padding: 10, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: TOK.muted }}>Window:</span>
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, opacity: isOwner ? 1 : 0.55 }}>
+          Actions
+          <select value={actionWeeks} onChange={(e) => setActionWeeks(+e.target.value)} disabled={!isOwner}
+            style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, cursor: isOwner ? 'pointer' : 'not-allowed' }}>
+            <option value={2}>last 2 weeks</option>
+            <option value={4}>last 4 weeks</option>
+            <option value={8}>last 8 weeks</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, opacity: isOwner ? 1 : 0.55 }}>
+          Tasks
+          <select value={taskWeeks} onChange={(e) => setTaskWeeks(+e.target.value)} disabled={!isOwner}
+            style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, cursor: isOwner ? 'pointer' : 'not-allowed' }}>
+            <option value={4}>last 4 weeks</option>
+            <option value={12}>last 12 weeks</option>
+            <option value={26}>last 26 weeks</option>
+          </select>
+        </label>
+        <span style={{ flex: 1 }} />
+        {!isOwner && (
+          <span style={{ fontSize: 11, color: TOK.subtle, fontStyle: 'italic', marginRight: 6 }}>
+            🔒 Sort &amp; window settings managed by workspace owner
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: TOK.muted, opacity: isOwner ? 1 : 0.55 }}>Sort:</span>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} disabled={!isOwner}
+          style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, cursor: isOwner ? 'pointer' : 'not-allowed', opacity: isOwner ? 1 : 0.55 }}>
+          <option value="priority">Coaching priority</option>
+          <option value="composite">Composite score</option>
+          <option value="delivery">Delivery</option>
+          <option value="cadence">Communication</option>
+          <option value="risk">Risk Honesty</option>
+          <option value="recent">Recent activity</option>
+          <option value="name">Name (A-Z)</option>
+        </select>
         {onProjectUpdate && isOwner && (
           <Btn size="sm" onClick={() => setShowDifficulty(!showDifficulty)} title="Configure workstream difficulty multipliers">⚖️ Difficulty</Btn>
         )}
@@ -6670,6 +6762,42 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
 
       {showDifficulty && onProjectUpdate && isOwner && (
         <WorkstreamDifficultyConfig projects={projects} onProjectUpdate={onProjectUpdate} onClose={() => setShowDifficulty(false)} />
+      )}
+
+      {priorities.length > 0 && (
+        <div style={{ marginBottom: 14, padding: 12, background: '#fff8e1', border: '1px solid #f0e3a0', borderRadius: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: '#7a5d00', marginBottom: 6 }}>
+            💡 Coaching priorities — top {priorities.length} who may need support
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a5d00', lineHeight: 1.7 }}>
+            {priorities.map((p) => {
+              const reasons = [];
+              const dRate = p.metrics.delivery.weightedRate ?? p.metrics.delivery.rate;
+              if (sampleStatus(p.metrics.sampleSize.actions) === 'ok' && bucketColor(dRate, ACTIVITY_THRESHOLDS.delivery) === 'red') {
+                reasons.push(`delivery ${dRate}%`);
+              }
+              if (p.metrics.cadence.staleTasks > 0) {
+                reasons.push(`${p.metrics.cadence.staleTasks} stale task${p.metrics.cadence.staleTasks === 1 ? '' : 's'}`);
+              }
+              if (p.metrics.blocker.unresolved > 0) {
+                reasons.push(`${p.metrics.blocker.unresolved} open blocker${p.metrics.blocker.unresolved === 1 ? '' : 's'}`);
+              }
+              if (p.metrics.risk.greenButOverdue > 0) {
+                reasons.push(`${p.metrics.risk.greenButOverdue} green→overdue`);
+              }
+              if (p.metrics.trend?.composite === 'down') {
+                reasons.push('trending down ↓');
+              }
+              return (
+                <li key={p.pic}>
+                  <strong>{p.pic}</strong>
+                  {p.metrics.composite.score != null && <span style={{ fontWeight: 400, opacity: 0.8 }}> (composite {p.metrics.composite.score})</span>}
+                  {reasons.length > 0 && <> — {reasons.join(', ')}</>}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       {picList.length === 0 ? (
