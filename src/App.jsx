@@ -708,6 +708,137 @@ function computeProjectCredits(project) {
   return { totalCp, leadCp, leadName, leadSharePct, programPoolCp, perPic, breakdown };
 }
 
+// v30 — Cross-project aggregation of everything relevant to `author`.
+// Pure read; no mutation. Called from MyWorkView via useMemo, and from
+// TeamOverviewView per-member (Phase 3). lastSeenAt drives unread-mentions
+// partitioning; pass null to treat all mentions as unread.
+function computeMyWork(author, projects, isOwner, lastSeenAt) {
+  const startOfToday = today();
+  const todayEnd = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000 - 1);
+  const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const lastSeen = lastSeenAt ? new Date(lastSeenAt) : new Date(0);
+
+  const out = {
+    needsAttention: [],
+    unreadMentions: [],
+    allMentions: [],
+    tasksOwned: { today: [], week: [], later: [] },
+    tasksContributing: [],
+    actionItems: { today: [], week: [], later: [] },
+    decisions: [],
+    credit: { earned: 0, projected: 0, pct: 0, perProject: [] },
+    pendingApprovals: [],
+  };
+  if (!author) return out;
+
+  const authorLc = author.toLowerCase();
+
+  for (const proj of Object.values(projects || {})) {
+    for (const pg of (proj.programs || [])) {
+      for (const ws of (pg.workstreams || [])) {
+        for (const t of (ws.tasks || [])) {
+          if (t.status === 'Dropped') continue;
+          const enriched = { task: t, project: proj, program: pg, workstream: ws };
+
+          if (t.pic === author) {
+            const overdue = isOverdue(t);
+            const endDate = parseDate(t.end);
+            const dueToday = !overdue && endDate && endDate <= todayEnd;
+            const dueWeek = !overdue && !dueToday && endDate && endDate <= weekEnd;
+            if (overdue) {
+              out.needsAttention.push({ kind: 'overdue_task', ...enriched });
+              out.tasksOwned.today.push(enriched);
+            } else if (dueToday) {
+              out.tasksOwned.today.push(enriched);
+            } else if (dueWeek) {
+              out.tasksOwned.week.push(enriched);
+            } else {
+              out.tasksOwned.later.push(enriched);
+            }
+          }
+
+          if (Array.isArray(t.contributors) && t.contributors.includes(author) && t.pic !== author) {
+            out.tasksContributing.push({ ...enriched, primaryPic: t.pic });
+          }
+
+          // Scan task updates + legacy check-ins for @<author> mentions.
+          // findMentions() needs a teamMembers list which we don't have here;
+          // a name-token regex is sufficient and matches v22+ mention writing.
+          const mentionTexts = [];
+          for (const upd of (t.updates || [])) {
+            mentionTexts.push({ ts: upd.timestamp, postAuthor: upd.author, text: upd.text || '' });
+          }
+          for (const ci of (t.checkIns || [])) {
+            const ciText = [ci.done, ci.plan, ci.blockers].filter(Boolean).join(' ');
+            if (ciText) mentionTexts.push({ ts: ci.timestamp, postAuthor: ci.author, text: ciText });
+          }
+          for (const e of mentionTexts) {
+            const tokens = (e.text.match(/@([A-Za-zÀ-ỹ0-9._-]+)/g) || []).map((m) => m.slice(1).toLowerCase());
+            if (!tokens.includes(authorLc)) continue;
+            const item = {
+              ts: e.ts, postAuthor: e.postAuthor, text: e.text,
+              task: t, project: proj, program: pg, workstream: ws,
+            };
+            out.allMentions.push(item);
+            if (e.ts && new Date(e.ts) > lastSeen) out.unreadMentions.push(item);
+          }
+
+          if (isOwner && t.deadlineRequest) {
+            out.pendingApprovals.push({ task: t, request: t.deadlineRequest, project: proj });
+            out.needsAttention.push({ kind: 'deadline_approval', task: t, request: t.deadlineRequest, project: proj, program: pg, workstream: ws });
+          }
+        }
+      }
+    }
+
+    for (const a of (proj.actionItems || [])) {
+      if (a.pic !== author) continue;
+      if (a.status === 'Done' || a.status === 'Cancelled' || a.status === 'Dropped') continue;
+      const dueDate = a.due ? parseDate(a.due) : null;
+      const enriched = { action: a, project: proj };
+      if (!dueDate) {
+        out.actionItems.later.push(enriched);
+      } else if (dueDate <= todayEnd) {
+        out.actionItems.today.push(enriched);
+        if (dueDate < startOfToday) out.needsAttention.push({ kind: 'overdue_action', ...enriched });
+      } else if (dueDate <= weekEnd) {
+        out.actionItems.week.push(enriched);
+      } else {
+        out.actionItems.later.push(enriched);
+      }
+    }
+
+    for (const d of (proj.decisions || [])) {
+      if (!Array.isArray(d.decidedBy) || !d.decidedBy.includes(author)) continue;
+      if (d.followUp && d.followUp.status === 'Done') continue;
+      out.decisions.push({ decision: d, project: proj });
+    }
+
+    const credits = computeProjectCredits(proj);
+    const myCredit = credits.perPic.get(author);
+    if (myCredit && (myCredit.earned > 0 || myCredit.projected > 0)) {
+      out.credit.earned += myCredit.earned;
+      out.credit.projected += myCredit.projected;
+      out.credit.perProject.push({ project: proj, earned: myCredit.earned, projected: myCredit.projected });
+    }
+  }
+
+  out.credit.pct = out.credit.projected > 0 ? (out.credit.earned / out.credit.projected) * 100 : 0;
+
+  const byEnd = (a, b) => {
+    const da = parseDate(a.task.end);
+    const db = parseDate(b.task.end);
+    return (da ? da.getTime() : Infinity) - (db ? db.getTime() : Infinity);
+  };
+  out.tasksOwned.today.sort(byEnd);
+  out.tasksOwned.week.sort(byEnd);
+  out.tasksOwned.later.sort(byEnd);
+  out.allMentions.sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+  out.unreadMentions.sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+
+  return out;
+}
+
 // Aggregate credits across all projects, optionally filtered by year.
 // Projects without a `creditYear` are always included (no filter applied to them).
 // Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
@@ -7267,6 +7398,566 @@ function SortableHeader({ label, field, sortBy, onSort, align = 'left' }) {
   );
 }
 
+/* ═════════ MY WORK (v30) ═════════ */
+
+function myWorkTimeAgo(ts) {
+  if (!ts) return '';
+  const d = parseDate(ts);
+  if (!d) return '';
+  const diff = Math.max(0, Date.now() - d.getTime());
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return fmtDateShort(ts);
+}
+
+function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, headerRight, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{
+          padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10,
+          cursor: 'pointer', userSelect: 'none',
+          borderBottom: open ? '1px solid ' + TOK.line : 'none',
+          background: open ? TOK.bg : TOK.surface,
+        }}>
+        <span style={{ fontSize: 16, lineHeight: 1 }}>{icon}</span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: TOK.ink }}>{title}</span>
+        {typeof count === 'number' && count > 0 && (
+          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: TOK.bg, color: TOK.muted, fontWeight: 500 }}>
+            {count}
+          </span>
+        )}
+        {subtitle && <span style={{ fontSize: 11.5, color: TOK.muted, marginLeft: 4 }}>{subtitle}</span>}
+        <div style={{ flex: 1 }} />
+        {headerRight && <span onClick={(e) => e.stopPropagation()}>{headerRight}</span>}
+        <span style={{ color: TOK.muted, display: 'inline-flex' }}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
+      </div>
+      {open && <div style={{ padding: '10px 16px 14px' }}>{children}</div>}
+    </div>
+  );
+}
+
+function StatusQuickPill({ status, onChange }) {
+  const [menu, setMenu] = useState(null);
+  const safeStatus = status || 'Planned';
+  const map = {
+    Planned: { fg: TOK.plannedFg, bg: TOK.plannedBg, icon: <Circle size={10} /> },
+    InProgress: { fg: TOK.inprogFg, bg: TOK.inprogBg, icon: <PlayCircle size={10} /> },
+    Completed: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
+    Dropped: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
+  };
+  const s = map[safeStatus] || map.Planned;
+  const openMenu = (e) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMenu({ x: rect.left, y: rect.bottom + 4 });
+  };
+  return (
+    <>
+      <button
+        type="button"
+        onClick={openMenu}
+        title="Change status"
+        style={{
+          fontFamily: FONT_STACK, fontSize: 10.5, fontWeight: 500,
+          padding: '2px 7px', borderRadius: 999, border: 'none',
+          color: s.fg, background: s.bg, cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 3,
+        }}>
+        {s.icon} {STATUS_LABEL[safeStatus] || safeStatus}
+        <ChevronDown size={9} style={{ opacity: 0.7, marginLeft: 1 }} />
+      </button>
+      {menu && (
+        <PopoverMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={STATUSES.map((st) => ({
+            label: STATUS_LABEL[st] + (st === safeStatus ? '  ✓' : ''),
+            icon: (map[st] || map.Planned).icon,
+            danger: st === 'Dropped',
+            onClick: () => { if (st !== safeStatus) onChange(st); },
+          }))}
+        />
+      )}
+    </>
+  );
+}
+
+function MyWorkBreadcrumb({ project, program, workstream }) {
+  const parts = [project?.name, program?.name, workstream?.name].filter(Boolean);
+  return <span style={{ fontSize: 11, color: TOK.muted }}>{parts.join(' › ')}</span>;
+}
+
+function MyWorkDeadlineTypePill({ type }) {
+  if (!type) return null;
+  const hard = type === 'hard';
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 999,
+      color: hard ? TOK.overdueFg : TOK.inprogFg,
+      background: hard ? TOK.overdueBg : TOK.inprogBg,
+      display: 'inline-flex', alignItems: 'center', gap: 3,
+    }}>
+      {hard ? '🔒 Hard' : '🎯 Soft'}
+    </span>
+  );
+}
+
+function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails }) {
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [isBlocker, setIsBlocker] = useState(false);
+  const overdue = isOverdue(task);
+  const endDate = parseDate(task.end);
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 6, background: TOK.surface }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 40 }}>
+        <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {task.name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+            <MyWorkBreadcrumb project={project} program={program} workstream={workstream} />
+            {endDate && (
+              <span style={{ fontSize: 11, color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>
+                {overdue ? '⚠ ' : ''}due {fmtDateShort(task.end)}
+              </span>
+            )}
+            <MyWorkDeadlineTypePill type={task.deadlineType} />
+          </div>
+        </div>
+        <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+          <StatusQuickPill status={task.status} onChange={(st) => onStatusChange(st)} />
+        </span>
+        <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+      </div>
+      {expanded && (
+        <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
+          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>Quick update</div>
+          <MentionTextarea
+            value={draft}
+            onChange={setDraft}
+            rows={2}
+            placeholder={`Type @ to mention. Posted as ${author || '…'}.`}
+            teamMembers={teamMembers}
+          />
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: TOK.muted, marginTop: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={isBlocker} onChange={(e) => setIsBlocker(e.target.checked)} /> This is a blocker
+          </label>
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+            <Btn size="sm" variant="primary" disabled={!draft.trim()} onClick={() => {
+              onAddUpdate(draft.trim(), isBlocker);
+              setDraft(''); setIsBlocker(false); setExpanded(false);
+            }}>Post update</Btn>
+            <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request extension</Btn>
+            <Btn size="sm" variant="ghost" onClick={onOpenDetails}>→ Open full details</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MyWorkSubTabs({ value, onChange, tabs }) {
+  return (
+    <div style={{ display: 'inline-flex', gap: 2, padding: 2, background: TOK.surface, borderRadius: 6, border: '1px solid ' + TOK.line }}>
+      {tabs.map((t) => (
+        <button key={t.id} onClick={() => onChange(t.id)}
+          style={{
+            fontFamily: FONT_STACK, fontSize: 11, fontWeight: 500,
+            padding: '3px 8px', borderRadius: 4, border: 'none',
+            background: value === t.id ? TOK.bg : 'transparent',
+            color: value === t.id ? TOK.ink : TOK.muted,
+            cursor: 'pointer',
+          }}>
+          {t.label} <span style={{ opacity: 0.7 }}>({t.count})</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MyWorkView({
+  projects, author, isOwner, userPrefs, teamMembers,
+  onTaskClick, onTaskUpdate, onActionUpdate, onMarkSeen,
+  showToast,
+}) {
+  const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
+  const myWork = useMemo(
+    () => computeMyWork(author, projects, isOwner, lastSeenAt),
+    [projects, author, isOwner, lastSeenAt]
+  );
+  const [ownedTab, setOwnedTab] = useState('today');
+  const [actionsTab, setActionsTab] = useState('today');
+
+  useEffect(() => {
+    if (!onMarkSeen || !author) return;
+    const t = setTimeout(() => onMarkSeen(), 5000);
+    return () => clearTimeout(t);
+  }, [author, onMarkSeen]);
+
+  const handleStatusChange = (task, project, newStatus) => {
+    onTaskUpdate({ ...task, status: newStatus }, project.id);
+  };
+  const handleAddUpdate = (task, project, text, blocker) => {
+    onTaskUpdate({
+      ...task,
+      updates: [
+        {
+          id: uid('upd'),
+          timestamp: new Date().toISOString(),
+          author,
+          text,
+          isBlocker: !!blocker,
+        },
+        ...(task.updates || []),
+      ],
+    }, project.id);
+  };
+  const handleRequestExtension = (task, project) => {
+    onTaskClick(task.id, project.id);
+    if (showToast) showToast('Open the task to request an extension');
+  };
+  const handleActionDone = (action, project) => {
+    onActionUpdate({ ...action, status: 'Done', completedAt: new Date().toISOString() }, project.id);
+  };
+
+  const counts = {
+    owned: myWork.tasksOwned.today.length + myWork.tasksOwned.week.length + myWork.tasksOwned.later.length,
+    actions: myWork.actionItems.today.length + myWork.actionItems.week.length + myWork.actionItems.later.length,
+  };
+  const hasAnyAssignment = (
+    counts.owned + myWork.tasksContributing.length + counts.actions +
+    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length
+  ) > 0;
+  const urgentEmpty = (
+    myWork.needsAttention.length === 0 && myWork.unreadMentions.length === 0 &&
+    myWork.tasksOwned.today.length === 0 && myWork.actionItems.today.length === 0 &&
+    myWork.decisions.length === 0
+  );
+
+  const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  const Header = (
+    <div style={{ marginBottom: 16 }}>
+      <h1 style={{ fontFamily: FONT_STACK, fontSize: 22, fontWeight: 600, margin: 0, color: TOK.ink, letterSpacing: -0.2 }}>My Work</h1>
+      <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4 }}>
+        {author ? <><span style={{ color: TOK.ink, fontWeight: 500 }}>{author}</span> · </> : null}
+        Today: {todayLabel}
+      </div>
+    </div>
+  );
+
+  if (!author) {
+    return (
+      <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
+        <div style={{ color: TOK.muted, fontSize: 13 }}>Sign in to see your work.</div>
+      </div>
+    );
+  }
+
+  if (!hasAnyAssignment) {
+    return (
+      <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
+        {Header}
+        <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: '36px 24px', textAlign: 'center', color: TOK.muted, fontSize: 13 }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>🌱</div>
+          <div style={{ fontSize: 15, color: TOK.ink, fontWeight: 500, marginBottom: 6 }}>No tasks assigned yet</div>
+          <div style={{ maxWidth: 440, margin: '0 auto', lineHeight: 1.5 }}>
+            Ask your workspace owner to assign you to a task or invite you to a project.
+            Once you're added as a PIC or contributor, your work will appear here.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
+      {Header}
+
+      {urgentEmpty && (
+        <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: '16px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <span style={{ fontSize: 24 }}>🌤</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: TOK.ink }}>Nothing urgent today</div>
+            <div style={{ fontSize: 12, color: TOK.muted, marginTop: 2 }}>
+              No overdue tasks, no unread mentions, no pending action items, and no decisions to review.
+            </div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 8, flexWrap: 'wrap', fontSize: 11.5, color: TOK.muted }}>
+              {counts.owned > 0 && <span>📋 {counts.owned} tasks owned</span>}
+              {myWork.tasksContributing.length > 0 && <span>🤝 {myWork.tasksContributing.length} contributing</span>}
+              {myWork.credit.earned > 0 && <span>📊 {(Math.round(myWork.credit.earned * 10) / 10)} cp earned</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔴 Needs attention now */}
+      <MyWorkSection
+        icon="🔴" title="Needs attention now"
+        count={myWork.needsAttention.length}
+        defaultOpen={myWork.needsAttention.length > 0}>
+        {myWork.needsAttention.length === 0 && (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>Nothing urgent right now.</div>
+        )}
+        {myWork.needsAttention.map((it, i) => {
+          if (it.kind === 'overdue_task') {
+            const days = (() => {
+              const e = parseDate(it.task.end); if (!e) return 0;
+              return Math.floor((Date.now() - e.getTime()) / 86400000);
+            })();
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ⚠ {it.task.name}
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                  <MyWorkDeadlineTypePill type={it.task.deadlineType} />
+                  <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>
+                    was due {fmtDateShort(it.task.end)}{days > 0 ? ` · ${days} day${days === 1 ? '' : 's'} overdue` : ''}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>→ Open</Btn>
+                </div>
+              </div>
+            );
+          }
+          if (it.kind === 'overdue_action') {
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ⚠ {it.action.text}
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
+                  {it.project.name} · action item · <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>was due {fmtDateShort(it.action.due)}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => handleActionDone(it.action, it.project)}>✓ Mark done</Btn>
+                </div>
+              </div>
+            );
+          }
+          if (it.kind === 'deadline_approval') {
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.inprogFg, padding: '8px 12px', background: TOK.inprogBg + '60', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ⏳ Approval pending: {it.request.requestedBy} wants {it.request.proposedEnd ? `new deadline ${fmtDateShort(it.request.proposedEnd)}` : 'an extension'} on "{it.task.name}"
+                </div>
+                {it.request.reason && (
+                  <div style={{ fontSize: 11.5, color: TOK.muted, marginTop: 3, fontStyle: 'italic' }}>
+                    "{it.request.reason}"
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>→ Open to review</Btn>
+                </div>
+              </div>
+            );
+          }
+          return null;
+        })}
+      </MyWorkSection>
+
+      {/* 💬 Mentions */}
+      <MyWorkSection
+        icon="💬" title="Mentions"
+        count={myWork.allMentions.length}
+        subtitle={myWork.unreadMentions.length > 0 ? `${myWork.unreadMentions.length} unread` : null}
+        defaultOpen={myWork.unreadMentions.length > 0}>
+        {myWork.allMentions.length === 0 && (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No mentions yet.</div>
+        )}
+        {myWork.allMentions.slice(0, 12).map((m, i) => {
+          const unread = m.ts && new Date(m.ts) > new Date(lastSeenAt || 0);
+          return (
+            <div key={`m-${i}`} style={{
+              padding: '8px 12px', marginBottom: 6, borderRadius: 6,
+              background: unread ? TOK.mentionBg : TOK.bg,
+              border: '1px solid ' + (unread ? TOK.mention + '30' : TOK.line),
+            }}>
+              <div style={{ fontSize: 11, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
+                {unread && <span style={{ fontSize: 9, fontWeight: 600, color: TOK.mention, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>UNREAD</span>}
+                <span style={{ color: TOK.ink, fontWeight: 500 }}>{m.postAuthor || '—'}</span>
+                <span>· {myWorkTimeAgo(m.ts)} ·</span>
+                <span>in "{m.task.name}"</span>
+              </div>
+              <div style={{ fontSize: 13, color: TOK.ink, marginTop: 4, lineHeight: 1.4 }}>
+                <MentionedText text={m.text} teamMembers={teamMembers} />
+              </div>
+              <div style={{ marginTop: 6 }}>
+                <Btn size="sm" variant="ghost" onClick={() => onTaskClick(m.task.id, m.project.id)}>→ Open task</Btn>
+              </div>
+            </div>
+          );
+        })}
+      </MyWorkSection>
+
+      {/* 📋 Tasks I own */}
+      <MyWorkSection
+        icon="📋" title="Tasks I own as Primary PIC"
+        count={counts.owned}
+        defaultOpen={myWork.tasksOwned.today.length > 0}
+        headerRight={
+          <MyWorkSubTabs value={ownedTab} onChange={setOwnedTab} tabs={[
+            { id: 'today', label: 'Today', count: myWork.tasksOwned.today.length },
+            { id: 'week', label: 'Week', count: myWork.tasksOwned.week.length },
+            { id: 'later', label: 'Later', count: myWork.tasksOwned.later.length },
+          ]} />
+        }>
+        {myWork.tasksOwned[ownedTab].length === 0 ? (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No tasks in this bucket.</div>
+        ) : myWork.tasksOwned[ownedTab].map((e, i) => (
+          <TaskRowInline
+            key={`own-${ownedTab}-${i}`}
+            task={e.task} project={e.project} program={e.program} workstream={e.workstream}
+            author={author} teamMembers={teamMembers}
+            onStatusChange={(st) => handleStatusChange(e.task, e.project, st)}
+            onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
+            onRequestExtension={() => handleRequestExtension(e.task, e.project)}
+            onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
+          />
+        ))}
+      </MyWorkSection>
+
+      {/* 🤝 Tasks I contribute to */}
+      <MyWorkSection
+        icon="🤝" title="Tasks I contribute to"
+        count={myWork.tasksContributing.length}
+        defaultOpen={myWork.tasksContributing.length > 0 && myWork.tasksContributing.length <= 6}>
+        {myWork.tasksContributing.length === 0 && (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>You're not a contributor on any task yet.</div>
+        )}
+        {myWork.tasksContributing.map((e, i) => (
+          <div key={`c-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
+            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
+              {e.task.name}
+            </div>
+            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <MyWorkBreadcrumb project={e.project} program={e.program} workstream={e.workstream} />
+              <span>Primary PIC: <span style={{ color: TOK.ink }}>{e.primaryPic || '—'}</span></span>
+              {e.task.end && <span>· due {fmtDateShort(e.task.end)}</span>}
+              <Pill status={e.task.status || 'Planned'} size="sm" />
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <Btn size="sm" variant="ghost" onClick={() => onTaskClick(e.task.id, e.project.id)}>→ Open</Btn>
+            </div>
+          </div>
+        ))}
+      </MyWorkSection>
+
+      {/* ✅ Action items assigned to me */}
+      <MyWorkSection
+        icon="✅" title="Action items assigned to me"
+        count={counts.actions}
+        defaultOpen={myWork.actionItems.today.length > 0}
+        headerRight={
+          <MyWorkSubTabs value={actionsTab} onChange={setActionsTab} tabs={[
+            { id: 'today', label: 'Today', count: myWork.actionItems.today.length },
+            { id: 'week', label: 'Week', count: myWork.actionItems.week.length },
+            { id: 'later', label: 'Later', count: myWork.actionItems.later.length },
+          ]} />
+        }>
+        {myWork.actionItems[actionsTab].length === 0 ? (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
+        ) : myWork.actionItems[actionsTab].map((e, i) => (
+          <div key={`a-${actionsTab}-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
+            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
+              {e.action.text}
+            </div>
+            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span>{e.project.name}</span>
+              {e.action.due && <span>· due {fmtDateShort(e.action.due)}</span>}
+              {e.action.priority && <span>· {e.action.priority} priority</span>}
+              <span>· {e.action.status || 'Pending'}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <Btn size="sm" variant="primary" onClick={() => handleActionDone(e.action, e.project)}>✓ Mark done</Btn>
+            </div>
+          </div>
+        ))}
+      </MyWorkSection>
+
+      {/* 🤔 Decisions awaiting input */}
+      <MyWorkSection
+        icon="🤔" title="Decisions awaiting your input"
+        count={myWork.decisions.length}
+        defaultOpen={myWork.decisions.length > 0}>
+        {myWork.decisions.length === 0 && (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No decisions need your input.</div>
+        )}
+        {myWork.decisions.map((e, i) => (
+          <div key={`d-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
+            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
+              "{e.decision.title || e.decision.summary || '(untitled decision)'}"
+            </div>
+            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
+              {e.project.name} · decided by {(e.decision.decidedBy || []).length} {(e.decision.decidedBy || []).length === 1 ? 'person' : 'people'}
+              {e.decision.followUp?.dueDate && <> · expected review: {fmtDateShort(e.decision.followUp.dueDate)}</>}
+            </div>
+          </div>
+        ))}
+      </MyWorkSection>
+
+      {/* 📊 My credit (always collapsed by default) */}
+      <MyWorkSection
+        icon="📊" title={`My credit this year (${new Date().getFullYear()})`}
+        defaultOpen={false}>
+        {myWork.credit.projected === 0 ? (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>
+            No credit allocation set up for projects you're in.
+          </div>
+        ) : (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <div style={{ fontSize: 13 }}>
+                <span style={{ color: TOK.muted }}>Earned:</span> <span style={{ fontWeight: 600, color: TOK.ink }}>{(Math.round(myWork.credit.earned * 10) / 10)} cp</span>
+              </div>
+              <div style={{ fontSize: 13 }}>
+                <span style={{ color: TOK.muted }}>Projected:</span> <span style={{ fontWeight: 600, color: TOK.ink }}>{(Math.round(myWork.credit.projected * 10) / 10)} cp</span>
+              </div>
+              <div style={{ fontSize: 13, color: TOK.accent, fontWeight: 600 }}>
+                {Math.round(myWork.credit.pct)}%
+              </div>
+            </div>
+            <div style={{ height: 6, background: TOK.bg, borderRadius: 999, overflow: 'hidden', marginBottom: 14 }}>
+              <div style={{ height: '100%', width: `${Math.min(100, myWork.credit.pct)}%`, background: TOK.accent }} />
+            </div>
+            <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 6, fontWeight: 500 }}>By project</div>
+            {myWork.credit.perProject.map((p, i) => {
+              const pct = p.projected > 0 ? (p.earned / p.projected) * 100 : 0;
+              return (
+                <div key={`cp-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, padding: '4px 0' }}>
+                  <span style={{ color: TOK.ink, minWidth: 100, fontWeight: 500 }}>{p.project.name}</span>
+                  <span style={{ color: TOK.muted }}>
+                    {(Math.round(p.earned * 10) / 10)} / {(Math.round(p.projected * 10) / 10)} cp
+                  </span>
+                  <span style={{ color: TOK.muted }}>({Math.round(pct)}%)</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </MyWorkSection>
+    </div>
+  );
+}
+
 function CreditReportView({ projects, isOwner }) {
   // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
   const thisYear = new Date().getFullYear();
@@ -8041,7 +8732,7 @@ export default function App() {
   const [meta, setMeta] = useState(null);
   const [projects, setProjects] = useState({}); // id → project
   const [currentId, setCurrentId] = useState(null);
-  const [view, setView] = useState('mindmap'); // mindmap | outline | dashboard
+  const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
@@ -8145,6 +8836,38 @@ export default function App() {
     (verifiedEmail && meta.workspaceOwner === verifiedEmail) ||
     (author && meta.workspaceOwner === author)
   ));
+
+  // v30 — per-user preferences (lastSeenMyWorkAt, defaultViewOverride, etc.)
+  // meta.userPreferences is optional; default to {} so legacy workspaces just work.
+  const userPrefs = useMemo(
+    () => (author ? (meta?.userPreferences?.[author] || {}) : {}),
+    [meta, author]
+  );
+
+  // Resolve landing view once meta + author are ready. Fallback chain:
+  // personal override → workspace default → 'my-work' (the new v30 default).
+  useEffect(() => {
+    if (view !== null || !meta || !author) return;
+    setView(userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work');
+  }, [meta, author, view, userPrefs]);
+
+  // v30 — mark mentions as seen. Functional setMeta keeps deps stable.
+  const markMyWorkSeen = useCallback(async () => {
+    if (!author) return;
+    setMeta((m) => {
+      if (!m) return m;
+      const prefs = m.userPreferences || {};
+      const m2 = {
+        ...m,
+        userPreferences: {
+          ...prefs,
+          [author]: { ...(prefs[author] || {}), lastSeenMyWorkAt: new Date().toISOString() },
+        },
+      };
+      saveMeta(m2);
+      return m2;
+    });
+  }, [author]);
 
   const showToast = (message) => {
     setToast({ message, id: uid('t') });
@@ -8473,7 +9196,7 @@ export default function App() {
     showToast(`Deleted project "${project.name}"`);
   };
 
-  if (loading) {
+  if (loading || (author && view === null)) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
         Loading workspace…
@@ -8572,6 +9295,7 @@ export default function App() {
 
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
             {[
+              { id: 'my-work', label: 'My Work', icon: <UserCircle size={12} /> },
               { id: 'mindmap', label: 'Mind map', icon: <MapIcon size={12} /> },
               { id: 'outline', label: 'Outline', icon: <ListIcon size={12} /> },
               { id: 'gantt', label: 'Gantt', icon: <BarChart3 size={12} /> },
@@ -8656,6 +9380,33 @@ export default function App() {
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <ErrorBoundary>
+              {view === 'my-work' && (
+                <MyWorkView
+                  projects={projects}
+                  author={author}
+                  isOwner={isOwner}
+                  userPrefs={userPrefs}
+                  teamMembers={teamMembers}
+                  onTaskClick={async (taskId, projectId) => {
+                    if (projectId && projectId !== currentId) {
+                      await switchProject(projectId);
+                    }
+                    setSelectedTaskId(taskId);
+                    setView('outline');
+                  }}
+                  onTaskUpdate={(updatedTask, projectId) => {
+                    // Phase 1 stub — inline mutations wire up in Phase 2.
+                    console.warn('[v30 Phase 1] My Work inline task update (stub):', projectId, updatedTask?.id, updatedTask?.status);
+                    showToast('Inline edits wire up in Phase 2');
+                  }}
+                  onActionUpdate={(updatedAction, projectId) => {
+                    console.warn('[v30 Phase 1] My Work inline action update (stub):', projectId, updatedAction?.id, updatedAction?.status);
+                    showToast('Inline edits wire up in Phase 2');
+                  }}
+                  onMarkSeen={markMyWorkSeen}
+                  showToast={showToast}
+                />
+              )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
@@ -8691,7 +9442,7 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {!project && !isAllProjectsMode && view !== 'aggregation' && view !== 'activity' && view !== 'portfolio' && view !== 'credit-report' && (
+              {!project && !isAllProjectsMode && view !== 'aggregation' && view !== 'activity' && view !== 'portfolio' && view !== 'credit-report' && view !== 'my-work' && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: TOK.muted, fontSize: 13 }}>No project selected.</div>
               )}
             </ErrorBoundary>
