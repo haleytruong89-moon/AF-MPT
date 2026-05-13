@@ -3910,7 +3910,7 @@ function actionStatusColor(s) {
   return { fg: TOK.plannedFg, bg: TOK.plannedBg };
 }
 
-function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel }) {
+function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel, onAddComment }) {
   const [title, setTitle] = useState(initial?.title || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [pic, setPic] = useState(initial?.pic || '');
@@ -3918,6 +3918,10 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   const [priority, setPriority] = useState(initial?.priority || 'Medium');
   const [relatedTaskId, setRelatedTaskId] = useState(initial?.relatedTaskId || defaultRelatedTaskId || '');
   const [status, setStatus] = useState(initial?.status || 'Pending');
+  // v30.A.1 — comment thread state (Edit mode only)
+  const [commentDraft, setCommentDraft] = useState('');
+  const [commentIsBlocker, setCommentIsBlocker] = useState(false);
+  const [showAllComments, setShowAllComments] = useState(false);
 
   const taskOptions = useMemo(() => projectTaskOptions(project), [project]);
 
@@ -3992,6 +3996,49 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
         <option value="">— None —</option>
         {taskOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
       </select>
+
+      {/* v30.A.1 — Comment thread (Edit mode only; new actions have no comments yet) */}
+      {initial && (
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + TOK.line }}>
+          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 8 }}>
+            💬 Comments ({(initial.updates || []).length})
+          </div>
+          {(initial.updates || []).slice(0, showAllComments ? Infinity : 3).map((u) => (
+            <div key={u.id} style={{ fontSize: 12.5, color: TOK.ink, padding: '6px 0', borderBottom: '1px dashed ' + TOK.line }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, marginBottom: 2 }}>
+                <span style={{ color: TOK.ink, fontWeight: 500 }}>{u.author}</span> · {myWorkTimeAgo(u.timestamp)}
+                {u.isBlocker && <span style={{ marginLeft: 6, color: TOK.blocker, fontWeight: 500 }}>🚨 Blocker</span>}
+              </div>
+              <MentionedText text={u.text} teamMembers={teamMembers} />
+            </div>
+          ))}
+          {(initial.updates || []).length > 3 && !showAllComments && (
+            <button onClick={() => setShowAllComments(true)} style={{ background: 'none', border: 'none', color: TOK.accent, fontSize: 11.5, cursor: 'pointer', padding: '4px 0', fontFamily: FONT_STACK }}>
+              Show all ({(initial.updates || []).length})
+            </button>
+          )}
+          {onAddComment && (
+            <div style={{ marginTop: 10 }}>
+              <MentionTextarea
+                value={commentDraft}
+                onChange={setCommentDraft}
+                rows={2}
+                placeholder={`Type @ to mention. Posted as ${author || '…'}.`}
+                teamMembers={teamMembers}
+              />
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: TOK.muted, marginTop: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={commentIsBlocker} onChange={(e) => setCommentIsBlocker(e.target.checked)} /> Mark as blocker
+              </label>
+              <div style={{ marginTop: 8 }}>
+                <Btn size="sm" variant="primary" disabled={!commentDraft.trim()} onClick={() => {
+                  onAddComment(commentDraft.trim(), commentIsBlocker);
+                  setCommentDraft(''); setCommentIsBlocker(false);
+                }}>Post comment</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Btn onClick={onCancel}>Cancel</Btn>
