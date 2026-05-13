@@ -8120,6 +8120,60 @@ function MyWorkSubTabs({ value, onChange, tabs }) {
   );
 }
 
+// v30 Phase 3 — Walk every task/check-in/update + action comment to find
+// the latest entry authored by member. Returns { ts, t, description } or null.
+function getLastActivityForMember(member, projects) {
+  let latest = null;
+  const consider = (ts, description) => {
+    if (!ts) return;
+    const t = new Date(ts).getTime();
+    if (isNaN(t)) return;
+    if (!latest || t > latest.t) latest = { t, ts, description };
+  };
+  for (const proj of Object.values(projects || {})) {
+    for (const pg of (proj.programs || [])) {
+      for (const ws of (pg.workstreams || [])) {
+        for (const tk of (ws.tasks || [])) {
+          for (const upd of (tk.updates || [])) {
+            if (upd.author === member.name) consider(upd.timestamp, `Posted update on "${tk.name}"`);
+          }
+          for (const ci of (tk.checkIns || [])) {
+            if (ci.author === member.name) consider(ci.timestamp, `Posted check-in on "${tk.name}"`);
+          }
+        }
+      }
+    }
+    for (const a of (proj.actionItems || [])) {
+      for (const upd of (a.updates || [])) {
+        if (upd.author === member.name) consider(upd.timestamp, `Commented on action "${a.title}"`);
+      }
+    }
+  }
+  return latest;
+}
+
+// v30 Phase 3 — Per-member workload aggregation. Reuses computeMyWork
+// (isOwner=false so deadline_approval items don't leak into member counts).
+function computeTeamOverview(projects, members) {
+  return (members || []).map((m) => {
+    const myWork = computeMyWork(m.name, projects, false, null);
+    const tasksOwned = myWork.tasksOwned.today.length + myWork.tasksOwned.week.length + myWork.tasksOwned.later.length;
+    const actionItemsOpen = myWork.actionItems.today.length + myWork.actionItems.week.length + myWork.actionItems.later.length;
+    const tasksOverdue = myWork.needsAttention.filter((it) =>
+      it.kind === 'overdue_task' || it.kind === 'overdue_action' || it.kind === 'overdue_subtask'
+    ).length;
+    return {
+      member: m,
+      tasksOwned,
+      tasksOverdue,
+      tasksContributing: myWork.tasksContributing.length,
+      actionItemsOpen,
+      credit: myWork.credit,
+      lastActivity: getLastActivityForMember(m, projects),
+    };
+  });
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
