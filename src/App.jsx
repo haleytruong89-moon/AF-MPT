@@ -7893,7 +7893,7 @@ function MyWorkSubTabs({ value, onChange, tabs }) {
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
-  onTaskUpdate, onActionUpdate,
+  onTaskUpdate, onActionUpdate, onDecisionUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
 }) {
@@ -8208,6 +8208,7 @@ function MyWorkView({
             onRequestExtension={() => handleRequestExtension(e.task, e.project)}
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
             onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+            onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
           />
         ))}
       </MyWorkSection>
@@ -8221,20 +8222,17 @@ function MyWorkView({
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>You're not a contributor on any task yet.</div>
         )}
         {myWork.tasksContributing.map((e, i) => (
-          <div key={`c-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
-            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
-              {e.task.name}
-            </div>
-            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <MyWorkBreadcrumb project={e.project} program={e.program} workstream={e.workstream} />
-              <span>Primary PIC: <span style={{ color: TOK.ink }}>{e.primaryPic || '—'}</span></span>
-              {e.task.end && <span>· due {fmtDateShort(e.task.end)}</span>}
-              <Pill status={e.task.status || 'Planned'} size="sm" />
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <Btn size="sm" variant="ghost" onClick={() => onTaskClick(e.task.id, e.project.id)}>→ Open</Btn>
-            </div>
-          </div>
+          <TaskRowInline
+            key={`contrib-${i}`}
+            task={e.task} project={e.project} program={e.program} workstream={e.workstream}
+            author={author} teamMembers={teamMembers}
+            onStatusChange={(st) => handleStatusChange(e.task, e.project, st)}
+            onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
+            onRequestExtension={() => handleRequestExtension(e.task, e.project)}
+            onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
+            onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+            onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
+          />
         ))}
       </MyWorkSection>
 
@@ -8248,7 +8246,6 @@ function MyWorkView({
         )}
         {myWork.decisions.map((e, i) => {
           const d = e.decision;
-          const fuColor = followupColor(d.followUpStatus || 'Open');
           const reviewOverdue = d.expectedReviewDate && (d.followUpStatus || 'Open') !== 'Done' && parseDate(d.expectedReviewDate) < today();
           return (
             <div key={`d-${i}`} style={{ padding: '10px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -8263,10 +8260,14 @@ function MyWorkView({
                   {d.expectedReviewDate && <span style={{ color: reviewOverdue ? TOK.overdueFg : TOK.muted, fontWeight: reviewOverdue ? 500 : 400 }}>· review {fmtDateShort(d.expectedReviewDate)}{reviewOverdue ? ' ⚠' : ''}</span>}
                 </div>
               </div>
-              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: fuColor.fg, background: fuColor.bg, whiteSpace: 'nowrap' }}>
-                {FOLLOWUP_LABEL[d.followUpStatus || 'Open']}
+              <span onClick={(ev) => ev.stopPropagation()} style={{ display: 'inline-flex' }}>
+                <StatusQuickPill
+                  status={d.followUpStatus || 'Open'}
+                  statuses={FOLLOWUP_STATUSES}
+                  onChange={(st) => onDecisionUpdate && onDecisionUpdate({ ...d, followUpStatus: st }, e.project.id)}
+                />
               </span>
-              {onDecisionClick && <Btn size="sm" variant="ghost" onClick={() => onDecisionClick(e.project.id)} title="Open in Decisions tab">→</Btn>}
+              {onDecisionClick && <Btn size="sm" variant="ghost" onClick={() => onDecisionClick(e.project.id, d.id)} title="Open in Decisions tab">→</Btn>}
             </div>
           );
         })}
