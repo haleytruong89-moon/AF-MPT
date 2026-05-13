@@ -807,10 +807,31 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
     }
 
     for (const a of (proj.actionItems || [])) {
+      // v30.B — Sub-tasks assigned to author (regardless of action.pic).
+      // Bucketed by parent action's dueDate; Done subtasks filtered out.
+      for (const sub of (a.subtasks || [])) {
+        if (sub.pic !== author) continue;
+        if (sub.status === 'Done') continue;
+        const pDueDate = a.dueDate ? parseDate(a.dueDate) : null;
+        const subEntry = { kind: 'subtask', subtask: sub, parentAction: a, project: proj };
+        if (!pDueDate) {
+          out.actionItems.later.push(subEntry);
+        } else if (pDueDate <= todayEnd) {
+          out.actionItems.today.push(subEntry);
+          if (pDueDate < startOfToday) {
+            out.needsAttention.push({ kind: 'overdue_subtask', subtask: sub, parentAction: a, project: proj });
+          }
+        } else if (pDueDate <= weekEnd) {
+          out.actionItems.week.push(subEntry);
+        } else {
+          out.actionItems.later.push(subEntry);
+        }
+      }
+
       if (a.pic !== author) continue;
       if (a.status === 'Done' || a.status === 'Cancelled' || a.status === 'Dropped') continue;
       const dueDate = a.dueDate ? parseDate(a.dueDate) : null;
-      const enriched = { action: a, project: proj };
+      const enriched = { kind: 'action', action: a, project: proj };
       if (!dueDate) {
         out.actionItems.later.push(enriched);
       } else if (dueDate <= todayEnd) {
