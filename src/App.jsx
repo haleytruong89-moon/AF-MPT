@@ -4053,11 +4053,11 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
 // optional defaults (relatedTaskId, PIC = author) into ActionItemForm.
 function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, author, teamMembers, onClose, onCreate }) {
   const projectIds = useMemo(() => Object.keys(projects || {}).filter((id) => id !== '__all__'), [projects]);
-  const [projectId, setProjectId] = useState(defaultProjectId && projects[defaultProjectId] ? defaultProjectId : (projectIds[0] || ''));
-  const project = projects[projectId];
+  const [projectId, setProjectId] = useState(defaultProjectId && projects?.[defaultProjectId] ? defaultProjectId : (projectIds[0] || ''));
+  const project = projects?.[projectId];
 
   return (
-    <Modal title="New action item" onClose={onClose} width={520}>
+    <Modal title="New action item" onClose={onClose} width={520} zHigh>
       {projectIds.length > 1 && (
         <div style={{ marginBottom: 12 }}>
           <FieldLabel>Project</FieldLabel>
