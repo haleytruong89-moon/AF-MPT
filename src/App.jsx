@@ -4434,6 +4434,20 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     }
   };
 
+  // v30.B — Apply sub-task list changes immediately (bypasses form Save).
+  // Same lifecycle pattern as handleAddComment. Diff-logger inside
+  // applyActionUpdate emits typed subtask_* activity entries.
+  const handleSubtasksChange = (newSubtasks) => {
+    if (!editing) return;
+    const updated = { ...editing, subtasks: newSubtasks };
+    setEditing(updated);
+    if (onApplyAction) {
+      onApplyAction(updated, project.id, 'Actions tab');
+    } else {
+      onProjectUpdate({ ...project, actionItems: (project.actionItems || []).map((a) => a.id === updated.id ? updated : a) });
+    }
+  };
+
   const removeAction = async (a) => {
     const ok = await dialogs.confirm({ title: 'Delete action item?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
@@ -4606,6 +4620,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
               onSave={saveAction}
               onCancel={() => { setShowForm(false); setEditing(null); }}
               onAddComment={editing ? handleAddComment : null}
+              onSubtasksChange={editing ? handleSubtasksChange : null}
             />
           </div>
         )}
