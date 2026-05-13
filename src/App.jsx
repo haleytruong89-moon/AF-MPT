@@ -7866,7 +7866,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
 // mirrors TaskRowInline. Collapsed shows title + breadcrumb + due +
 // priority + status. Expanded reveals inline-editable title, PIC, due,
 // priority, plus comment thread with @mention support.
-function ActionRowInline({ action, project, related, author, teamMembers, picSuggestions, onChange, onAddComment, onOpenDetails, onMarkDone }) {
+function ActionRowInline({ action, project, related, author, teamMembers, picSuggestions, onChange, onAddComment, onOpenDetails, onMarkDone, onSubtasksChange }) {
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(action.title || '');
   const [commentDraft, setCommentDraft] = useState('');
@@ -7913,6 +7913,9 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
             {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
             {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>· 📅 {fmtDateShort(action.dueDate)}</span>}
             {updates.length > 0 && <span>· 💬 {updates.length}</span>}
+            {(action.subtasks || []).length > 0 && (
+              <span>· ✓ {(action.subtasks || []).filter((s) => s.status === 'Done').length}/{(action.subtasks || []).length}</span>
+            )}
           </div>
         </div>
         <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{action.priority}</span>
@@ -7994,6 +7997,17 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
               </div>
             </div>
           </div>
+
+          {onSubtasksChange && (
+            <div style={{ borderTop: '1px solid ' + TOK.line, paddingTop: 10 }}>
+              <SubtaskEditor
+                subtasks={action.subtasks || []}
+                picSuggestions={picSuggestions}
+                author={author}
+                onChange={onSubtasksChange}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
