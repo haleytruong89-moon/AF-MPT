@@ -7755,6 +7755,11 @@ function MyWorkView({
     () => computeMyWork(author, projects, isOwner, lastSeenAt),
     [projects, author, isOwner, lastSeenAt]
   );
+  const picSuggestions = useMemo(() => {
+    const set = new Set();
+    for (const m of (teamMembers || [])) if (m?.name) set.add(m.name);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [teamMembers]);
   const [ownedTab, setOwnedTab] = useState('today');
   const [actionsTab, setActionsTab] = useState('today');
 
@@ -7944,6 +7949,47 @@ function MyWorkView({
         })}
       </MyWorkSection>
 
+      {/* ✅ Action items assigned to me */}
+      <MyWorkSection
+        icon="✅" title="Action items assigned to me"
+        count={counts.actions}
+        defaultOpen={myWork.actionItems.today.length > 0}
+        headerRight={
+          <MyWorkSubTabs value={actionsTab} onChange={setActionsTab} tabs={[
+            { id: 'today', label: 'Today', count: myWork.actionItems.today.length },
+            { id: 'week', label: 'Week', count: myWork.actionItems.week.length },
+            { id: 'later', label: 'Later', count: myWork.actionItems.later.length },
+          ]} />
+        }>
+        {myWork.actionItems[actionsTab].length === 0 ? (
+          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
+        ) : myWork.actionItems[actionsTab].map((e, i) => {
+          const a = e.action;
+          const related = a.relatedTaskId ? findTaskInProject(e.project, a.relatedTaskId) : null;
+          return (
+            <ActionRowInline
+              key={`a-${actionsTab}-${a.id || i}`}
+              action={a}
+              project={e.project}
+              related={related}
+              author={author}
+              teamMembers={teamMembers}
+              picSuggestions={picSuggestions}
+              onChange={(patch) => onActionUpdate({ ...a, ...patch }, e.project.id)}
+              onAddComment={(text, blocker) => onActionUpdate({
+                ...a,
+                updates: [
+                  { id: uid('aupd'), timestamp: new Date().toISOString(), author, text, isBlocker: !!blocker },
+                  ...(a.updates || []),
+                ],
+              }, e.project.id)}
+              onMarkDone={() => handleActionDone(a, e.project)}
+              onOpenDetails={onActionClick ? () => onActionClick(e.project.id) : null}
+            />
+          );
+        })}
+      </MyWorkSection>
+
       {/* 💬 Mentions */}
       <MyWorkSection
         icon="💬" title="Mentions"
@@ -8035,47 +8081,6 @@ function MyWorkView({
             </div>
           </div>
         ))}
-      </MyWorkSection>
-
-      {/* ✅ Action items assigned to me */}
-      <MyWorkSection
-        icon="✅" title="Action items assigned to me"
-        count={counts.actions}
-        defaultOpen={myWork.actionItems.today.length > 0}
-        headerRight={
-          <MyWorkSubTabs value={actionsTab} onChange={setActionsTab} tabs={[
-            { id: 'today', label: 'Today', count: myWork.actionItems.today.length },
-            { id: 'week', label: 'Week', count: myWork.actionItems.week.length },
-            { id: 'later', label: 'Later', count: myWork.actionItems.later.length },
-          ]} />
-        }>
-        {myWork.actionItems[actionsTab].length === 0 ? (
-          <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
-        ) : myWork.actionItems[actionsTab].map((e, i) => {
-          const a = e.action;
-          const related = a.relatedTaskId ? findTaskInProject(e.project, a.relatedTaskId) : null;
-          const overdue = a.dueDate && a.status !== 'Done' && a.status !== 'Cancelled' && parseDate(a.dueDate) < today();
-          const pc = priorityColor(a.priority);
-          const sc = actionStatusColor(a.status);
-          return (
-            <div key={`a-${actionsTab}-${i}`} style={{ padding: '10px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, marginBottom: 2 }}>
-                  <MentionedText text={a.title || '(untitled action)'} teamMembers={teamMembers} />
-                </div>
-                <div style={{ fontSize: 11, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span>{e.project.name}</span>
-                  {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
-                  {a.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}>· 📅 {fmtDateShort(a.dueDate)}</span>}
-                </div>
-              </div>
-              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{a.priority}</span>
-              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: sc.fg, background: sc.bg, whiteSpace: 'nowrap' }}>{a.status}</span>
-              <Btn size="sm" variant="primary" onClick={() => handleActionDone(a, e.project)} title="Mark done">✓</Btn>
-              {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(e.project.id)} title="Open in Actions tab">→</Btn>}
-            </div>
-          );
-        })}
       </MyWorkSection>
 
       {/* 🤔 Decisions awaiting input */}
