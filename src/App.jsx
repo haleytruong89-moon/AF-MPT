@@ -7594,6 +7594,7 @@ function StatusQuickPill({ status, onChange, statuses }) {
     'Pushed to OP': { fg: TOK.programFg, bg: TOK.programBg, icon: <Activity size={10} /> },
     Done: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Cancelled: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
+    Open: { fg: TOK.plannedFg, bg: TOK.plannedBg, icon: <Circle size={10} /> },
   };
   const s = map[safeStatus] || map.Planned;
   const openMenu = (e) => {
