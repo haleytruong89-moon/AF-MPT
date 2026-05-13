@@ -3946,7 +3946,7 @@ function actionStatusColor(s) {
   return { fg: TOK.plannedFg, bg: TOK.plannedBg };
 }
 
-function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel, onAddComment }) {
+function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel, onAddComment, onSubtasksChange }) {
   const [title, setTitle] = useState(initial?.title || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [pic, setPic] = useState(initial?.pic || '');
@@ -3958,6 +3958,12 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   const [commentDraft, setCommentDraft] = useState('');
   const [commentIsBlocker, setCommentIsBlocker] = useState(false);
   const [showAllComments, setShowAllComments] = useState(false);
+  // v30.B — picSuggestions for SubtaskEditor PIC dropdown
+  const derivedPicSuggestions = useMemo(() => {
+    const set = new Set();
+    for (const m of (teamMembers || [])) if (m?.name) set.add(m.name);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [teamMembers]);
 
   const taskOptions = useMemo(() => projectTaskOptions(project), [project]);
 
@@ -4073,6 +4079,18 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* v30.B — Sub-tasks (Edit mode only; new actions get them once saved) */}
+      {initial && onSubtasksChange && (
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + TOK.line }}>
+          <SubtaskEditor
+            subtasks={initial.subtasks || []}
+            picSuggestions={derivedPicSuggestions}
+            author={author}
+            onChange={onSubtasksChange}
+          />
         </div>
       )}
 
