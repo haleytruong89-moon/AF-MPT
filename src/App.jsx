@@ -4048,6 +4048,46 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   );
 }
 
+// v30.A.1 — Modal wrapper for creating an action from My Work. Adds a
+// project picker step (hidden when only one project exists) and forwards
+// optional defaults (relatedTaskId, PIC = author) into ActionItemForm.
+function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, author, teamMembers, onClose, onCreate }) {
+  const projectIds = useMemo(() => Object.keys(projects || {}).filter((id) => id !== '__all__'), [projects]);
+  const [projectId, setProjectId] = useState(defaultProjectId && projects[defaultProjectId] ? defaultProjectId : (projectIds[0] || ''));
+  const project = projects[projectId];
+
+  return (
+    <Modal title="New action item" onClose={onClose} width={520}>
+      {projectIds.length > 1 && (
+        <div style={{ marginBottom: 12 }}>
+          <FieldLabel>Project</FieldLabel>
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)}
+            style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink }}>
+            {projectIds.map((id) => <option key={id} value={id}>{projects[id]?.name || id}</option>)}
+          </select>
+        </div>
+      )}
+      {project ? (
+        <ActionItemForm
+          initial={null}
+          project={project}
+          teamMembers={teamMembers}
+          author={author}
+          defaultRelatedTaskId={defaultRelatedTaskId || null}
+          onSave={(newAction) => {
+            const finalAction = { ...newAction, pic: newAction.pic || author || '' };
+            onCreate(finalAction, projectId);
+            onClose();
+          }}
+          onCancel={onClose}
+        />
+      ) : (
+        <div style={{ color: TOK.muted, fontSize: 13 }}>No project available.</div>
+      )}
+    </Modal>
+  );
+}
+
 function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, showCheckbox = false, teamMembers }) {
   const sc = actionStatusColor(action.status);
   const pc = priorityColor(action.priority);
