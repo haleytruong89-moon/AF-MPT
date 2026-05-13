@@ -794,7 +794,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
     for (const a of (proj.actionItems || [])) {
       if (a.pic !== author) continue;
       if (a.status === 'Done' || a.status === 'Cancelled' || a.status === 'Dropped') continue;
-      const dueDate = a.due ? parseDate(a.due) : null;
+      const dueDate = a.dueDate ? parseDate(a.dueDate) : null;
       const enriched = { action: a, project: proj };
       if (!dueDate) {
         out.actionItems.later.push(enriched);
@@ -810,7 +810,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
 
     for (const d of (proj.decisions || [])) {
       if (!Array.isArray(d.decidedBy) || !d.decidedBy.includes(author)) continue;
-      if (d.followUp && d.followUp.status === 'Done') continue;
+      if (d.followUpStatus === 'Done') continue;
       out.decisions.push({ decision: d, project: proj });
     }
 
@@ -7592,8 +7592,10 @@ function MyWorkSubTabs({ value, onChange, tabs }) {
 
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
-  onTaskClick, onTaskUpdate, onActionUpdate, onMarkSeen,
-  showToast,
+  onTaskClick, onActionClick, onDecisionClick,
+  onTaskUpdate, onActionUpdate,
+  onApproveDeadline, onRejectDeadline,
+  onMarkSeen, showToast,
 }) {
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const myWork = useMemo(
@@ -7739,33 +7741,48 @@ function MyWorkView({
             );
           }
           if (it.kind === 'overdue_action') {
+            const related = it.action.relatedTaskId ? findTaskInProject(it.project, it.action.relatedTaskId) : null;
             return (
               <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
                 <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
-                  ⚠ {it.action.text}
+                  ⚠ <MentionedText text={it.action.title || '(untitled action)'} teamMembers={teamMembers} />
                 </div>
-                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
-                  {it.project.name} · action item · <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>was due {fmtDateShort(it.action.due)}</span>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <span>{it.project.name}</span>
+                  {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
+                  <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>· was due {fmtDateShort(it.action.dueDate)}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <Btn size="sm" variant="primary" onClick={() => handleActionDone(it.action, it.project)}>✓ Mark done</Btn>
+                  {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(it.project.id)}>→ Open</Btn>}
                 </div>
               </div>
             );
           }
           if (it.kind === 'deadline_approval') {
+            const req = it.request;
             return (
               <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.inprogFg, padding: '8px 12px', background: TOK.inprogBg + '60', marginBottom: 6, borderRadius: 4 }}>
                 <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
-                  ⏳ Approval pending: {it.request.requestedBy} wants {it.request.proposedEnd ? `new deadline ${fmtDateShort(it.request.proposedEnd)}` : 'an extension'} on "{it.task.name}"
+                  ⏳ Approval pending: {req.requestedBy} wants to {req.action || 'change'} deadline on "{it.task.name}"
                 </div>
-                {it.request.reason && (
+                <div style={{ fontSize: 11.5, color: TOK.muted, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                  {req.newDate && <span>· new date: <span style={{ color: TOK.ink, fontWeight: 500 }}>{fmtDateShort(req.newDate)}</span>{typeof req.days === 'number' ? ` (${req.days >= 0 ? '+' : ''}${req.days}d)` : ''}</span>}
+                </div>
+                {req.reason && (
                   <div style={{ fontSize: 11.5, color: TOK.muted, marginTop: 3, fontStyle: 'italic' }}>
-                    "{it.request.reason}"
+                    "{req.reason}"
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>→ Open to review</Btn>
+                  {isOwner && onApproveDeadline && (
+                    <Btn size="sm" variant="primary" onClick={() => onApproveDeadline(it.task.id, it.project.id)}>✓ Approve</Btn>
+                  )}
+                  {isOwner && onRejectDeadline && (
+                    <Btn size="sm" onClick={() => onRejectDeadline(it.task.id, it.project.id)}>✕ Reject</Btn>
+                  )}
+                  <Btn size="sm" variant="ghost" onClick={() => onTaskClick(it.task.id, it.project.id)}>→ Open</Btn>
                 </div>
               </div>
             );
@@ -7875,22 +7892,31 @@ function MyWorkView({
         }>
         {myWork.actionItems[actionsTab].length === 0 ? (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
-        ) : myWork.actionItems[actionsTab].map((e, i) => (
-          <div key={`a-${actionsTab}-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
-            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
-              {e.action.text}
+        ) : myWork.actionItems[actionsTab].map((e, i) => {
+          const a = e.action;
+          const related = a.relatedTaskId ? findTaskInProject(e.project, a.relatedTaskId) : null;
+          const overdue = a.dueDate && a.status !== 'Done' && a.status !== 'Cancelled' && parseDate(a.dueDate) < today();
+          const pc = priorityColor(a.priority);
+          const sc = actionStatusColor(a.status);
+          return (
+            <div key={`a-${actionsTab}-${i}`} style={{ padding: '10px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, marginBottom: 2 }}>
+                  <MentionedText text={a.title || '(untitled action)'} teamMembers={teamMembers} />
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span>{e.project.name}</span>
+                  {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
+                  {a.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}>· 📅 {fmtDateShort(a.dueDate)}</span>}
+                </div>
+              </div>
+              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{a.priority}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: sc.fg, background: sc.bg, whiteSpace: 'nowrap' }}>{a.status}</span>
+              <Btn size="sm" variant="primary" onClick={() => handleActionDone(a, e.project)} title="Mark done">✓</Btn>
+              {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(e.project.id)} title="Open in Actions tab">→</Btn>}
             </div>
-            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <span>{e.project.name}</span>
-              {e.action.due && <span>· due {fmtDateShort(e.action.due)}</span>}
-              {e.action.priority && <span>· {e.action.priority} priority</span>}
-              <span>· {e.action.status || 'Pending'}</span>
-            </div>
-            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-              <Btn size="sm" variant="primary" onClick={() => handleActionDone(e.action, e.project)}>✓ Mark done</Btn>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </MyWorkSection>
 
       {/* 🤔 Decisions awaiting input */}
@@ -7901,17 +7927,30 @@ function MyWorkView({
         {myWork.decisions.length === 0 && (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>No decisions need your input.</div>
         )}
-        {myWork.decisions.map((e, i) => (
-          <div key={`d-${i}`} style={{ padding: '8px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
-            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500 }}>
-              "{e.decision.title || e.decision.summary || '(untitled decision)'}"
+        {myWork.decisions.map((e, i) => {
+          const d = e.decision;
+          const fuColor = followupColor(d.followUpStatus || 'Open');
+          const reviewOverdue = d.expectedReviewDate && (d.followUpStatus || 'Open') !== 'Done' && parseDate(d.expectedReviewDate) < today();
+          return (
+            <div key={`d-${i}`} style={{ padding: '10px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, marginBottom: 2 }}>
+                  <MentionedText text={d.text || '(no decision text)'} teamMembers={teamMembers} />
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span>{e.project.name}</span>
+                  <span>· decided by {(d.decidedBy || []).length} {(d.decidedBy || []).length === 1 ? 'person' : 'people'}</span>
+                  {d.date && <span>· {fmtDateShort(d.date)}</span>}
+                  {d.expectedReviewDate && <span style={{ color: reviewOverdue ? TOK.overdueFg : TOK.muted, fontWeight: reviewOverdue ? 500 : 400 }}>· review {fmtDateShort(d.expectedReviewDate)}{reviewOverdue ? ' ⚠' : ''}</span>}
+                </div>
+              </div>
+              <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: fuColor.fg, background: fuColor.bg, whiteSpace: 'nowrap' }}>
+                {FOLLOWUP_LABEL[d.followUpStatus || 'Open']}
+              </span>
+              {onDecisionClick && <Btn size="sm" variant="ghost" onClick={() => onDecisionClick(e.project.id)} title="Open in Decisions tab">→</Btn>}
             </div>
-            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
-              {e.project.name} · decided by {(e.decision.decidedBy || []).length} {(e.decision.decidedBy || []).length === 1 ? 'person' : 'people'}
-              {e.decision.followUp?.dueDate && <> · expected review: {fmtDateShort(e.decision.followUp.dueDate)}</>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </MyWorkSection>
 
       {/* 📊 My credit (always collapsed by default) */}
@@ -8893,6 +8932,19 @@ export default function App() {
     setActivity(log);
   }, [currentId, author]);
 
+  // v30 — write to a specific project's activity log (My Work edits tasks/actions
+  // across projects, not just currentId). Refresh in-memory feed only if it's
+  // the project currently in view.
+  const logActivityForProject = useCallback(async (projectId, { type, description }) => {
+    if (!projectId || !author) return;
+    const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
+    await appendActivity(projectId, entry);
+    if (projectId === currentId) {
+      const log = await loadActivity(projectId);
+      setActivity(log);
+    }
+  }, [author, currentId]);
+
   const onNameSubmit = async (n, e) => {
     setAuthor(n);
     setAuthorEmail(e);
@@ -8918,70 +8970,152 @@ export default function App() {
     setAuthorEmail(null);
   };
 
-  const onTaskUpdate = (updatedTask) => {
-    if (!project) return;
-    const loc = findTaskInProject(project, updatedTask.id);
+  // v30 — Apply a task update to any project (not just `currentId`) and emit
+  // diff-based activity log entries to that project's log. `source` is an
+  // optional suffix (e.g. "My Work") to tag the entry-point in the audit.
+  const applyTaskUpdate = useCallback((updatedTask, projectId, source = '') => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const loc = findTaskInProject(targetProj, updatedTask.id);
     if (!loc) return;
     const oldTask = loc.task;
-    const updated = cloneDeep(project);
+    const updated = cloneDeep(targetProj);
     const ul = findTaskInProject(updated, updatedTask.id);
     Object.assign(ul.task, updatedTask);
     updateProject(updated);
 
-    // Log meaningful changes
+    const tag = source ? ` (from ${source})` : '';
+    const log = (entry) => logActivityForProject(projectId, entry);
+
     if (oldTask.status !== updatedTask.status) {
-      logActivity({ type: 'status_change', description: `Changed "${updatedTask.name}" status: ${STATUS_LABEL[oldTask.status || 'Planned']} → ${STATUS_LABEL[updatedTask.status]}` });
+      log({ type: 'status_change', description: `Changed "${updatedTask.name}" status: ${STATUS_LABEL[oldTask.status || 'Planned']} → ${STATUS_LABEL[updatedTask.status]}${tag}` });
     }
     if ((oldTask.checkIns?.length || 0) < (updatedTask.checkIns?.length || 0)) {
-      logActivity({ type: 'checkin', description: `Posted check-in on "${updatedTask.name}"` });
+      log({ type: 'checkin', description: `Posted check-in on "${updatedTask.name}"${tag}` });
+    }
+    if ((oldTask.updates?.length || 0) < (updatedTask.updates?.length || 0)) {
+      const newest = (updatedTask.updates || [])[0];
+      log({ type: 'task_update', description: `Posted update on "${updatedTask.name}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
     }
     if (oldTask.name !== updatedTask.name) {
-      logActivity({ type: 'task_rename', description: `Renamed task "${oldTask.name}" → "${updatedTask.name}"` });
+      log({ type: 'task_rename', description: `Renamed task "${oldTask.name}" → "${updatedTask.name}"${tag}` });
     }
-    // Credit shares mode change
     const oldMode = oldTask.creditSharesMode || 'auto';
     const newMode = updatedTask.creditSharesMode || 'auto';
     if (oldMode !== newMode) {
-      logActivity({
-        type: 'credit_mode_change',
-        description: `Credit shares for "${updatedTask.name}": ${oldMode} → ${newMode}`,
-      });
+      log({ type: 'credit_mode_change', description: `Credit shares for "${updatedTask.name}": ${oldMode} → ${newMode}${tag}` });
     }
-    // Manual share edit
     const oldShares = JSON.stringify(oldTask.creditShares || {});
     const newShares = JSON.stringify(updatedTask.creditShares || {});
     if (oldShares !== newShares && newMode === 'manual') {
       const fmt = (s) => Object.entries(JSON.parse(s)).map(([n, v]) => `${n}:${Math.round(Number(v) * 10) / 10}%`).join(', ') || '—';
-      logActivity({
-        type: 'credit_shares_change',
-        description: `Credit shares manually edited on "${updatedTask.name}": ${fmt(oldShares)} → ${fmt(newShares)}`,
-      });
+      log({ type: 'credit_shares_change', description: `Credit shares manually edited on "${updatedTask.name}": ${fmt(oldShares)} → ${fmt(newShares)}${tag}` });
     }
-    // Deadline request lifecycle (v27)
     const oldReq = oldTask.deadlineRequest;
     const newReq = updatedTask.deadlineRequest;
     if (!oldReq && newReq) {
-      logActivity({
-        type: 'deadline_request',
-        description: `${newReq.requestedBy} requested to ${newReq.action || 'change'} "${updatedTask.name}" deadline by ${Math.abs(newReq.days || 0)}d → ${fmtDateShort(newReq.newDate)}`,
-      });
+      log({ type: 'deadline_request', description: `${newReq.requestedBy} requested to ${newReq.action || 'change'} "${updatedTask.name}" deadline by ${Math.abs(newReq.days || 0)}d → ${fmtDateShort(newReq.newDate)}${tag}` });
     } else if (oldReq && !newReq) {
       const lastHist = (updatedTask.deadlineRequestHistory || []).slice(-1)[0];
       if (lastHist) {
         const verb = lastHist.status === 'approved' ? 'Approved' : lastHist.status === 'rejected' ? 'Rejected' : 'Cancelled';
-        logActivity({
-          type: 'deadline_request_' + lastHist.status,
-          description: `${verb} ${oldReq.requestedBy}'s deadline request on "${updatedTask.name}"${lastHist.resolverNote ? ' — ' + lastHist.resolverNote : ''}`,
-        });
+        log({ type: 'deadline_request_' + lastHist.status, description: `${verb} ${oldReq.requestedBy}'s deadline request on "${updatedTask.name}"${lastHist.resolverNote ? ' — ' + lastHist.resolverNote : ''}${tag}` });
       }
     }
-    // Deadline type change
     if ((oldTask.deadlineType || 'hard') !== (updatedTask.deadlineType || 'hard')) {
-      logActivity({
-        type: 'deadline_type_change',
-        description: `Changed "${updatedTask.name}" deadline type: ${oldTask.deadlineType || 'hard'} → ${updatedTask.deadlineType || 'hard'}`,
-      });
+      log({ type: 'deadline_type_change', description: `Changed "${updatedTask.name}" deadline type: ${oldTask.deadlineType || 'hard'} → ${updatedTask.deadlineType || 'hard'}${tag}` });
     }
+  }, [projects, updateProject, logActivityForProject]);
+
+  const onTaskUpdate = (updatedTask) => {
+    if (!project) return;
+    applyTaskUpdate(updatedTask, project.id);
+  };
+
+  // v30 — Patch a single action item in any project. Used by My Work's
+  // "Mark done" buttons in needs-attention + action-items sections.
+  const applyActionUpdate = useCallback((updatedAction, projectId, source = '') => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const oldAction = (targetProj.actionItems || []).find((a) => a.id === updatedAction.id);
+    const updated = cloneDeep(targetProj);
+    updated.actionItems = (updated.actionItems || []).map((a) => a.id === updatedAction.id ? { ...a, ...updatedAction } : a);
+    updateProject(updated);
+
+    const tag = source ? ` (from ${source})` : '';
+    if (oldAction && oldAction.status !== updatedAction.status) {
+      if (updatedAction.status === 'Done') {
+        logActivityForProject(projectId, { type: 'action_complete', description: `Marked action done: "${updatedAction.title}"${tag}` });
+      } else {
+        logActivityForProject(projectId, { type: 'action_status_change', description: `Action "${updatedAction.title}": ${oldAction.status || 'Pending'} → ${updatedAction.status}${tag}` });
+      }
+    }
+  }, [projects, updateProject, logActivityForProject]);
+
+  // v30 — Owner-only inline approve/reject of a deadline change request,
+  // callable from My Work needs-attention. Mirrors TaskDetail's flow but
+  // operates cross-project. State mutations route through applyTaskUpdate
+  // so the standard diff-logger emits the audit trail.
+  const myWorkApproveDeadline = async (taskId, projectId) => {
+    if (!isOwner) return;
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const loc = findTaskInProject(targetProj, taskId);
+    if (!loc || !loc.task.deadlineRequest) return;
+    const task = loc.task;
+    const req = task.deadlineRequest;
+    const ok = await dialogs.confirm({
+      title: `Approve deadline ${req.action || 'change'}?`,
+      message: `Apply new end date ${fmtDateShort(req.newDate)} to "${task.name}"? This will be recorded in the audit log.`,
+      okLabel: 'Approve',
+    });
+    if (!ok) return;
+    const histEntry = {
+      id: uid('dh'),
+      from: task.end || null,
+      to: req.newDate,
+      changedBy: req.requestedBy,
+      changedAt: new Date().toISOString(),
+      reason: req.reason,
+      approvedBy: author,
+      approvedAt: new Date().toISOString(),
+    };
+    const reqHistEntry = { ...req, status: 'approved', resolvedBy: author, resolvedAt: new Date().toISOString() };
+    applyTaskUpdate({
+      ...task,
+      end: req.newDate,
+      deadlineRequest: null,
+      deadlineHistory: [...(task.deadlineHistory || []), histEntry],
+      deadlineRequestHistory: [...(task.deadlineRequestHistory || []), reqHistEntry],
+    }, projectId, 'My Work');
+  };
+
+  const myWorkRejectDeadline = async (taskId, projectId) => {
+    if (!isOwner) return;
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const loc = findTaskInProject(targetProj, taskId);
+    if (!loc || !loc.task.deadlineRequest) return;
+    const task = loc.task;
+    const req = task.deadlineRequest;
+    const note = await dialogs.prompt({
+      title: 'Reject deadline change?',
+      message: `Optionally explain why "${req.requestedBy}" should keep the original deadline.`,
+      placeholder: 'e.g., Dependencies on this task; please re-prioritize',
+      okLabel: 'Reject',
+      allowEmpty: true,
+    });
+    if (note === null) return;
+    const reqHistEntry = {
+      ...req, status: 'rejected',
+      resolvedBy: author, resolvedAt: new Date().toISOString(),
+      resolverNote: (note || '').trim() || null,
+    };
+    applyTaskUpdate({
+      ...task,
+      deadlineRequest: null,
+      deadlineRequestHistory: [...(task.deadlineRequestHistory || []), reqHistEntry],
+    }, projectId, 'My Work');
   };
 
   const onTaskDelete = async (task) => {
@@ -9394,15 +9528,22 @@ export default function App() {
                     setSelectedTaskId(taskId);
                     setView('outline');
                   }}
-                  onTaskUpdate={(updatedTask, projectId) => {
-                    // Phase 1 stub — inline mutations wire up in Phase 2.
-                    console.warn('[v30 Phase 1] My Work inline task update (stub):', projectId, updatedTask?.id, updatedTask?.status);
-                    showToast('Inline edits wire up in Phase 2');
+                  onActionClick={async (projectId) => {
+                    if (projectId && projectId !== currentId) {
+                      await switchProject(projectId);
+                    }
+                    setView('actions');
                   }}
-                  onActionUpdate={(updatedAction, projectId) => {
-                    console.warn('[v30 Phase 1] My Work inline action update (stub):', projectId, updatedAction?.id, updatedAction?.status);
-                    showToast('Inline edits wire up in Phase 2');
+                  onDecisionClick={async (projectId) => {
+                    if (projectId && projectId !== currentId) {
+                      await switchProject(projectId);
+                    }
+                    setView('decisions');
                   }}
+                  onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work')}
+                  onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work')}
+                  onApproveDeadline={myWorkApproveDeadline}
+                  onRejectDeadline={myWorkRejectDeadline}
                   onMarkSeen={markMyWorkSeen}
                   showToast={showToast}
                 />
