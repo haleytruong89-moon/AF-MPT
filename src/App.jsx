@@ -7817,6 +7817,12 @@ function MyWorkView({
         )}
         {myWork.allMentions.slice(0, 12).map((m, i) => {
           const unread = m.ts && new Date(m.ts) > new Date(lastSeenAt || 0);
+          const isAction = !!m.action;
+          const name = isAction ? m.action.title : m.task.name;
+          const kindLabel = isAction ? 'action' : 'task';
+          const handleOpen = isAction
+            ? () => onActionClick && onActionClick(m.project.id)
+            : () => onTaskClick(m.task.id, m.project.id);
           return (
             <div key={`m-${i}`} style={{
               padding: '8px 12px', marginBottom: 6, borderRadius: 6,
@@ -7827,13 +7833,13 @@ function MyWorkView({
                 {unread && <span style={{ fontSize: 9, fontWeight: 600, color: TOK.mention, background: '#fff', padding: '1px 5px', borderRadius: 4 }}>UNREAD</span>}
                 <span style={{ color: TOK.ink, fontWeight: 500 }}>{m.postAuthor || '—'}</span>
                 <span>· {myWorkTimeAgo(m.ts)} ·</span>
-                <span>in "{m.task.name}"</span>
+                <span>in {kindLabel} "{name || '(untitled)'}"</span>
               </div>
               <div style={{ fontSize: 13, color: TOK.ink, marginTop: 4, lineHeight: 1.4 }}>
                 <MentionedText text={m.text} teamMembers={teamMembers} />
               </div>
               <div style={{ marginTop: 6 }}>
-                <Btn size="sm" variant="ghost" onClick={() => onTaskClick(m.task.id, m.project.id)}>→ Open task</Btn>
+                <Btn size="sm" variant="ghost" onClick={handleOpen}>→ Open {kindLabel}</Btn>
               </div>
             </div>
           );
