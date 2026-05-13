@@ -7873,7 +7873,7 @@ function MyWorkSubTabs({ value, onChange, tabs }) {
 
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
-  onTaskClick, onActionClick, onDecisionClick,
+  onTaskClick, onActionClick, onDecisionClick, onCreateAction,
   onTaskUpdate, onActionUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
@@ -8040,7 +8040,7 @@ function MyWorkView({
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <Btn size="sm" variant="primary" onClick={() => handleActionDone(it.action, it.project)}>✓ Mark done</Btn>
-                  {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(it.project.id)}>→ Open</Btn>}
+                  {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(it.project.id, it.action.id)}>→ Open</Btn>}
                 </div>
               </div>
             );
@@ -8083,11 +8083,18 @@ function MyWorkView({
         count={counts.actions}
         defaultOpen={myWork.actionItems.today.length > 0}
         headerRight={
-          <MyWorkSubTabs value={actionsTab} onChange={setActionsTab} tabs={[
-            { id: 'today', label: 'Today', count: myWork.actionItems.today.length },
-            { id: 'week', label: 'Week', count: myWork.actionItems.week.length },
-            { id: 'later', label: 'Later', count: myWork.actionItems.later.length },
-          ]} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {onCreateAction && (
+              <Btn size="sm" variant="primary" onClick={() => onCreateAction(null, null)}>
+                <Plus size={11} /> New action
+              </Btn>
+            )}
+            <MyWorkSubTabs value={actionsTab} onChange={setActionsTab} tabs={[
+              { id: 'today', label: 'Today', count: myWork.actionItems.today.length },
+              { id: 'week', label: 'Week', count: myWork.actionItems.week.length },
+              { id: 'later', label: 'Later', count: myWork.actionItems.later.length },
+            ]} />
+          </div>
         }>
         {myWork.actionItems[actionsTab].length === 0 ? (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
@@ -8112,7 +8119,7 @@ function MyWorkView({
                 ],
               }, e.project.id)}
               onMarkDone={() => handleActionDone(a, e.project)}
-              onOpenDetails={onActionClick ? () => onActionClick(e.project.id) : null}
+              onOpenDetails={onActionClick ? () => onActionClick(e.project.id, a.id) : null}
             />
           );
         })}
@@ -8133,7 +8140,7 @@ function MyWorkView({
           const name = isAction ? m.action.title : m.task.name;
           const kindLabel = isAction ? 'action' : 'task';
           const handleOpen = isAction
-            ? () => onActionClick && onActionClick(m.project.id)
+            ? () => onActionClick && onActionClick(m.project.id, m.action?.id)
             : () => onTaskClick(m.task.id, m.project.id);
           return (
             <div key={`m-${i}`} style={{
@@ -8181,6 +8188,7 @@ function MyWorkView({
             onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
             onRequestExtension={() => handleRequestExtension(e.task, e.project)}
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
+            onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
           />
         ))}
       </MyWorkSection>
