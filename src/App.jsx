@@ -5,7 +5,7 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle
+  Move, FileText, History, Grip, BarChart3, HelpCircle, Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -9498,6 +9498,23 @@ export default function App() {
       return m2;
     });
   }, [author]);
+
+  // v30 Phase 3 — Owner impersonation state. In-memory only; cleared on refresh.
+  // effectiveAuthor flows through MyWorkView render and apply* handlers so
+  // the impersonated user appears to be acting from the desk.
+  const [impersonatingAs, setImpersonatingAs] = useState(null);
+  const effectiveAuthor = impersonatingAs || author;
+
+  const startImpersonation = useCallback((memberName) => {
+    if (!isOwner) return;
+    if (!memberName || memberName === author) return;
+    setImpersonatingAs(memberName);
+    setView('my-work');
+  }, [isOwner, author]);
+
+  const clearImpersonation = useCallback(() => {
+    setImpersonatingAs(null);
+  }, []);
 
   const showToast = (message) => {
     setToast({ message, id: uid('t') });
