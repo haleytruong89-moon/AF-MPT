@@ -7654,7 +7654,7 @@ function MyWorkDeadlineTypePill({ type }) {
   );
 }
 
-function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction }) {
+function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction, onMarkDone }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [isBlocker, setIsBlocker] = useState(false);
@@ -7683,6 +7683,9 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
           <StatusQuickPill status={task.status} onChange={(st) => onStatusChange(st)} />
         </span>
+        {task.status !== 'Completed' && onMarkDone && (
+          <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
+        )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
       </div>
       {expanded && (
