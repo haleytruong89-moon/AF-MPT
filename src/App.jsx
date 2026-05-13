@@ -9182,6 +9182,17 @@ export default function App() {
     setView(userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work');
   }, [meta, author, view, userPrefs]);
 
+  // v30.A.1 — modal state for creating an action from My Work + state
+  // for routing "→ Open" from My Work to a specific action's Edit form.
+  const [actionCreate, setActionCreate] = useState(null);
+  const [initialActionEditId, setInitialActionEditId] = useState(null);
+
+  // Clear the auto-edit trigger when leaving the Actions tab so a future
+  // navigation doesn't re-open a stale ID.
+  useEffect(() => {
+    if (view !== 'actions') setInitialActionEditId(null);
+  }, [view]);
+
   // v30 — mark mentions as seen. Functional setMeta keeps deps stable.
   const markMyWorkSeen = useCallback(async () => {
     if (!author) return;
@@ -9361,6 +9372,22 @@ export default function App() {
       const newest = (updatedAction.updates || [])[0];
       log({ type: 'action_comment', description: `Posted comment on action "${updatedAction.title}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
     }
+  }, [projects, updateProject, logActivityForProject]);
+
+  // v30.A.1 — Create a new action in any project (from My Work entry points).
+  // Prepends to actionItems so it shows immediately at the top of the
+  // Actions tab list. Activity log entry tags "(from My Work)".
+  const createActionFromMyWork = useCallback((newAction, projectId) => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const updated = cloneDeep(targetProj);
+    updated.actionItems = [newAction, ...(updated.actionItems || [])];
+    updateProject(updated);
+    logActivityForProject(projectId, {
+      type: 'action_create',
+      description: `Created action: "${newAction.title}" → ${newAction.pic || '—'} (from My Work)`,
+    });
+    showToast(`Action created in ${targetProj.name}`);
   }, [projects, updateProject, logActivityForProject]);
 
   // v30 — Owner-only inline approve/reject of a deadline change request,
@@ -9839,12 +9866,17 @@ export default function App() {
                     setSelectedTaskId(taskId);
                     setView('outline');
                   }}
-                  onActionClick={async (projectId) => {
+                  onActionClick={async (projectId, actionId) => {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
                     }
                     setView('actions');
+                    if (actionId) setInitialActionEditId(actionId);
                   }}
+                  onCreateAction={(projectId, relatedTaskId) => setActionCreate({
+                    projectId: projectId || currentId,
+                    relatedTaskId: relatedTaskId || null,
+                  })}
                   onDecisionClick={async (projectId) => {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
@@ -9864,7 +9896,7 @@ export default function App() {
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} />}
-              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} />}
+              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
               {view === 'aggregation' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} />}
@@ -9909,6 +9941,17 @@ export default function App() {
           )}
         </div>
 
+        {actionCreate && (
+          <ActionCreateModal
+            projects={projects}
+            defaultProjectId={actionCreate.projectId}
+            defaultRelatedTaskId={actionCreate.relatedTaskId}
+            author={author}
+            teamMembers={teamMembers}
+            onClose={() => setActionCreate(null)}
+            onCreate={createActionFromMyWork}
+          />
+        )}
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough
