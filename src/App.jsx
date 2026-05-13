@@ -7653,7 +7653,7 @@ function MyWorkDeadlineTypePill({ type }) {
   );
 }
 
-function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails }) {
+function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [isBlocker, setIsBlocker] = useState(false);
@@ -7703,6 +7703,9 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
               setDraft(''); setIsBlocker(false); setExpanded(false);
             }}>Post update</Btn>
             <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request extension</Btn>
+            {onAddAction && (
+              <Btn size="sm" onClick={(e) => { e.stopPropagation(); onAddAction(); }}><Plus size={11} /> Add action</Btn>
+            )}
             <Btn size="sm" variant="ghost" onClick={onOpenDetails}>→ Open full details</Btn>
           </div>
         </div>
