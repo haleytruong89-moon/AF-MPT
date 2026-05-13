@@ -10480,8 +10480,8 @@ export default function App() {
               {view === 'my-work' && (
                 <MyWorkView
                   projects={projects}
-                  author={author}
-                  isOwner={isOwner}
+                  author={effectiveAuthor}
+                  isOwner={isOwner && !impersonatingAs}
                   userPrefs={userPrefs}
                   teamMembers={teamMembers}
                   onTaskClick={async (taskId, projectId) => {
@@ -10501,6 +10501,7 @@ export default function App() {
                   onCreateAction={(projectId, relatedTaskId) => setActionCreate({
                     projectId: projectId || currentId,
                     relatedTaskId: relatedTaskId || null,
+                    defaultPic: effectiveAuthor,
                   })}
                   onDecisionClick={async (projectId, decisionId) => {
                     if (projectId && projectId !== currentId) {
@@ -10509,12 +10510,12 @@ export default function App() {
                     setView('decisions');
                     if (decisionId) setInitialDecisionEditId(decisionId);
                   }}
-                  onDecisionUpdate={(updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work')}
-                  onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work')}
-                  onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work')}
-                  onApproveDeadline={myWorkApproveDeadline}
-                  onRejectDeadline={myWorkRejectDeadline}
-                  onMarkSeen={markMyWorkSeen}
+                  onDecisionUpdate={(updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work', impersonatingAs || '')}
+                  onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work', impersonatingAs || '')}
+                  onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work', impersonatingAs || '')}
+                  onApproveDeadline={impersonatingAs ? null : myWorkApproveDeadline}
+                  onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
+                  onMarkSeen={impersonatingAs ? null : markMyWorkSeen}
                   showToast={showToast}
                 />
               )}
@@ -10542,6 +10543,19 @@ export default function App() {
               {view === 'credit-report' && !isOwner && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
                   Credit report is workspace-owner only.
+                </div>
+              )}
+              {view === 'team-overview' && isOwner && !impersonatingAs && (
+                <TeamOverviewView
+                  projects={projects}
+                  teamMembers={teamMembers}
+                  currentAuthor={author}
+                  onImpersonate={startImpersonation}
+                />
+              )}
+              {view === 'team-overview' && !isOwner && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
+                  Team overview is workspace-owner only.
                 </div>
               )}
               {isAllProjectsMode && (view === 'mindmap' || view === 'outline' || view === 'dashboard' || view === 'gantt') && (
@@ -10574,9 +10588,10 @@ export default function App() {
             defaultProjectId={actionCreate.projectId}
             defaultRelatedTaskId={actionCreate.relatedTaskId}
             author={author}
+            defaultPic={actionCreate.defaultPic || null}
             teamMembers={teamMembers}
             onClose={() => setActionCreate(null)}
-            onCreate={createActionFromMyWork}
+            onCreate={(newAction, projectId) => createActionFromMyWork(newAction, projectId, impersonatingAs || '')}
           />
         )}
         <Toast toast={toast} onClose={() => setToast(null)} />
