@@ -7683,6 +7683,30 @@ function PortfolioView({ projects, onProjectClick }) {
 
 /* ═════════ CREDIT REPORT (v25 — owner-only) ═════════ */
 
+// v30 Phase 3 — Sticky banner shown when owner is impersonating a member.
+// Signals the impersonated identity, reminds of the audit format, and
+// offers a single Exit button.
+function ImpersonationBanner({ actingAs, realAuthor, onExit }) {
+  return (
+    <div style={{
+      padding: '8px 16px',
+      background: TOK.mentionBg,
+      borderBottom: '2px solid ' + TOK.mention,
+      display: 'flex', alignItems: 'center', gap: 12,
+      fontFamily: FONT_STACK,
+    }}>
+      <span style={{ fontSize: 18 }}>🎭</span>
+      <div style={{ flex: 1, fontSize: 13, color: TOK.mention }}>
+        <strong>Viewing as {actingAs}</strong>
+        <span style={{ marginLeft: 8, opacity: 0.85 }}>
+          Actions will log as "acting as {actingAs}: ...". Signed in: {realAuthor}.
+        </span>
+      </div>
+      <Btn size="sm" variant="primary" onClick={onExit}>Exit impersonation</Btn>
+    </div>
+  );
+}
+
 // Small summary card for the report header
 function SummaryCard({ label, value, sub, accent }) {
   return (
@@ -10086,6 +10110,13 @@ export default function App() {
         display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden',
         fontFamily: FONT_STACK, color: TOK.ink, background: TOK.bg, fontSize: 13, position: 'relative',
       }}>
+        {impersonatingAs && (
+          <ImpersonationBanner
+            actingAs={impersonatingAs}
+            realAuthor={author}
+            onExit={clearImpersonation}
+          />
+        )}
         {/* Top bar */}
         <div style={{ background: TOK.surface, borderBottom: '1px solid ' + TOK.line, padding: '10px 16px', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
