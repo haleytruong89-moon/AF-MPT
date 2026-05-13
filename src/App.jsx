@@ -8267,6 +8267,32 @@ function MyWorkView({
               </div>
             );
           }
+          if (it.kind === 'overdue_subtask') {
+            const sub = it.subtask;
+            const parent = it.parentAction;
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ⚠ Sub: <MentionedText text={sub.title || '(untitled sub-task)'} teamMembers={teamMembers} />
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <span>in "{parent.title}"</span>
+                  <span>· {it.project.name}</span>
+                  <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>· parent was due {fmtDateShort(parent.dueDate)}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => {
+                    const updatedParent = {
+                      ...parent,
+                      subtasks: (parent.subtasks || []).map((s) => s.id === sub.id ? { ...s, status: 'Done' } : s),
+                    };
+                    onActionUpdate(updatedParent, it.project.id);
+                  }}>✓ Mark done</Btn>
+                  {onActionClick && <Btn size="sm" variant="ghost" onClick={() => onActionClick(it.project.id, parent.id)}>→ Open parent</Btn>}
+                </div>
+              </div>
+            );
+          }
           if (it.kind === 'deadline_approval') {
             const req = it.request;
             return (
@@ -8321,6 +8347,27 @@ function MyWorkView({
         {myWork.actionItems[actionsTab].length === 0 ? (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
         ) : myWork.actionItems[actionsTab].map((e, i) => {
+          if (e.kind === 'subtask') {
+            const sub = e.subtask;
+            const parent = e.parentAction;
+            return (
+              <SubtaskMyWorkRow
+                key={`sub-${actionsTab}-${sub.id || i}`}
+                subtask={sub}
+                parentAction={parent}
+                project={e.project}
+                teamMembers={teamMembers}
+                onMarkDone={() => {
+                  const updatedParent = {
+                    ...parent,
+                    subtasks: (parent.subtasks || []).map((s) => s.id === sub.id ? { ...s, status: 'Done' } : s),
+                  };
+                  onActionUpdate(updatedParent, e.project.id);
+                }}
+                onOpenParent={() => onActionClick && onActionClick(e.project.id, parent.id)}
+              />
+            );
+          }
           const a = e.action;
           const related = a.relatedTaskId ? findTaskInProject(e.project, a.relatedTaskId) : null;
           return (
@@ -8342,6 +8389,7 @@ function MyWorkView({
               }, e.project.id)}
               onMarkDone={() => handleActionDone(a, e.project)}
               onOpenDetails={onActionClick ? () => onActionClick(e.project.id, a.id) : null}
+              onSubtasksChange={(newSubtasks) => onActionUpdate({ ...a, subtasks: newSubtasks }, e.project.id)}
             />
           );
         })}
