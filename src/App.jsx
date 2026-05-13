@@ -8000,6 +8000,33 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
   );
 }
 
+// v30.B — Minimal row for a sub-task in sub-PIC's My Work. No expand,
+// no comments — just title + parent breadcrumb + ✓ Mark done + → Open
+// parent. Sub-task structure: { id, title, pic, status }.
+function SubtaskMyWorkRow({ subtask, parentAction, project, teamMembers, onMarkDone, onOpenParent }) {
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 6, background: TOK.surface, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <MentionedText text={subtask.title || '(untitled sub-task)'} teamMembers={teamMembers} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
+          <span>Sub of: "<span style={{ color: TOK.ink }}>{parentAction.title}</span>"</span>
+          <span>· {project.name}</span>
+          {parentAction.dueDate && <span>· 📅 {fmtDateShort(parentAction.dueDate)} (parent due)</span>}
+        </div>
+      </div>
+      {onMarkDone && (
+        <Btn size="sm" variant="primary" onClick={onMarkDone} title="Mark done">✓</Btn>
+      )}
+      {onOpenParent && (
+        <Btn size="sm" variant="ghost" onClick={onOpenParent} title="Open parent action">→</Btn>
+      )}
+    </div>
+  );
+}
+
 function MyWorkSubTabs({ value, onChange, tabs }) {
   return (
     <div style={{ display: 'inline-flex', gap: 2, padding: 2, background: TOK.surface, borderRadius: 6, border: '1px solid ' + TOK.line }}>
