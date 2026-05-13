@@ -737,7 +737,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
     for (const pg of (proj.programs || [])) {
       for (const ws of (pg.workstreams || [])) {
         for (const t of (ws.tasks || [])) {
-          if (t.status === 'Dropped') continue;
+          if (t.status === 'Dropped' || t.status === 'Completed') continue;
           const enriched = { task: t, project: proj, program: pg, workstream: ws };
 
           if (t.pic === author) {
