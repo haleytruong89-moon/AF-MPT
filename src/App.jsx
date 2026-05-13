@@ -8174,6 +8174,174 @@ function computeTeamOverview(projects, members) {
   });
 }
 
+// v30 Phase 3 — One row per team member showing workload metrics and
+// last activity. "(you)" badge on self; View-as button hidden for self.
+function MemberOverviewRow({ data, onViewAs, currentAuthor }) {
+  const { member, tasksOwned, tasksOverdue, tasksContributing, actionItemsOpen, credit, lastActivity } = data;
+  const isSelf = member.name === currentAuthor;
+  const empty = tasksOwned === 0 && actionItemsOpen === 0 && tasksContributing === 0 && credit.projected === 0;
+  return (
+    <div style={{ padding: '12px 14px', border: '1px solid ' + TOK.line, borderRadius: 8, background: TOK.surface, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+          {member.name}
+          {member.email && <span style={{ color: TOK.muted, fontWeight: 400, marginLeft: 8 }}>{member.email}</span>}
+          {isSelf && <span style={{ color: TOK.accent, fontWeight: 400, marginLeft: 8, fontSize: 11 }}>(you)</span>}
+        </div>
+        {!isSelf && (
+          <Btn size="sm" variant="primary" onClick={() => onViewAs(member.name)}>View as →</Btn>
+        )}
+      </div>
+      {empty ? (
+        <div style={{ fontSize: 12.5, color: TOK.muted }}>
+          🌱 No assignments yet. Add them as PIC or contributor to track their workload.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, color: TOK.ink, marginBottom: 4 }}>
+            <span>📋 {tasksOwned} owned</span>
+            {tasksOverdue > 0 && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>⚠ {tasksOverdue} overdue</span>}
+            <span>🤝 {tasksContributing} contributing</span>
+            <span>✅ {actionItemsOpen} actions</span>
+          </div>
+          {credit.projected > 0 && (
+            <div style={{ fontSize: 12, color: TOK.muted }}>
+              📊 {Math.round(credit.earned * 10) / 10} / {Math.round(credit.projected * 10) / 10} cp ({Math.round(credit.pct)}%)
+            </div>
+          )}
+          {lastActivity && (
+            <div style={{ fontSize: 11.5, color: TOK.muted, marginTop: 2 }}>
+              🕐 Last activity: {myWorkTimeAgo(lastActivity.ts)} — {lastActivity.description}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// v30 Phase 3 — Owner-only Team Overview view.
+function TeamOverviewView({ projects, teamMembers, currentAuthor, onImpersonate }) {
+  const [sortBy, setSortBy] = useState('overdue'); // overdue | name | tasks | credit | activity
+
+  const teamData = useMemo(
+    () => computeTeamOverview(projects, teamMembers),
+    [projects, teamMembers]
+  );
+
+  const sorted = useMemo(() => {
+    const arr = [...teamData];
+    if (sortBy === 'name') arr.sort((a, b) => a.member.name.localeCompare(b.member.name));
+    else if (sortBy === 'overdue') arr.sort((a, b) => b.tasksOverdue - a.tasksOverdue || a.member.name.localeCompare(b.member.name));
+    else if (sortBy === 'tasks') arr.sort((a, b) => b.tasksOwned - a.tasksOwned || a.member.name.localeCompare(b.member.name));
+    else if (sortBy === 'credit') arr.sort((a, b) => b.credit.earned - a.credit.earned || a.member.name.localeCompare(b.member.name));
+    else if (sortBy === 'activity') {
+      arr.sort((a, b) => {
+        const ta = a.lastActivity?.t || 0;
+        const tb = b.lastActivity?.t || 0;
+        return tb - ta;
+      });
+    }
+    return arr;
+  }, [teamData, sortBy]);
+
+  const summary = useMemo(() => {
+    let activeMembers = 0;
+    let totalOpenActions = 0;
+    let totalOverdue = 0;
+    let pendingApprovals = 0;
+    for (const d of teamData) {
+      if (d.tasksOwned + d.actionItemsOpen + d.tasksContributing > 0) activeMembers++;
+      totalOpenActions += d.actionItemsOpen;
+      totalOverdue += d.tasksOverdue;
+    }
+    for (const proj of Object.values(projects || {})) {
+      for (const pg of (proj.programs || [])) {
+        for (const ws of (pg.workstreams || [])) {
+          for (const tk of (ws.tasks || [])) {
+            if (tk.deadlineRequest) pendingApprovals++;
+          }
+        }
+      }
+    }
+    return { activeMembers, totalOpenActions, totalOverdue, pendingApprovals };
+  }, [teamData, projects]);
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const rows = sorted.map((d) => ({
+      'Member': d.member.name,
+      'Email': d.member.email || '',
+      'Tasks owned': d.tasksOwned,
+      'Tasks overdue': d.tasksOverdue,
+      'Contributing': d.tasksContributing,
+      'Action items open': d.actionItemsOpen,
+      'Credit earned (cp)': Math.round(d.credit.earned * 100) / 100,
+      'Credit projected (cp)': Math.round(d.credit.projected * 100) / 100,
+      'Credit % earned': Math.round(d.credit.pct * 10) / 10 + '%',
+      'Last activity': d.lastActivity ? fmtDateTime(d.lastActivity.ts) : '—',
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Team Overview');
+    XLSX.writeFile(wb, `Team_Overview_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: 20, fontFamily: FONT_STACK, background: TOK.bg }}>
+      <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>
+              Team Overview <span style={{ color: TOK.accent, fontSize: 11, fontWeight: 400, marginLeft: 6 }}>[OWNER ONLY]</span>
+            </h2>
+            <div style={{ fontSize: 12, color: TOK.muted, marginTop: 2 }}>
+              Workload, activity, and credit attribution for all team members.
+            </div>
+          </div>
+          <Btn size="sm" onClick={exportExcel}><FileSpreadsheet size={11} /> Export Excel</Btn>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+          <SummaryCard label="Active members" value={summary.activeMembers} />
+          <SummaryCard label="Open action items" value={summary.totalOpenActions} />
+          <SummaryCard label="Overdue across team" value={summary.totalOverdue} accent={summary.totalOverdue > 0 ? TOK.overdueFg : null} />
+          <SummaryCard label="Pending approvals" value={summary.pendingApprovals} accent={summary.pendingApprovals > 0 ? TOK.inprogFg : null} />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontSize: 12, color: TOK.muted, flexWrap: 'wrap' }}>
+          <span>Sort:</span>
+          {[
+            { id: 'overdue', label: 'Overdue first' },
+            { id: 'name', label: 'Name' },
+            { id: 'tasks', label: 'Open tasks' },
+            { id: 'credit', label: 'Credit earned' },
+            { id: 'activity', label: 'Last activity' },
+          ].map((opt) => (
+            <button key={opt.id} onClick={() => setSortBy(opt.id)}
+              style={{
+                background: sortBy === opt.id ? TOK.surface : 'transparent',
+                border: '1px solid ' + (sortBy === opt.id ? TOK.lineStrong : TOK.line),
+                borderRadius: 6, padding: '4px 10px', fontSize: 12,
+                fontFamily: FONT_STACK, cursor: 'pointer', color: TOK.ink,
+              }}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {sorted.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: TOK.subtle, fontSize: 13, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10 }}>
+            No team members yet. Members appear as you assign PICs or invite them via Members modal.
+          </div>
+        ) : (
+          sorted.map((d) => (
+            <MemberOverviewRow key={d.member.email || d.member.name} data={d} onViewAs={onImpersonate} currentAuthor={currentAuthor} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
