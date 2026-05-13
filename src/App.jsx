@@ -7461,14 +7461,19 @@ function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, head
   );
 }
 
-function StatusQuickPill({ status, onChange }) {
+function StatusQuickPill({ status, onChange, statuses }) {
   const [menu, setMenu] = useState(null);
-  const safeStatus = status || 'Planned';
+  const opts = statuses || STATUSES;
+  const safeStatus = status || opts[0] || 'Planned';
   const map = {
     Planned: { fg: TOK.plannedFg, bg: TOK.plannedBg, icon: <Circle size={10} /> },
     InProgress: { fg: TOK.inprogFg, bg: TOK.inprogBg, icon: <PlayCircle size={10} /> },
     Completed: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Dropped: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
+    Pending: { fg: TOK.plannedFg, bg: TOK.plannedBg, icon: <Circle size={10} /> },
+    'Pushed to OP': { fg: TOK.programFg, bg: TOK.programBg, icon: <Activity size={10} /> },
+    Done: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
+    Cancelled: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
   };
   const s = map[safeStatus] || map.Planned;
   const openMenu = (e) => {
@@ -7496,10 +7501,10 @@ function StatusQuickPill({ status, onChange }) {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={STATUSES.map((st) => ({
-            label: STATUS_LABEL[st] + (st === safeStatus ? '  ✓' : ''),
+          items={opts.map((st) => ({
+            label: (STATUS_LABEL[st] || st) + (st === safeStatus ? '  ✓' : ''),
             icon: (map[st] || map.Planned).icon,
-            danger: st === 'Dropped',
+            danger: st === 'Dropped' || st === 'Cancelled',
             onClick: () => { if (st !== safeStatus) onChange(st); },
           }))}
         />
@@ -7641,7 +7646,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
         </div>
         <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{action.priority}</span>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={action.status} onChange={(st) => onChange({ status: st })} />
+          <StatusQuickPill status={action.status} onChange={(st) => onChange({ status: st })} statuses={ACTION_STATUSES} />
         </span>
         {action.status !== 'Done' && onMarkDone && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
