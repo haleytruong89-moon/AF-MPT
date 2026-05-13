@@ -4183,7 +4183,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 </div>`;
 }
 
-function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast }) {
+function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [mode, setMode] = useState('grouped'); // grouped | flat
@@ -4194,6 +4194,20 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   const [selected, setSelected] = useState(new Set());
   const [emailPicsDialog, setEmailPicsDialog] = useState(null); // { groups: Map<pic, items[]> } | null
   const [copyHelper, setCopyHelper] = useState(null); // { html, title, gmailUrl } | null
+
+  // v30.A.1 — Auto-open Edit form when navigated with initialEditId
+  // (e.g., from My Work "→ Open"). Scroll the form into view.
+  useEffect(() => {
+    if (!initialEditId) return;
+    const target = (project.actionItems || []).find((a) => a.id === initialEditId);
+    if (!target) return;
+    setEditing(target);
+    setShowForm(true);
+    setTimeout(() => {
+      const el = document.querySelector('[data-action-form]');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }, [initialEditId, project.actionItems]);
 
   const actions = project.actionItems || [];
 
@@ -4240,6 +4254,23 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   };
 
   const startEdit = (a) => { setEditing(a); setShowForm(true); };
+
+  // v30.A.1 — Post a comment immediately (bypasses form Save). Routes
+  // through the shared applyActionUpdate so the diff-logger emits the
+  // standard action_comment entry. Falls back to direct project update
+  // if onApplyAction prop is absent (back-compat).
+  const handleAddComment = (text, isBlocker) => {
+    if (!editing) return;
+    const newEntry = { id: uid('aupd'), timestamp: new Date().toISOString(), author, text, isBlocker: !!isBlocker };
+    const updated = { ...editing, updates: [newEntry, ...(editing.updates || [])] };
+    setEditing(updated);
+    if (onApplyAction) {
+      onApplyAction(updated, project.id, 'Actions tab');
+    } else {
+      onProjectUpdate({ ...project, actionItems: (project.actionItems || []).map((a) => a.id === updated.id ? updated : a) });
+      onActivity({ type: 'action_comment', description: `Posted comment on action "${updated.title}"${isBlocker ? ' 🚨 Blocker' : ''} (from Actions tab)` });
+    }
+  };
 
   const removeAction = async (a) => {
     const ok = await dialogs.confirm({ title: 'Delete action item?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
@@ -4403,14 +4434,16 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         </div>
 
         {showForm && (
-          <div style={{ marginBottom: 14 }}>
+          <div data-action-form style={{ marginBottom: 14 }}>
             <ActionItemForm
+              key={editing?.id || 'new'}
               initial={editing}
               project={project}
               teamMembers={teamMembers}
               author={author}
               onSave={saveAction}
               onCancel={() => { setShowForm(false); setEditing(null); }}
+              onAddComment={editing ? handleAddComment : null}
             />
           </div>
         )}
