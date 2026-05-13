@@ -9561,7 +9561,7 @@ export default function App() {
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
   // optional suffix (e.g. "My Work") to tag the entry-point in the audit.
-  const applyTaskUpdate = useCallback((updatedTask, projectId, source = '') => {
+  const applyTaskUpdate = useCallback((updatedTask, projectId, source = '', actingAs = '') => {
     const targetProj = projects[projectId];
     if (!targetProj) return;
     const loc = findTaskInProject(targetProj, updatedTask.id);
@@ -9573,7 +9573,11 @@ export default function App() {
     updateProject(updated);
 
     const tag = source ? ` (from ${source})` : '';
-    const log = (entry) => logActivityForProject(projectId, entry);
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
+    const log = (entry) => logActivityForProject(projectId, {
+      ...entry,
+      description: actingPrefix + entry.description,
+    });
 
     if (oldTask.status !== updatedTask.status) {
       log({ type: 'status_change', description: `Changed "${updatedTask.name}" status: ${STATUS_LABEL[oldTask.status || 'Planned']} → ${STATUS_LABEL[updatedTask.status]}${tag}` });
@@ -9622,7 +9626,7 @@ export default function App() {
 
   // v30 — Patch a single action item in any project. Used by My Work's
   // "Mark done" buttons in needs-attention + action-items sections.
-  const applyActionUpdate = useCallback((updatedAction, projectId, source = '') => {
+  const applyActionUpdate = useCallback((updatedAction, projectId, source = '', actingAs = '') => {
     const targetProj = projects[projectId];
     if (!targetProj) return;
     const oldAction = (targetProj.actionItems || []).find((a) => a.id === updatedAction.id);
@@ -9631,7 +9635,11 @@ export default function App() {
     updateProject(updated);
 
     const tag = source ? ` (from ${source})` : '';
-    const log = (entry) => logActivityForProject(projectId, entry);
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
+    const log = (entry) => logActivityForProject(projectId, {
+      ...entry,
+      description: actingPrefix + entry.description,
+    });
     if (!oldAction) return;
 
     if (oldAction.status !== updatedAction.status) {
@@ -9692,7 +9700,7 @@ export default function App() {
   // v30.A.2 — Apply a decision update to any project. Diff-logger covers
   // followUpStatus only (Phase A.2 inline scope). Other field edits go
   // through DecisionsView's saveDecision path which is unchanged.
-  const applyDecisionUpdate = useCallback((updatedDecision, projectId, source = '') => {
+  const applyDecisionUpdate = useCallback((updatedDecision, projectId, source = '', actingAs = '') => {
     const targetProj = projects[projectId];
     if (!targetProj) return;
     const oldDecision = (targetProj.decisions || []).find((d) => d.id === updatedDecision.id);
@@ -9700,12 +9708,13 @@ export default function App() {
     updated.decisions = (updated.decisions || []).map((d) => d.id === updatedDecision.id ? { ...d, ...updatedDecision } : d);
     updateProject(updated);
     const tag = source ? ` (from ${source})` : '';
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
     if (oldDecision && oldDecision.followUpStatus !== updatedDecision.followUpStatus) {
       const snippet = (updatedDecision.text || '').slice(0, 60);
       const ellipsis = (updatedDecision.text || '').length > 60 ? '…' : '';
       logActivityForProject(projectId, {
         type: 'decision_status_change',
-        description: `Decision "${snippet}${ellipsis}": ${oldDecision.followUpStatus || 'Open'} → ${updatedDecision.followUpStatus}${tag}`,
+        description: `${actingPrefix}Decision "${snippet}${ellipsis}": ${oldDecision.followUpStatus || 'Open'} → ${updatedDecision.followUpStatus}${tag}`,
       });
     }
   }, [projects, updateProject, logActivityForProject]);
@@ -9713,15 +9722,16 @@ export default function App() {
   // v30.A.1 — Create a new action in any project (from My Work entry points).
   // Prepends to actionItems so it shows immediately at the top of the
   // Actions tab list. Activity log entry tags "(from My Work)".
-  const createActionFromMyWork = useCallback((newAction, projectId) => {
+  const createActionFromMyWork = useCallback((newAction, projectId, actingAs = '') => {
     const targetProj = projects[projectId];
     if (!targetProj) return;
     const updated = cloneDeep(targetProj);
     updated.actionItems = [newAction, ...(updated.actionItems || [])];
     updateProject(updated);
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
     logActivityForProject(projectId, {
       type: 'action_create',
-      description: `Created action: "${newAction.title}" → ${newAction.pic || '—'} (from My Work)`,
+      description: `${actingPrefix}Created action: "${newAction.title}" → ${newAction.pic || '—'} (from My Work)`,
     });
     showToast(`Action created in ${targetProj.name}`);
   }, [projects, updateProject, logActivityForProject]);
