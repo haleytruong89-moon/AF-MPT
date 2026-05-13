@@ -7586,6 +7586,144 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
   );
 }
 
+// v30.A — Row for an action item in My Work. C+D hybrid expand pattern,
+// mirrors TaskRowInline. Collapsed shows title + breadcrumb + due +
+// priority + status. Expanded reveals inline-editable title, PIC, due,
+// priority, plus comment thread with @mention support.
+function ActionRowInline({ action, project, related, author, teamMembers, picSuggestions, onChange, onAddComment, onOpenDetails, onMarkDone }) {
+  const [expanded, setExpanded] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(action.title || '');
+  const [commentDraft, setCommentDraft] = useState('');
+  const [isBlocker, setIsBlocker] = useState(false);
+  const [showAllComments, setShowAllComments] = useState(false);
+
+  // Keep local title in sync when external action.title changes
+  useEffect(() => { setTitleDraft(action.title || ''); }, [action.title]);
+
+  const overdue = action.dueDate && action.status !== 'Done' && action.status !== 'Cancelled' && parseDate(action.dueDate) < today();
+  const pc = priorityColor(action.priority);
+  const updates = action.updates || [];
+  const visibleComments = showAllComments ? updates : updates.slice(0, 3);
+
+  const commitTitle = () => {
+    const trimmed = titleDraft.trim();
+    if (trimmed && trimmed !== action.title) onChange({ title: trimmed });
+    else if (!trimmed) setTitleDraft(action.title || '');
+  };
+
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 6, background: TOK.surface }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 44 }}>
+        <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {expanded ? (
+            <input
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 13, fontWeight: 500, width: '100%', padding: '4px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, outline: 'none' }}
+            />
+          ) : (
+            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <MentionedText text={action.title || '(untitled action)'} teamMembers={teamMembers} />
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
+            <span>{project.name}</span>
+            {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
+            {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>· 📅 {fmtDateShort(action.dueDate)}</span>}
+            {updates.length > 0 && <span>· 💬 {updates.length}</span>}
+          </div>
+        </div>
+        <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{action.priority}</span>
+        <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+          <StatusQuickPill status={action.status} onChange={(st) => onChange({ status: st })} />
+        </span>
+        {action.status !== 'Done' && onMarkDone && (
+          <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
+        )}
+        <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+      </div>
+      {expanded && (
+        <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
+            <select
+              value={action.pic || ''}
+              onChange={(e) => onChange({ pic: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
+              <option value="">(unassigned)</option>
+              {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>Due</span>
+            <input
+              type="date"
+              value={action.dueDate || ''}
+              onChange={(e) => onChange({ dueDate: e.target.value || null })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink }}
+            />
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginLeft: 16 }}>Priority</span>
+            <select
+              value={action.priority || 'Medium'}
+              onChange={(e) => onChange({ priority: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink }}>
+              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+
+          <div style={{ borderTop: '1px solid ' + TOK.line, paddingTop: 10 }}>
+            <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>💬 Comments ({updates.length})</div>
+            {visibleComments.map((u) => (
+              <div key={u.id} style={{ fontSize: 12, color: TOK.ink, padding: '6px 0', borderBottom: '1px dashed ' + TOK.line, display: 'flex', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 10.5, color: TOK.muted, marginBottom: 2 }}>
+                    <span style={{ color: TOK.ink, fontWeight: 500 }}>{u.author}</span> · {myWorkTimeAgo(u.timestamp)}
+                    {u.isBlocker && <span style={{ marginLeft: 6, color: TOK.blocker, fontWeight: 500 }}>🚨 Blocker</span>}
+                  </div>
+                  <MentionedText text={u.text} teamMembers={teamMembers} />
+                </div>
+              </div>
+            ))}
+            {updates.length > 3 && !showAllComments && (
+              <button onClick={() => setShowAllComments(true)} style={{ background: 'none', border: 'none', color: TOK.accent, fontSize: 11.5, cursor: 'pointer', padding: '4px 0', fontFamily: FONT_STACK }}>
+                Show all ({updates.length})
+              </button>
+            )}
+            <div style={{ marginTop: 8 }}>
+              <MentionTextarea
+                value={commentDraft}
+                onChange={setCommentDraft}
+                rows={2}
+                placeholder={`Type @ to mention. Posted as ${author || '…'}.`}
+                teamMembers={teamMembers}
+              />
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: TOK.muted, marginTop: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={isBlocker} onChange={(e) => setIsBlocker(e.target.checked)} /> Mark as blocker
+              </label>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                <Btn size="sm" variant="primary" disabled={!commentDraft.trim()} onClick={() => {
+                  onAddComment(commentDraft.trim(), isBlocker);
+                  setCommentDraft(''); setIsBlocker(false);
+                }}>Post comment</Btn>
+                {onOpenDetails && <Btn size="sm" variant="ghost" onClick={onOpenDetails}>→ Open in Actions tab</Btn>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MyWorkSubTabs({ value, onChange, tabs }) {
   return (
     <div style={{ display: 'inline-flex', gap: 2, padding: 2, background: TOK.surface, borderRadius: 6, border: '1px solid ' + TOK.line }}>
