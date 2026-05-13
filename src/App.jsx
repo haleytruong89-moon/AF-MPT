@@ -10132,27 +10132,33 @@ export default function App() {
           <div style={{ flex: 1 }} />
 
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
-            {[
-              { id: 'my-work', label: 'My Work', icon: <UserCircle size={12} /> },
-              { id: 'mindmap', label: 'Mind map', icon: <MapIcon size={12} /> },
-              { id: 'outline', label: 'Outline', icon: <ListIcon size={12} /> },
-              { id: 'gantt', label: 'Gantt', icon: <BarChart3 size={12} /> },
-              { id: 'dashboard', label: 'Dashboard', icon: <Home size={12} /> },
-              { id: 'decisions', label: 'Decisions', icon: <CheckCircle2 size={12} />, count: (project?.decisions?.length || 0) },
-              { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
-              { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
-              { id: 'activity', label: 'Activity', icon: <Activity size={12} /> },
-              ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
-              ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
-            ].map((v) => (
-              <button key={v.id} onClick={() => setView(v.id)} style={{
-                fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
-                border: 'none', background: view === v.id ? TOK.surface : 'transparent',
-                color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: 5,
-                boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-              }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
-            ))}
+            {(() => {
+              const allTabs = [
+                { id: 'my-work', label: 'My Work', icon: <UserCircle size={12} /> },
+                { id: 'mindmap', label: 'Mind map', icon: <MapIcon size={12} /> },
+                { id: 'outline', label: 'Outline', icon: <ListIcon size={12} /> },
+                { id: 'gantt', label: 'Gantt', icon: <BarChart3 size={12} /> },
+                { id: 'dashboard', label: 'Dashboard', icon: <Home size={12} /> },
+                { id: 'decisions', label: 'Decisions', icon: <CheckCircle2 size={12} />, count: (project?.decisions?.length || 0) },
+                { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
+                { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
+                { id: 'activity', label: 'Activity', icon: <Activity size={12} /> },
+                ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
+                ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
+                ...(isOwner ? [{ id: 'team-overview', label: 'Team', icon: <Users size={12} />, ownerOnly: true }] : []),
+              ];
+              // v30 Phase 3 — during impersonation, only My Work tab is visible.
+              const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
+              return visibleTabs.map((v) => (
+                <button key={v.id} onClick={() => setView(v.id)} style={{
+                  fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
+                  border: 'none', background: view === v.id ? TOK.surface : 'transparent',
+                  color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
+              ));
+            })()}
           </div>
 
           <Btn size="sm" variant="primary" onClick={() => setMeetingMode(true)} title="Enter meeting mode (presentation view)">▶ Meeting</Btn>
