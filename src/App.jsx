@@ -4213,10 +4213,13 @@ function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, o
 // v30.A.1 — Modal wrapper for creating an action from My Work. Adds a
 // project picker step (hidden when only one project exists) and forwards
 // optional defaults (relatedTaskId, PIC = author) into ActionItemForm.
-function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, author, teamMembers, onClose, onCreate }) {
+function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, author, defaultPic, teamMembers, onClose, onCreate }) {
   const projectIds = useMemo(() => Object.keys(projects || {}).filter((id) => id !== '__all__'), [projects]);
   const [projectId, setProjectId] = useState(defaultProjectId && projects?.[defaultProjectId] ? defaultProjectId : (projectIds[0] || ''));
   const project = projects?.[projectId];
+  // v30 Phase 3 — defaultPic overrides author for the form's PIC pre-fill,
+  // so an action created during impersonation lands on the impersonated user.
+  const effectivePic = defaultPic || author;
 
   return (
     <Modal title="New action item" onClose={onClose} width={520} zHigh>
@@ -4234,10 +4237,10 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
           initial={null}
           project={project}
           teamMembers={teamMembers}
-          author={author}
+          author={effectivePic}
           defaultRelatedTaskId={defaultRelatedTaskId || null}
           onSave={(newAction) => {
-            const finalAction = { ...newAction, pic: newAction.pic || author || '' };
+            const finalAction = { ...newAction, pic: newAction.pic || effectivePic || '' };
             onCreate(finalAction, projectId);
             onClose();
           }}
