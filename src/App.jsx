@@ -9427,6 +9427,36 @@ export default function App() {
       const newest = (updatedAction.updates || [])[0];
       log({ type: 'action_comment', description: `Posted comment on action "${updatedAction.title}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
     }
+    // v30.B — Sub-task diffs (by id; reorder is invisible)
+    const oldSubs = oldAction.subtasks || [];
+    const newSubs = updatedAction.subtasks || [];
+    const oldSubMap = new Map(oldSubs.map((s) => [s.id, s]));
+    const newSubMap = new Map(newSubs.map((s) => [s.id, s]));
+    for (const [id, sub] of newSubMap.entries()) {
+      if (oldSubMap.has(id)) continue;
+      log({ type: 'subtask_create', description: `Added sub-task "${sub.title || '(empty)'}" → ${sub.pic || '—'} on "${updatedAction.title}"${tag}` });
+    }
+    for (const [id, sub] of oldSubMap.entries()) {
+      if (newSubMap.has(id)) continue;
+      log({ type: 'subtask_delete', description: `Removed sub-task "${sub.title || '(empty)'}" from "${updatedAction.title}"${tag}` });
+    }
+    for (const [id, sub] of newSubMap.entries()) {
+      const prev = oldSubMap.get(id);
+      if (!prev) continue;
+      if (prev.status !== sub.status) {
+        if (sub.status === 'Done') {
+          log({ type: 'subtask_complete', description: `Sub-task done: "${sub.title}" on "${updatedAction.title}" (${sub.pic || '—'})${tag}` });
+        } else {
+          log({ type: 'subtask_status_change', description: `Sub-task "${sub.title}" reverted to ${sub.status} on "${updatedAction.title}"${tag}` });
+        }
+      }
+      if (prev.pic !== sub.pic) {
+        log({ type: 'subtask_reassign', description: `Sub-task "${sub.title}" reassigned: ${prev.pic || '—'} → ${sub.pic || '—'} on "${updatedAction.title}"${tag}` });
+      }
+      if (prev.title !== sub.title) {
+        log({ type: 'subtask_rename', description: `Sub-task renamed: "${prev.title}" → "${sub.title}" on "${updatedAction.title}"${tag}` });
+      }
+    }
   }, [projects, updateProject, logActivityForProject]);
 
   // v30.A.2 — Apply a decision update to any project. Diff-logger covers
