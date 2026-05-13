@@ -3790,12 +3790,26 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
   );
 }
 
-function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity }) {
+function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, initialEditId }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all'); // all | Open | InProgress | Done
   const [filterTaskId, setFilterTaskId] = useState('all'); // all | <taskId>
   const [query, setQuery] = useState('');
+
+  // v30.A.2 — Auto-open Edit form when navigated with initialEditId
+  // (e.g., from My Work "→ Open"). Scroll the form into view.
+  useEffect(() => {
+    if (!initialEditId) return;
+    const target = (project.decisions || []).find((d) => d.id === initialEditId);
+    if (!target) return;
+    setEditing(target);
+    setShowForm(true);
+    setTimeout(() => {
+      const el = document.querySelector('[data-decision-form]');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }, [initialEditId, project.decisions]);
 
   const decisions = project.decisions || [];
 
@@ -3861,8 +3875,9 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
         </div>
 
         {showForm && (
-          <div style={{ marginBottom: 14 }}>
+          <div data-decision-form style={{ marginBottom: 14 }}>
             <DecisionForm
+              key={editing?.id || 'new'}
               initial={editing}
               project={project}
               teamMembers={teamMembers}
