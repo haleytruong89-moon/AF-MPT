@@ -9220,6 +9220,12 @@ export default function App() {
     if (view !== 'actions') setInitialActionEditId(null);
   }, [view]);
 
+  // v30.A.2 — Sibling state + clear effect for decisions.
+  const [initialDecisionEditId, setInitialDecisionEditId] = useState(null);
+  useEffect(() => {
+    if (view !== 'decisions') setInitialDecisionEditId(null);
+  }, [view]);
+
   // v30 — mark mentions as seen. Functional setMeta keeps deps stable.
   const markMyWorkSeen = useCallback(async () => {
     if (!author) return;
@@ -9398,6 +9404,27 @@ export default function App() {
     if ((oldAction.updates?.length || 0) < (updatedAction.updates?.length || 0)) {
       const newest = (updatedAction.updates || [])[0];
       log({ type: 'action_comment', description: `Posted comment on action "${updatedAction.title}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
+    }
+  }, [projects, updateProject, logActivityForProject]);
+
+  // v30.A.2 — Apply a decision update to any project. Diff-logger covers
+  // followUpStatus only (Phase A.2 inline scope). Other field edits go
+  // through DecisionsView's saveDecision path which is unchanged.
+  const applyDecisionUpdate = useCallback((updatedDecision, projectId, source = '') => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const oldDecision = (targetProj.decisions || []).find((d) => d.id === updatedDecision.id);
+    const updated = cloneDeep(targetProj);
+    updated.decisions = (updated.decisions || []).map((d) => d.id === updatedDecision.id ? { ...d, ...updatedDecision } : d);
+    updateProject(updated);
+    const tag = source ? ` (from ${source})` : '';
+    if (oldDecision && oldDecision.followUpStatus !== updatedDecision.followUpStatus) {
+      const snippet = (updatedDecision.text || '').slice(0, 60);
+      const ellipsis = (updatedDecision.text || '').length > 60 ? '…' : '';
+      logActivityForProject(projectId, {
+        type: 'decision_status_change',
+        description: `Decision "${snippet}${ellipsis}": ${oldDecision.followUpStatus || 'Open'} → ${updatedDecision.followUpStatus}${tag}`,
+      });
     }
   }, [projects, updateProject, logActivityForProject]);
 
@@ -9904,12 +9931,14 @@ export default function App() {
                     projectId: projectId || currentId,
                     relatedTaskId: relatedTaskId || null,
                   })}
-                  onDecisionClick={async (projectId) => {
+                  onDecisionClick={async (projectId, decisionId) => {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
                     }
                     setView('decisions');
+                    if (decisionId) setInitialDecisionEditId(decisionId);
                   }}
+                  onDecisionUpdate={(updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work')}
                   onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work')}
                   onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work')}
                   onApproveDeadline={myWorkApproveDeadline}
@@ -9922,7 +9951,7 @@ export default function App() {
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
-              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} />}
+              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
