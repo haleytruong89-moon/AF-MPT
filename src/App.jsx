@@ -9058,12 +9058,31 @@ export default function App() {
     updateProject(updated);
 
     const tag = source ? ` (from ${source})` : '';
-    if (oldAction && oldAction.status !== updatedAction.status) {
+    const log = (entry) => logActivityForProject(projectId, entry);
+    if (!oldAction) return;
+
+    if (oldAction.status !== updatedAction.status) {
       if (updatedAction.status === 'Done') {
-        logActivityForProject(projectId, { type: 'action_complete', description: `Marked action done: "${updatedAction.title}"${tag}` });
+        log({ type: 'action_complete', description: `Marked action done: "${updatedAction.title}"${tag}` });
       } else {
-        logActivityForProject(projectId, { type: 'action_status_change', description: `Action "${updatedAction.title}": ${oldAction.status || 'Pending'} → ${updatedAction.status}${tag}` });
+        log({ type: 'action_status_change', description: `Action "${updatedAction.title}": ${oldAction.status || 'Pending'} → ${updatedAction.status}${tag}` });
       }
+    }
+    if (oldAction.title !== updatedAction.title) {
+      log({ type: 'action_rename', description: `Renamed action "${oldAction.title}" → "${updatedAction.title}"${tag}` });
+    }
+    if (oldAction.pic !== updatedAction.pic) {
+      log({ type: 'action_reassign', description: `Reassigned action "${updatedAction.title}": ${oldAction.pic || '—'} → ${updatedAction.pic || '—'}${tag}` });
+    }
+    if (oldAction.dueDate !== updatedAction.dueDate) {
+      log({ type: 'action_due_change', description: `Changed action "${updatedAction.title}" due date: ${oldAction.dueDate ? fmtDateShort(oldAction.dueDate) : '—'} → ${updatedAction.dueDate ? fmtDateShort(updatedAction.dueDate) : '—'}${tag}` });
+    }
+    if (oldAction.priority !== updatedAction.priority) {
+      log({ type: 'action_priority_change', description: `Changed action "${updatedAction.title}" priority: ${oldAction.priority || '—'} → ${updatedAction.priority || '—'}${tag}` });
+    }
+    if ((oldAction.updates?.length || 0) < (updatedAction.updates?.length || 0)) {
+      const newest = (updatedAction.updates || [])[0];
+      log({ type: 'action_comment', description: `Posted comment on action "${updatedAction.title}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
     }
   }, [projects, updateProject, logActivityForProject]);
 
