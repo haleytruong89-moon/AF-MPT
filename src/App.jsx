@@ -4084,6 +4084,114 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   );
 }
 
+// v30.B — Editor for an action's subtasks list. Reused in ActionItemForm
+// (Actions tab Edit) and ActionRowInline (My Work expanded). Mutations
+// fire onChange immediately, bypassing any form Save lifecycle.
+function SubtaskEditor({ subtasks, picSuggestions, author, onChange }) {
+  const list = subtasks || [];
+  const doneCount = list.filter((s) => s.status === 'Done').length;
+  const newRowRef = useRef(null);
+  const focusNextRef = useRef(false);
+
+  useEffect(() => {
+    if (focusNextRef.current && newRowRef.current) {
+      newRowRef.current.focus();
+      focusNextRef.current = false;
+    }
+  }, [list.length]);
+
+  const update = (idx, patch) => {
+    onChange(list.map((s, i) => i === idx ? { ...s, ...patch } : s));
+  };
+  const remove = (idx) => {
+    const target = list[idx];
+    if (!window.confirm(`Remove sub-task "${target.title || '(empty)'}"?`)) return;
+    onChange(list.filter((_, i) => i !== idx));
+  };
+  const add = () => {
+    focusNextRef.current = true;
+    onChange([...list, { id: uid('sub'), title: '', pic: author || '', status: 'Pending' }]);
+  };
+  const toggleStatus = (idx) => {
+    const target = list[idx];
+    update(idx, { status: target.status === 'Done' ? 'Pending' : 'Done' });
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 8 }}>
+        ✓ Sub-tasks ({doneCount}/{list.length} done)
+      </div>
+      {list.map((s, idx) => (
+        <SubtaskEditorRow
+          key={s.id}
+          subtask={s}
+          picSuggestions={picSuggestions}
+          inputRefAttach={idx === list.length - 1 ? newRowRef : null}
+          onUpdate={(patch) => update(idx, patch)}
+          onToggleStatus={() => toggleStatus(idx)}
+          onRemove={() => remove(idx)}
+        />
+      ))}
+      <Btn size="sm" onClick={add}><Plus size={11} /> Add sub-task</Btn>
+    </div>
+  );
+}
+
+// Inner row — title input commits on blur/Enter to avoid spamming
+// subtask_rename activity entries during typing.
+function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, onToggleStatus, onRemove }) {
+  const [titleDraft, setTitleDraft] = useState(subtask.title || '');
+  useEffect(() => { setTitleDraft(subtask.title || ''); }, [subtask.title]);
+  const commitTitle = () => {
+    if (titleDraft !== subtask.title) onUpdate({ title: titleDraft });
+  };
+  const done = subtask.status === 'Done';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: '1px dashed ' + TOK.line }}>
+      <button
+        type="button"
+        onClick={onToggleStatus}
+        title={done ? 'Mark pending' : 'Mark done'}
+        style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          color: done ? TOK.doneFg : TOK.subtle, fontSize: 13, padding: '4px 6px',
+        }}>
+        {done ? '✓' : '▢'}
+      </button>
+      <input
+        ref={inputRefAttach}
+        value={titleDraft}
+        onChange={(e) => setTitleDraft(e.target.value)}
+        onBlur={commitTitle}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+        placeholder="Sub-task title"
+        style={{
+          flex: 1, minWidth: 0, fontFamily: FONT_STACK, fontSize: 12,
+          padding: '4px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6,
+          background: TOK.surface, color: TOK.ink, outline: 'none',
+          textDecoration: done ? 'line-through' : 'none',
+          opacity: done ? 0.65 : 1,
+        }}
+      />
+      <select
+        value={subtask.pic || ''}
+        onChange={(e) => onUpdate({ pic: e.target.value })}
+        style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 110 }}>
+        <option value="">(unassigned)</option>
+        {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove sub-task"
+        style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: TOK.muted, padding: '4px 6px', fontSize: 13 }}>
+        🗑
+      </button>
+    </div>
+  );
+}
+
 // v30.A.1 — Modal wrapper for creating an action from My Work. Adds a
 // project picker step (hidden when only one project exists) and forwards
 // optional defaults (relatedTaskId, PIC = author) into ActionItemForm.
