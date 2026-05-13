@@ -791,6 +791,21 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
       }
     }
 
+    // v30.A — Scan action comments for @<author> across ALL action items
+    // (not just ones assigned to author). Mirrors task.updates scan above.
+    for (const a of (proj.actionItems || [])) {
+      for (const upd of (a.updates || [])) {
+        const tokens = ((upd.text || '').match(/@([A-Za-zÀ-ỹ0-9._-]+)/g) || []).map((m) => m.slice(1).toLowerCase());
+        if (!tokens.includes(authorLc)) continue;
+        const item = {
+          ts: upd.timestamp, postAuthor: upd.author, text: upd.text || '',
+          action: a, project: proj,
+        };
+        out.allMentions.push(item);
+        if (upd.timestamp && new Date(upd.timestamp) > lastSeen) out.unreadMentions.push(item);
+      }
+    }
+
     for (const a of (proj.actionItems || [])) {
       if (a.pic !== author) continue;
       if (a.status === 'Done' || a.status === 'Cancelled' || a.status === 'Dropped') continue;
