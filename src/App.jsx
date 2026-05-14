@@ -8923,6 +8923,241 @@ function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestion
   );
 }
 
+// v30 RAID Phase 2 — Card for one RAID item. Collapsed: one-line summary.
+// Expanded: type-specific metadata, approval banner (if PendingApproval & isOwner),
+// trend history, mitigation actions, status transitions.
+// All mutations route through onUpdate(partial) which the parent translates into an
+// applyRaidUpdate call.
+function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onUpdate, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const [addingAction, setAddingAction] = useState(false);
+  const [actionDraftName, setActionDraftName] = useState('');
+  const [actionDraftPic, setActionDraftPic] = useState('');
+  const [actionDraftDue, setActionDraftDue] = useState('');
+
+  const tcfg = RAID_TYPES[item.type] || RAID_TYPES.Risk;
+  const trendCfg = item.trend ? RAID_TREND_CONFIG[item.trend] : null;
+  const isRisk = item.type === 'Risk';
+  const level = isRisk ? raidRiskLevel(item.likelihood, item.impact) : null;
+  const daysSince = raidDaysSinceReview(item);
+  const isStale = daysSince > RAID_REVIEW_STALE_DAYS && (item.status === 'Active' || item.status === 'Mitigating');
+  const openMitigations = (item.mitigationActions || []).filter((a) => a.status !== 'Done').length;
+
+  const handleAddReview = (trend, note) => {
+    const newHist = {
+      id: uid('h'),
+      ts: new Date().toISOString(),
+      author: currentUser,
+      note,
+      trend,
+    };
+    onUpdate({
+      ...item,
+      trend,
+      lastReviewedAt: newHist.ts,
+      history: [...(item.history || []), newHist],
+    });
+  };
+
+  const handleMitigationUpdate = (actionId, diff) => {
+    const updated = (item.mitigationActions || []).map((a) => a.id === actionId ? { ...a, ...diff } : a);
+    onUpdate({ ...item, mitigationActions: updated });
+  };
+
+  const handleMitigationRemove = (actionId) => {
+    const updated = (item.mitigationActions || []).filter((a) => a.id !== actionId);
+    onUpdate({ ...item, mitigationActions: updated });
+  };
+
+  const handleMitigationAdd = () => {
+    const name = actionDraftName.trim();
+    if (!name) return;
+    const newAct = {
+      id: uid('ma'),
+      name,
+      pic: actionDraftPic || null,
+      due: actionDraftDue || null,
+      status: 'Open',
+      comments: [],
+    };
+    onUpdate({ ...item, mitigationActions: [...(item.mitigationActions || []), newAct] });
+    setActionDraftName(''); setActionDraftPic(''); setActionDraftDue('');
+    setAddingAction(false);
+  };
+
+  const setStatus = (newStatus) => onUpdate({ ...item, status: newStatus });
+
+  const approve = () => onUpdate({
+    ...item,
+    status: 'Active',
+    approvedBy: currentUser,
+    approvedAt: new Date().toISOString(),
+  });
+
+  const reject = () => onUpdate({
+    ...item,
+    status: 'Draft',
+    approvedBy: null,
+    approvedAt: null,
+  });
+
+  // Status colors
+  const statusColor = {
+    Draft: { fg: TOK.muted, bg: TOK.bg },
+    PendingApproval: { fg: '#B7791F', bg: '#FAEEDA' },
+    Active: { fg: '#356512', bg: '#E6EFD6' },
+    Mitigating: { fg: '#0C447C', bg: '#E6F1FB' },
+    Resolved: { fg: TOK.muted, bg: TOK.bg },
+    Accepted: { fg: TOK.muted, bg: TOK.bg },
+    Closed: { fg: TOK.muted, bg: TOK.bg },
+  }[item.status] || { fg: TOK.muted, bg: TOK.bg };
+
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 9, marginBottom: 8, background: TOK.surface, fontFamily: FONT_STACK }}>
+      {/* Collapsed header */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+        <span style={{ fontSize: 16 }}>{tcfg.icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.title}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3, fontSize: 11, color: TOK.muted, flexWrap: 'wrap' }}>
+            <span style={{ color: tcfg.fg, fontWeight: 500 }}>{tcfg.label}</span>
+            <span>· @{item.owner || '—'}</span>
+            {openMitigations > 0 && <span>· {openMitigations} open action{openMitigations === 1 ? '' : 's'}</span>}
+            {item.escalateToBoD && <span style={{ color: '#A32D2D', fontWeight: 500 }}>· ⬆ BoD</span>}
+            {isStale && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>· ⏰ Needs review</span>}
+          </div>
+        </div>
+        {isRisk && level && <RiskLevelBadge likelihood={item.likelihood} impact={item.impact} />}
+        <span style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: statusColor.bg, color: statusColor.fg }}>
+          {item.status}
+        </span>
+        {trendCfg && <span style={{ fontSize: 12 }} title={trendCfg.label}>{trendCfg.icon}</span>}
+        <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+      </div>
+
+      {expanded && (
+        <div style={{ padding: '12px 14px 14px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
+          {/* Approval banner */}
+          {item.status === 'PendingApproval' && isOwner && item.createdBy !== currentUser && (
+            <div style={{ padding: '10px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 14 }}>⏳</span>
+              <div style={{ flex: 1, fontSize: 12, color: '#7A5D00' }}>
+                <strong>Pending your approval</strong>
+                <div style={{ fontSize: 11, marginTop: 2 }}>Submitted by {item.createdBy} · {fmtDateShort(item.createdAt)}</div>
+              </div>
+              <Btn size="sm" variant="primary" onClick={approve}>✓ Approve</Btn>
+              <Btn size="sm" onClick={reject}>✕ Reject</Btn>
+            </div>
+          )}
+
+          {/* Type-specific metadata */}
+          {isRisk && (
+            <div style={{ marginBottom: 10, fontSize: 12, color: TOK.ink }}>
+              <strong>Risk matrix:</strong> Likelihood <em>{item.likelihood}</em> × Impact <em>{item.impact}</em> = <strong>{level}</strong>
+              {item.mitigationPlan && <div style={{ marginTop: 4, color: TOK.muted, fontSize: 11.5 }}>Plan: {item.mitigationPlan}</div>}
+            </div>
+          )}
+          {item.type === 'Assumption' && (
+            <div style={{ marginBottom: 10, fontSize: 12, color: TOK.ink }}>
+              <strong>Validation:</strong> {item.validated ? '✓ Validated' : 'Pending'} · deadline {item.validationDeadline ? fmtDateShort(item.validationDeadline) : '—'} · owner @{item.validationOwner || '—'}
+            </div>
+          )}
+          {item.type === 'Issue' && (
+            <div style={{ marginBottom: 10, fontSize: 12, color: TOK.ink }}>
+              <strong>Severity:</strong> {item.severity || '—'} · raised {item.raisedAt ? fmtDateShort(item.raisedAt) : '—'}
+            </div>
+          )}
+          {item.type === 'Dependency' && (
+            <div style={{ marginBottom: 10, fontSize: 12, color: TOK.ink }}>
+              <strong>Depends on:</strong> {item.dependsOn || '—'} · blocked until {item.blockedUntil ? fmtDateShort(item.blockedUntil) : '—'}
+            </div>
+          )}
+
+          {/* Trend & review history */}
+          <TrendHistoryBlock item={item} currentUser={currentUser} teamMembers={teamMembers} onAddReview={handleAddReview} />
+
+          {/* Mitigation actions */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+              Mitigation actions ({(item.mitigationActions || []).length})
+            </div>
+            {(item.mitigationActions || []).map((a) => (
+              <MitigationActionRow
+                key={a.id}
+                action={a}
+                currentUser={currentUser}
+                teamMembers={teamMembers}
+                onUpdate={(diff) => handleMitigationUpdate(a.id, diff)}
+                onRemove={() => handleMitigationRemove(a.id)}
+              />
+            ))}
+            {!addingAction && (
+              <Btn size="sm" onClick={() => setAddingAction(true)} style={{ marginTop: 4 }}><Plus size={11} /> Add action</Btn>
+            )}
+            {addingAction && (
+              <div style={{ marginTop: 8, padding: 10, background: TOK.surface, borderRadius: 7, border: '1px solid ' + TOK.line }}>
+                <input
+                  value={actionDraftName}
+                  onChange={(e) => setActionDraftName(e.target.value)}
+                  placeholder="What needs to be done?"
+                  style={{ width: '100%', padding: '6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box', marginBottom: 6 }}
+                />
+                <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+                  <select
+                    value={actionDraftPic}
+                    onChange={(e) => setActionDraftPic(e.target.value)}
+                    style={{ flex: 1, padding: '6px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
+                    <option value="">(owner unassigned)</option>
+                    {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <input
+                    type="date"
+                    value={actionDraftDue}
+                    onChange={(e) => setActionDraftDue(e.target.value)}
+                    style={{ padding: '6px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                  <Btn size="sm" variant="ghost" onClick={() => { setAddingAction(false); setActionDraftName(''); setActionDraftPic(''); setActionDraftDue(''); }}>Cancel</Btn>
+                  <Btn size="sm" variant="primary" onClick={handleMitigationAdd} disabled={!actionDraftName.trim()}>Add action</Btn>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Status transitions */}
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid ' + TOK.line, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>Change status:</span>
+            {(item.status === 'Active' || item.status === 'Mitigating') && (
+              <>
+                {isRisk && item.status === 'Active' && <Btn size="sm" onClick={() => setStatus('Mitigating')}>→ Mitigating</Btn>}
+                {item.type === 'Issue' && <Btn size="sm" onClick={() => setStatus('Resolved')}>→ Resolved</Btn>}
+                {isRisk && <Btn size="sm" onClick={() => setStatus('Accepted')}>→ Accepted</Btn>}
+                <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
+              </>
+            )}
+            {item.status === 'Resolved' || item.status === 'Accepted' ? (
+              <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
+            ) : null}
+            {onDelete && (item.createdBy === currentUser || isOwner) && (
+              <button
+                onClick={onDelete}
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', color: TOK.muted, cursor: 'pointer', fontSize: 11, fontFamily: FONT_STACK }}
+                title="Delete this RAID item">
+                <Trash2 size={12} /> Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
