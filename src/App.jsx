@@ -9736,11 +9736,16 @@ function MyWorkView({
   onTaskUpdate, onActionUpdate, onDecisionUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
+  onNavigateRaid,
 }) {
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt),
     [projects, author, isOwner, lastSeenAt]
+  );
+  const myRaid = useMemo(
+    () => computeMyRaid(author, projects, isOwner),
+    [projects, author, isOwner]
   );
   const picSuggestions = useMemo(() => {
     const set = new Set();
@@ -9961,6 +9966,14 @@ function MyWorkView({
           return null;
         })}
       </MyWorkSection>
+
+      {/* v30 RAID Phase 4 — RAID needs-attention + due-this-week + owned */}
+      <MyRaidSection
+        myRaid={myRaid}
+        currentUser={author}
+        teamMembers={teamMembers}
+        onNavigateRaid={onNavigateRaid || (() => {})}
+      />
 
       {/* ✅ Action items assigned to me */}
       <MyWorkSection
