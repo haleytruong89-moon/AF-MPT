@@ -9158,6 +9158,294 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
   );
 }
 
+// v30 RAID Phase 2 — Top-level RAID Register view. Two-panel layout: program
+// sidebar on the left, item list + filters + summary on the right. Supports
+// single-project and all-projects modes.
+function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMembers, scopeProgramId, onApplyRaidUpdate, onRaidNavigate, dialogs }) {
+  // Hooks before any early return.
+  const [selectedProgramKey, setSelectedProgramKey] = useState(null);
+  const [typeFilter, setTypeFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('Active'); // Active | Closed | All
+  const [showAddForm, setShowAddForm] = useState(false);
+
+  // Build a flat list of {projectId, programId, project, program} entries.
+  const allProgramEntries = useMemo(() => {
+    const entries = [];
+    const sourceProjects = currentProjectId ? [projects[currentProjectId]].filter(Boolean) : Object.values(projects || {});
+    for (const proj of sourceProjects) {
+      for (const pg of (proj.programs || [])) {
+        if (scopeProgramId && pg.id !== scopeProgramId) continue;
+        entries.push({
+          key: `${proj.id}::${pg.id}`,
+          projectId: proj.id,
+          programId: pg.id,
+          project: proj,
+          program: pg,
+        });
+      }
+    }
+    return entries;
+  }, [projects, currentProjectId, scopeProgramId]);
+
+  // Auto-select first program if none selected, or if selection no longer exists.
+  useEffect(() => {
+    if (allProgramEntries.length === 0) return;
+    if (!selectedProgramKey || !allProgramEntries.find((e) => e.key === selectedProgramKey)) {
+      setSelectedProgramKey(allProgramEntries[0].key);
+    }
+  }, [allProgramEntries, selectedProgramKey]);
+
+  const selectedEntry = allProgramEntries.find((e) => e.key === selectedProgramKey);
+  const picSuggestions = useMemo(() => {
+    if (!selectedEntry) return [];
+    const names = new Set();
+    (selectedEntry.project.teamMembers || []).forEach((m) => m.name && names.add(m.name));
+    (selectedEntry.project.contributorRegistry || []).forEach((r) => r.name && names.add(r.name));
+    return Array.from(names).sort();
+  }, [selectedEntry]);
+
+  // Visibility filter — Draft visible only to creator; PendingApproval visible to creator + owner.
+  const visibleItems = useMemo(() => {
+    if (!selectedEntry) return [];
+    return (selectedEntry.program.raid || []).filter((item) => {
+      if (item.status === 'Draft' && item.createdBy !== author) return false;
+      if (item.status === 'PendingApproval' && item.createdBy !== author && !isOwner) return false;
+      return true;
+    });
+  }, [selectedEntry, author, isOwner]);
+
+  // Apply type + status filters.
+  const filteredItems = useMemo(() => {
+    return visibleItems.filter((item) => {
+      if (typeFilter !== 'All' && item.type !== typeFilter) return false;
+      const closed = item.status === 'Closed' || item.status === 'Resolved' || item.status === 'Accepted';
+      if (statusFilter === 'Active' && closed) return false;
+      if (statusFilter === 'Closed' && !closed) return false;
+      return true;
+    }).sort((a, b) => {
+      // Sort PendingApproval first, then by computed level desc, then by createdAt desc.
+      if (a.status === 'PendingApproval' && b.status !== 'PendingApproval') return -1;
+      if (b.status === 'PendingApproval' && a.status !== 'PendingApproval') return 1;
+      const levelOrder = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+      const al = a.type === 'Risk' ? levelOrder[raidRiskLevel(a.likelihood, a.impact)] : 4;
+      const bl = b.type === 'Risk' ? levelOrder[raidRiskLevel(b.likelihood, b.impact)] : 4;
+      if (al !== bl) return al - bl;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    });
+  }, [visibleItems, typeFilter, statusFilter]);
+
+  // Summary strip counts.
+  const summary = useMemo(() => {
+    const items = visibleItems.filter((i) => i.status !== 'Closed' && i.status !== 'Resolved' && i.status !== 'Accepted');
+    const risks = items.filter((i) => i.type === 'Risk');
+    const counts = {
+      Critical: risks.filter((r) => raidRiskLevel(r.likelihood, r.impact) === 'Critical').length,
+      High: risks.filter((r) => raidRiskLevel(r.likelihood, r.impact) === 'High').length,
+      Issue: items.filter((i) => i.type === 'Issue').length,
+      Assumption: items.filter((i) => i.type === 'Assumption' && !i.validated).length,
+      stale: items.filter((i) => raidDaysSinceReview(i) > RAID_REVIEW_STALE_DAYS && (i.status === 'Active' || i.status === 'Mitigating')).length,
+    };
+    return counts;
+  }, [visibleItems]);
+
+  // Type tab counts (over visible items, ignoring status filter so the counts don't jump).
+  const typeCounts = useMemo(() => ({
+    All: visibleItems.length,
+    Risk: visibleItems.filter((i) => i.type === 'Risk').length,
+    Assumption: visibleItems.filter((i) => i.type === 'Assumption').length,
+    Issue: visibleItems.filter((i) => i.type === 'Issue').length,
+    Dependency: visibleItems.filter((i) => i.type === 'Dependency').length,
+  }), [visibleItems]);
+
+  const handleSave = (newItem) => {
+    if (!selectedEntry) return;
+    onApplyRaidUpdate(newItem, selectedEntry.projectId, selectedEntry.programId, 'raid');
+    setShowAddForm(false);
+  };
+
+  const handleUpdate = (updatedItem) => {
+    if (!selectedEntry) return;
+    onApplyRaidUpdate(updatedItem, selectedEntry.projectId, selectedEntry.programId, 'raid');
+  };
+
+  const handleDelete = async (item) => {
+    if (!selectedEntry) return;
+    const ok = await dialogs.confirm({ title: 'Delete RAID item?', message: `Delete "${item.title}"? This cannot be undone.`, okLabel: 'Delete' });
+    if (!ok) return;
+    if (onRaidNavigate?.deleteHandler) {
+      onRaidNavigate.deleteHandler(item.id, selectedEntry.projectId, selectedEntry.programId);
+    }
+  };
+
+  if (allProgramEntries.length === 0) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, color: TOK.muted, padding: 40, textAlign: 'center', fontFamily: FONT_STACK }}>
+        <div style={{ fontSize: 32 }}>📋</div>
+        <div style={{ fontSize: 14, fontWeight: 500 }}>No programs to show</div>
+        <div style={{ fontSize: 12, color: TOK.subtle, maxWidth: 400 }}>Create a program first, then come back to log Risks, Assumptions, Issues, or Dependencies.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, display: 'flex', overflow: 'hidden', fontFamily: FONT_STACK }}>
+      {/* Program sidebar */}
+      <div style={{ width: 200, borderRight: '1px solid ' + TOK.line, background: TOK.bg, overflowY: 'auto', padding: '12px 8px' }}>
+        <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, padding: '4px 8px 8px' }}>
+          Programs ({allProgramEntries.length})
+        </div>
+        {allProgramEntries.map((e) => {
+          const active = (e.program.raid || []).filter((r) => r.status === 'Active' || r.status === 'Mitigating');
+          const risks = active.filter((r) => r.type === 'Risk');
+          const highestLevel = risks.length === 0 ? null : risks.reduce((acc, r) => {
+            const lvl = raidRiskLevel(r.likelihood, r.impact);
+            const order = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+            if (acc === null) return lvl;
+            return order[lvl] < order[acc] ? lvl : acc;
+          }, null);
+          const dotColor = highestLevel === 'Critical' ? '#A32D2D' : highestLevel === 'High' ? '#A32D2D' : highestLevel === 'Medium' ? '#B7791F' : highestLevel === 'Low' ? '#356512' : 'transparent';
+          const hasPending = (e.program.raid || []).some((r) => r.status === 'PendingApproval');
+          const hasStale = active.some((r) => raidDaysSinceReview(r) > RAID_REVIEW_STALE_DAYS);
+          const selected = selectedProgramKey === e.key;
+          return (
+            <button
+              key={e.key}
+              onClick={() => setSelectedProgramKey(e.key)}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                padding: '8px 10px',
+                marginBottom: 2,
+                background: selected ? TOK.surface : 'transparent',
+                color: TOK.ink,
+                border: 'none',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontFamily: FONT_STACK,
+                fontSize: 12,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {currentProjectId ? e.program.name : `${e.project.name} › ${e.program.name}`}
+              </span>
+              {hasPending && <span title="Pending approval">⏳</span>}
+              {hasStale && <span title="Needs review" style={{ fontSize: 11 }}>⏰</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Main panel */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 32px' }}>
+        {selectedEntry && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: TOK.ink }}>
+                {selectedEntry.program.name}
+              </h2>
+              <span style={{ fontSize: 12, color: TOK.muted }}>· RAID Register</span>
+              <div style={{ flex: 1 }} />
+              <Btn size="sm" variant="primary" onClick={() => setShowAddForm(true)}><Plus size={12} /> Add</Btn>
+            </div>
+
+            {/* Summary strip */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 12, fontSize: 12, color: TOK.ink, flexWrap: 'wrap' }}>
+              {summary.Critical > 0 && <span><strong style={{ color: '#7B1D1D' }}>{summary.Critical}</strong> Critical</span>}
+              {summary.High > 0 && <span><strong style={{ color: '#A32D2D' }}>{summary.High}</strong> High</span>}
+              {summary.Issue > 0 && <span>🔥 <strong>{summary.Issue}</strong> open</span>}
+              {summary.Assumption > 0 && <span>💡 <strong>{summary.Assumption}</strong> unvalidated</span>}
+              {summary.stale > 0 && <span style={{ color: TOK.overdueFg }}>⏰ <strong>{summary.stale}</strong> needs review</span>}
+              {summary.Critical + summary.High + summary.Issue + summary.Assumption + summary.stale === 0 && (
+                <span style={{ color: TOK.subtle, fontStyle: 'italic' }}>No active items.</span>
+              )}
+            </div>
+
+            {/* Type filter tabs */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10, background: TOK.bg, padding: 3, borderRadius: 8, fontSize: 12 }}>
+              {['All', 'Risk', 'Assumption', 'Issue', 'Dependency'].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTypeFilter(t)}
+                  style={{
+                    flex: 1,
+                    fontFamily: FONT_STACK,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    background: typeFilter === t ? TOK.surface : 'transparent',
+                    color: typeFilter === t ? TOK.ink : TOK.muted,
+                    cursor: 'pointer',
+                    boxShadow: typeFilter === t ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                  }}>
+                  {t === 'All' ? 'All' : RAID_TYPES[t]?.icon} {t === 'All' ? '' : t} ({typeCounts[t]})
+                </button>
+              ))}
+            </div>
+
+            {/* Status toggle */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 14, alignItems: 'center', fontSize: 11.5, color: TOK.muted }}>
+              <span style={{ fontWeight: 500 }}>Status:</span>
+              {['Active', 'Closed', 'All'].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  style={{
+                    fontFamily: FONT_STACK,
+                    fontSize: 11.5,
+                    fontWeight: 500,
+                    padding: '3px 9px',
+                    borderRadius: 999,
+                    border: '1px solid ' + (statusFilter === s ? TOK.ink : TOK.line),
+                    background: statusFilter === s ? TOK.ink : TOK.surface,
+                    color: statusFilter === s ? '#fff' : TOK.muted,
+                    cursor: 'pointer',
+                  }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+
+            {/* Card list */}
+            {filteredItems.length === 0 ? (
+              <div style={{ padding: 30, textAlign: 'center', fontSize: 12, color: TOK.subtle, fontStyle: 'italic' }}>
+                No items match the current filters.
+              </div>
+            ) : (
+              filteredItems.map((item) => (
+                <RAIDCard
+                  key={item.id}
+                  item={item}
+                  isOwner={isOwner}
+                  currentUser={author}
+                  teamMembers={teamMembers}
+                  picSuggestions={picSuggestions}
+                  onUpdate={handleUpdate}
+                  onDelete={() => handleDelete(item)}
+                />
+              ))
+            )}
+
+            {showAddForm && (
+              <AddRAIDForm
+                onSave={handleSave}
+                onCancel={() => setShowAddForm(false)}
+                currentUser={author}
+                teamMembers={teamMembers}
+                picSuggestions={picSuggestions}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
