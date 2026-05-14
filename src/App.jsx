@@ -8583,6 +8583,110 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
   );
 }
 
+// v30 RAID Phase 2 — Review history + inline "add review note" form for a RAID item.
+// Shows the latest entry + Show all (N) toggle. Add form has a 3-way trend toggle
+// and a textarea. On save, calls onAddReview(trend, note) which the parent translates
+// into a full item update (append history + bump lastReviewedAt + sync trend).
+function TrendHistoryBlock({ item, currentUser, teamMembers, onAddReview }) {
+  const [showAll, setShowAll] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [draftTrend, setDraftTrend] = useState(item.trend || 'stable');
+  const [draftNote, setDraftNote] = useState('');
+
+  const history = item.history || [];
+  const visible = showAll ? history.slice().reverse() : history.slice(-1).reverse();
+  const lastReviewedDays = raidDaysSinceReview(item);
+
+  const submit = () => {
+    const trimmed = draftNote.trim();
+    if (!trimmed) return;
+    onAddReview(draftTrend, trimmed);
+    setDraftNote('');
+    setDraftTrend(item.trend || 'stable');
+    setAdding(false);
+  };
+
+  return (
+    <div style={{ marginTop: 10, fontFamily: FONT_STACK }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+          Review History
+        </span>
+        <span style={{ fontSize: 10.5, color: lastReviewedDays > RAID_REVIEW_STALE_DAYS ? TOK.overdueFg : TOK.subtle, marginLeft: 'auto' }}>
+          Last reviewed: {lastReviewedDays === 0 ? 'today' : `${lastReviewedDays}d ago`}
+        </span>
+      </div>
+
+      {history.length === 0 && (
+        <div style={{ fontSize: 11.5, color: TOK.subtle, fontStyle: 'italic' }}>No review notes yet.</div>
+      )}
+      {visible.map((h) => {
+        const tc = RAID_TREND_CONFIG[h.trend] || RAID_TREND_CONFIG.stable;
+        return (
+          <div key={h.id} style={{ padding: '6px 0', borderBottom: '1px dashed ' + TOK.line, fontSize: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <span style={{ fontSize: 12 }}>{tc.icon}</span>
+              <span style={{ color: TOK.ink, fontWeight: 500, fontSize: 11 }}>{h.author}</span>
+              <span style={{ color: TOK.muted, fontSize: 10.5 }}>· {fmtDateShort(h.ts)}</span>
+            </div>
+            <MentionedText text={h.note} teamMembers={teamMembers} />
+          </div>
+        );
+      })}
+      {history.length > 1 && !showAll && (
+        <button onClick={() => setShowAll(true)} style={{ background: 'none', border: 'none', color: TOK.accent, fontSize: 11.5, cursor: 'pointer', padding: '4px 0', fontFamily: FONT_STACK }}>
+          Show all ({history.length})
+        </button>
+      )}
+      {showAll && history.length > 1 && (
+        <button onClick={() => setShowAll(false)} style={{ background: 'none', border: 'none', color: TOK.muted, fontSize: 11.5, cursor: 'pointer', padding: '4px 0', fontFamily: FONT_STACK }}>
+          Show less
+        </button>
+      )}
+
+      {!adding && (
+        <Btn size="sm" onClick={() => setAdding(true)} style={{ marginTop: 8 }}><Plus size={11} /> Add review note</Btn>
+      )}
+      {adding && (
+        <div style={{ marginTop: 10, padding: 10, background: TOK.bg, borderRadius: 7, border: '1px solid ' + TOK.line }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+            {Object.entries(RAID_TREND_CONFIG).map(([k, v]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setDraftTrend(k)}
+                style={{
+                  fontFamily: FONT_STACK,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  padding: '5px 10px',
+                  borderRadius: 6,
+                  border: draftTrend === k ? '2px solid ' + TOK.ink : '1px solid ' + TOK.lineStrong,
+                  background: draftTrend === k ? v.bg : TOK.surface,
+                  color: draftTrend === k ? v.fg : TOK.muted,
+                  cursor: 'pointer',
+                }}>
+                {v.icon} {v.label}
+              </button>
+            ))}
+          </div>
+          <MentionTextarea
+            value={draftNote}
+            onChange={setDraftNote}
+            rows={2}
+            placeholder={`What's the current status? Posted as ${currentUser || '…'}. Type @ to mention.`}
+            teamMembers={teamMembers}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 }}>
+            <Btn size="sm" variant="ghost" onClick={() => { setAdding(false); setDraftNote(''); }}>Cancel</Btn>
+            <Btn size="sm" variant="primary" onClick={submit} disabled={!draftNote.trim()}>Save review</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
