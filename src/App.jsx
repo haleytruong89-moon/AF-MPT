@@ -8486,6 +8486,67 @@ function RiskLevelBadge({ likelihood, impact }) {
   );
 }
 
+// v30 RAID Phase 2 — Typeahead PIC picker. Searches BOTH name and email.
+// Stores the selected canonical name string in `value`. Dropdown shows
+// `Name · email` so users can disambiguate. Falls back to free-text entry
+// (useful for departments like AF/Legal/HR that may not have emails).
+// teamMembers: [{ name, email? }]; extraSuggestions: [string] for departments.
+function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder }) {
+  const [query, setQuery] = useState(value || '');
+  const [open, setOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => { setQuery(value || ''); }, [value]);
+
+  const suggestions = useMemo(() => {
+    const q = (query || '').trim().toLowerCase();
+    const all = [
+      ...(teamMembers || []).map((m) => ({ name: m?.name, email: m?.email })).filter((m) => m.name),
+      ...((extraSuggestions || []).filter((n) => n && !(teamMembers || []).some((m) => m?.name === n)).map((n) => ({ name: n, email: null }))),
+    ];
+    if (!q) return all.slice(0, 8);
+    return all.filter((m) =>
+      m.name.toLowerCase().includes(q) || (m.email && m.email.toLowerCase().includes(q))
+    ).slice(0, 8);
+  }, [query, teamMembers, extraSuggestions]);
+
+  const commit = (name) => {
+    setQuery(name);
+    setOpen(false);
+    onChange(name);
+  };
+
+  return (
+    <div style={{ position: 'relative', fontFamily: FONT_STACK }}>
+      <input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => { setFocused(true); setOpen(true); }}
+        onBlur={() => { setFocused(false); setTimeout(() => setOpen(false), 150); onChange(query.trim()); }}
+        placeholder={placeholder || 'Type a name or email…'}
+        style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + (focused ? TOK.lineStrong : TOK.lineStrong), borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, color: TOK.ink, boxSizing: 'border-box' }}
+      />
+      {open && suggestions.length > 0 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2, background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 7, boxShadow: '0 4px 12px rgba(0,0,0,0.08)', zIndex: 60, maxHeight: 220, overflowY: 'auto' }}>
+          {suggestions.map((m) => (
+            <button
+              key={m.name + '|' + (m.email || '')}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => commit(m.name)}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: TOK.ink, borderBottom: '1px solid ' + TOK.line }}
+              onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+              <div style={{ fontWeight: 500 }}>{m.name}</div>
+              {m.email && <div style={{ fontSize: 10.5, color: TOK.muted, marginTop: 1 }}>{m.email}</div>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // v30 RAID Phase 2 — One mitigation/resolution action row inside a RAIDCard.
 // Simpler than ActionRowInline: no priority, no sub-tasks, no inline rename.
 // Comments use the same shape as task/action updates: { id, author, text, ts }.
@@ -8803,13 +8864,13 @@ function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestion
 
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Owner</div>
-          <select
+          <PicPicker
             value={owner}
-            onChange={(e) => setOwner(e.target.value)}
-            style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
-            <option value="">(select)</option>
-            {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
+            onChange={setOwner}
+            teamMembers={teamMembers}
+            extraSuggestions={picSuggestions}
+            placeholder="Type name or email…"
+          />
         </div>
 
         {/* Type-specific */}
@@ -8853,13 +8914,13 @@ function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestion
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Validation owner</div>
-              <select
+              <PicPicker
                 value={validationOwner}
-                onChange={(e) => setValidationOwner(e.target.value)}
-                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
-                <option value="">(select)</option>
-                {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
-              </select>
+                onChange={setValidationOwner}
+                teamMembers={teamMembers}
+                extraSuggestions={picSuggestions}
+                placeholder="Type name or email…"
+              />
             </div>
           </>
         )}
@@ -9107,13 +9168,15 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
                   style={{ width: '100%', padding: '6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box', marginBottom: 6 }}
                 />
                 <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <select
-                    value={actionDraftPic}
-                    onChange={(e) => setActionDraftPic(e.target.value)}
-                    style={{ flex: 1, padding: '6px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
-                    <option value="">(owner unassigned)</option>
-                    {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
+                  <div style={{ flex: 1 }}>
+                    <PicPicker
+                      value={actionDraftPic}
+                      onChange={setActionDraftPic}
+                      teamMembers={teamMembers}
+                      extraSuggestions={picSuggestions}
+                      placeholder="Owner — type name or email…"
+                    />
+                  </div>
                   <input
                     type="date"
                     value={actionDraftDue}
