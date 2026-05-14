@@ -9197,12 +9197,15 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
 
   const selectedEntry = allProgramEntries.find((e) => e.key === selectedProgramKey);
   const picSuggestions = useMemo(() => {
-    if (!selectedEntry) return [];
     const names = new Set();
-    (selectedEntry.project.teamMembers || []).forEach((m) => m.name && names.add(m.name));
-    (selectedEntry.project.contributorRegistry || []).forEach((r) => r.name && names.add(r.name));
+    // Primary source: workspace-wide team members (App-level derived roster used by every other form).
+    (teamMembers || []).forEach((m) => m?.name && names.add(m.name));
+    // Secondary source: per-project contributor registry (departments like AF, Legal, HR, etc.) when present.
+    if (selectedEntry) {
+      (selectedEntry.project.contributorRegistry || []).forEach((r) => r?.name && names.add(r.name));
+    }
     return Array.from(names).sort();
-  }, [selectedEntry]);
+  }, [teamMembers, selectedEntry]);
 
   // Visibility filter — Draft visible only to creator; PendingApproval visible to creator + owner.
   const visibleItems = useMemo(() => {
