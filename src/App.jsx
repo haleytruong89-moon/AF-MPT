@@ -8687,6 +8687,242 @@ function TrendHistoryBlock({ item, currentUser, teamMembers, onAddReview }) {
   );
 }
 
+// v30 RAID Phase 2 — Create-RAID modal. Tabs across 4 types; type-specific fields
+// below. On save, builds a complete RAIDItem with id, status='PendingApproval',
+// createdAt/By, initial history entry, and escalateToBoD default for Risk.
+function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestions }) {
+  const [type, setType] = useState('Risk');
+  const [title, setTitle] = useState('');
+  const [owner, setOwner] = useState(currentUser || '');
+  const [likelihood, setLikelihood] = useState('Medium');
+  const [impact, setImpact] = useState('Medium');
+  const [mitigationPlan, setMitigationPlan] = useState('');
+  const [escalateToBoD, setEscalateToBoD] = useState(false);
+  const [validationDeadline, setValidationDeadline] = useState('');
+  const [validationOwner, setValidationOwner] = useState('');
+  const [severity, setSeverity] = useState('Medium');
+  const [dependsOn, setDependsOn] = useState('');
+  const [blockedUntil, setBlockedUntil] = useState('');
+  const [initialNote, setInitialNote] = useState('');
+
+  // Risk: when impact changes, default escalateToBoD to (impact === 'High') — but allow override.
+  // Track whether user has manually toggled; if so, do not re-apply default.
+  const [bodTouched, setBodTouched] = useState(false);
+  useEffect(() => {
+    if (type === 'Risk' && !bodTouched) setEscalateToBoD(impact === 'High');
+  }, [type, impact, bodTouched]);
+
+  const canSave = title.trim().length > 0 && owner.trim().length > 0;
+
+  const handleSave = () => {
+    if (!canSave) return;
+    const now = new Date().toISOString();
+    const id = uid('raid');
+    const initial = {
+      id,
+      type,
+      title: title.trim(),
+      owner: owner.trim(),
+      status: 'PendingApproval',
+      createdBy: currentUser,
+      createdAt: now,
+      approvedBy: null,
+      approvedAt: null,
+      trend: 'stable',
+      lastReviewedAt: now,
+      history: [{
+        id: uid('h'),
+        ts: now,
+        author: currentUser,
+        note: initialNote.trim() || `${type} created.`,
+        trend: 'stable',
+      }],
+      mitigationActions: [],
+    };
+    if (type === 'Risk') {
+      initial.likelihood = likelihood;
+      initial.impact = impact;
+      initial.mitigationPlan = mitigationPlan.trim() || null;
+      initial.escalateToBoD = escalateToBoD;
+    } else if (type === 'Assumption') {
+      initial.validationDeadline = validationDeadline || null;
+      initial.validationOwner = validationOwner.trim() || null;
+      initial.validated = false;
+    } else if (type === 'Issue') {
+      initial.severity = severity;
+      initial.raisedAt = now;
+    } else if (type === 'Dependency') {
+      initial.dependsOn = dependsOn.trim() || null;
+      initial.blockedUntil = blockedUntil || null;
+    }
+    onSave(initial);
+  };
+
+  return (
+    <Modal title="Add RAID item" onClose={onCancel} width={560}>
+      <div style={{ fontFamily: FONT_STACK }}>
+        {/* Type tabs */}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 14, background: TOK.bg, padding: 3, borderRadius: 8 }}>
+          {Object.entries(RAID_TYPES).map(([k, v]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setType(k)}
+              style={{
+                flex: 1,
+                fontFamily: FONT_STACK,
+                fontSize: 12,
+                fontWeight: 500,
+                padding: '7px 10px',
+                borderRadius: 6,
+                border: 'none',
+                background: type === k ? TOK.surface : 'transparent',
+                color: type === k ? v.fg : TOK.muted,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 5,
+                boxShadow: type === k ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+              }}>
+              <span>{v.icon}</span> {v.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Common fields */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Title</div>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={`What is the ${type.toLowerCase()}?`}
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box' }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Owner</div>
+          <select
+            value={owner}
+            onChange={(e) => setOwner(e.target.value)}
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
+            <option value="">(select)</option>
+            {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+
+        {/* Type-specific */}
+        {type === 'Risk' && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Likelihood × Impact</div>
+              <RiskMatrixSelector likelihood={likelihood} impact={impact} onChange={(l, i) => { setLikelihood(l); setImpact(i); }} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Mitigation plan (optional)</div>
+              <textarea
+                value={mitigationPlan}
+                onChange={(e) => setMitigationPlan(e.target.value)}
+                rows={2}
+                placeholder="What's the mitigation strategy?"
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box', resize: 'vertical' }}
+              />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 12, color: TOK.ink, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={escalateToBoD}
+                onChange={(e) => { setBodTouched(true); setEscalateToBoD(e.target.checked); }}
+              />
+              <span>⬆ Escalate to BoD <span style={{ color: TOK.muted, fontSize: 11 }}>(auto-set for High impact; you can override)</span></span>
+            </label>
+          </>
+        )}
+
+        {type === 'Assumption' && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Validation deadline</div>
+              <input
+                type="date"
+                value={validationDeadline}
+                onChange={(e) => setValidationDeadline(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Validation owner</div>
+              <select
+                value={validationOwner}
+                onChange={(e) => setValidationOwner(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
+                <option value="">(select)</option>
+                {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          </>
+        )}
+
+        {type === 'Issue' && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Severity</div>
+            <select
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value)}
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, background: TOK.surface, color: TOK.ink }}>
+              {['High', 'Medium', 'Low'].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
+
+        {type === 'Dependency' && (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Depends on</div>
+              <input
+                value={dependsOn}
+                onChange={(e) => setDependsOn(e.target.value)}
+                placeholder="What must happen first?"
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Blocked until</div>
+              <input
+                type="date"
+                value={blockedUntil}
+                onChange={(e) => setBlockedUntil(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, boxSizing: 'border-box' }}
+              />
+            </div>
+          </>
+        )}
+
+        {/* Initial review note */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 10.5, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>Initial review note (optional)</div>
+          <MentionTextarea
+            value={initialNote}
+            onChange={setInitialNote}
+            rows={2}
+            placeholder="Context, why now, what's known so far. Type @ to mention."
+            teamMembers={teamMembers}
+          />
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+          <Btn size="sm" variant="ghost" onClick={onCancel}>Cancel</Btn>
+          <Btn size="sm" variant="primary" onClick={handleSave} disabled={!canSave}>Submit for approval</Btn>
+        </div>
+        <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 10, textAlign: 'right' }}>
+          New items start as <strong>PendingApproval</strong>. Workspace owner must approve before everyone can see.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
