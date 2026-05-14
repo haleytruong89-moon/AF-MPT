@@ -9042,7 +9042,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
       {expanded && (
         <div style={{ padding: '12px 14px 14px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
           {/* Approval banner */}
-          {item.status === 'PendingApproval' && isOwner && item.createdBy !== currentUser && (
+          {item.status === 'PendingApproval' && isOwner && (
             <div style={{ padding: '10px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 14 }}>⏳</span>
               <div style={{ flex: 1, fontSize: 12, color: '#7A5D00' }}>
