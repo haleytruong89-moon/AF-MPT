@@ -90,6 +90,45 @@ const DEFAULT_VIEW_OPTIONS = [
   { id: 'activity', label: 'Activity Dashboard' },
 ];
 
+// v30 RAID Register — type config. Icons stay text-emoji (consistent with the
+// rest of the file which uses unicode glyphs for risk/issue/dependency markers
+// — see e.g. the overdue badge "⚠" usage already in TOK styling).
+const RAID_TYPES = {
+  Risk:       { icon: '⚠',  label: 'Risk',       fg: '#A32D2D', bg: '#FCEBEB' },
+  Assumption: { icon: '💡', label: 'Assumption', fg: '#0C447C', bg: '#E6F1FB' },
+  Issue:      { icon: '🔥', label: 'Issue',      fg: '#B7791F', bg: '#FAEEDA' },
+  Dependency: { icon: '🔗', label: 'Dependency', fg: '#4B2D8C', bg: '#EEEDFE' },
+};
+
+// All valid RAIDItem.status values. Status flow:
+//   Draft → PendingApproval → Active → (Mitigating | Resolved | Accepted) → Closed
+// Visibility: Draft = creator only; PendingApproval = creator + owner; Active+ = everyone.
+const RAID_STATUSES = ['Draft', 'PendingApproval', 'Active', 'Mitigating', 'Resolved', 'Accepted', 'Closed'];
+
+// Trend config — used by RAID review history. `stable` is the default for newly created items.
+const RAID_TREND_CONFIG = {
+  improving:  { icon: '🟢', label: 'Improving',  fg: '#356512', bg: '#E6EFD6' },
+  stable:     { icon: '🟡', label: 'Stable',     fg: '#B7791F', bg: '#FAEEDA' },
+  escalating: { icon: '🔴', label: 'Escalating', fg: '#A32D2D', bg: '#FCEBEB' },
+};
+
+// Risk level matrix — riskLevel is COMPUTED from likelihood × impact, never stored.
+// Spec §1d / §9.1.
+const RAID_RISK_MATRIX = {
+  'High:High':     'Critical',
+  'High:Medium':   'High',
+  'High:Low':      'High',
+  'Medium:High':   'High',
+  'Medium:Medium': 'Medium',
+  'Medium:Low':    'Low',
+  'Low:High':      'Medium',
+  'Low:Medium':    'Low',
+  'Low:Low':       'Low',
+};
+
+// Threshold (in days) for "Needs review" badge on Active/Mitigating items. Spec §9.7.
+const RAID_REVIEW_STALE_DAYS = 7;
+
 // Reference (wiki link) types — auto-detected from URL pattern.
 // Each type gets a distinctive label + color pill in the UI.
 const REF_TYPE_STYLE = {
