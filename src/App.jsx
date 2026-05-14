@@ -11110,8 +11110,10 @@ export default function App() {
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
     const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt);
+    const r = computeMyRaid(author, projects, isOwner);
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
-    return w.needsAttention.length + (hasVisited ? w.unreadMentions.length : 0);
+    const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
+    return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
   }, [projects, author, isOwner, userPrefs]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
@@ -12080,6 +12082,15 @@ export default function App() {
                     }
                     setView('actions');
                     if (actionId) setInitialActionEditId(actionId);
+                  }}
+                  onNavigateRaid={async (projectId, _programId) => {
+                    if (projectId && projectId !== currentId) {
+                      await switchProject(projectId);
+                    }
+                    setView('raid');
+                    // Note: programId not used to scope yet — RaidRegisterView
+                    // auto-selects first program. Future enhancement: lift a
+                    // raidScopeProgramId state for cross-tab program pre-select.
                   }}
                   onCreateAction={(projectId, relatedTaskId) => setActionCreate({
                     projectId: projectId || currentId,
