@@ -9722,7 +9722,7 @@ export default function App() {
       const ps = {};
       for (const pid of m.projectIds) {
         const p = await loadProject(pid);
-        if (p) ps[pid] = p;
+        if (p) ps[pid] = ensureProjectRaid(p);
       }
       setProjects(ps);
 
