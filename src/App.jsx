@@ -75,6 +75,21 @@ const DEFAULT_CREDIT_POINTS = 100;
 // Owner can add/remove via Project Settings → Contributor registry.
 const DEFAULT_DEPARTMENTS = ['HR', 'QA', 'GA', 'Legal', 'IT', 'FIN', 'AF', 'BOD'];
 
+// v30 Phase 4 — Views eligible to be the workspace/personal default landing
+// view. Owner-only views (portfolio, credit-report, team-overview) excluded
+// because non-owners can't land on them. Per-project views with potentially
+// empty data (decisions, actions) also excluded to avoid landing on empty
+// screens.
+const DEFAULT_VIEW_OPTIONS = [
+  { id: 'my-work', label: 'My Work' },
+  { id: 'mindmap', label: 'Mind map' },
+  { id: 'outline', label: 'Outline' },
+  { id: 'gantt', label: 'Gantt' },
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'aggregation', label: 'Aggregation' },
+  { id: 'activity', label: 'Activity Dashboard' },
+];
+
 // Reference (wiki link) types — auto-detected from URL pattern.
 // Each type gets a distinctive label + color pill in the UI.
 const REF_TYPE_STYLE = {
@@ -9703,6 +9718,16 @@ export default function App() {
     [meta, author]
   );
 
+  // v30 Phase 4 — Badge count on the My Work tab. needsAttention always
+  // counted; unreadMentions only counted after the user's first visit
+  // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
+  const myWorkBadge = useMemo(() => {
+    if (!author) return 0;
+    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt);
+    const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
+    return w.needsAttention.length + (hasVisited ? w.unreadMentions.length : 0);
+  }, [projects, author, isOwner, userPrefs]);
+
   // Resolve landing view once meta + author are ready. Fallback chain:
   // personal override → workspace default → 'my-work' (the new v30 default).
   useEffect(() => {
@@ -9743,6 +9768,45 @@ export default function App() {
       saveMeta(m2);
       return m2;
     });
+  }, [author]);
+
+  // v30 Phase 4 — Owner picks the workspace-wide default landing view.
+  // Writes meta.defaultView. Defense-in-depth: also guard at handler.
+  const setWorkspaceDefaultView = useCallback(async (viewId) => {
+    if (!isOwner) return;
+    setMeta((m) => {
+      if (!m) return m;
+      const m2 = { ...m, defaultView: viewId };
+      saveMeta(m2);
+      return m2;
+    });
+    const label = DEFAULT_VIEW_OPTIONS.find((o) => o.id === viewId)?.label || viewId;
+    showToast(`Workspace default set to "${label}"`);
+  }, [isOwner]);
+
+  // v30 Phase 4 — Per-user override. Pass null to clear and fall back to
+  // workspace default on next app load.
+  const setPersonalDefaultOverride = useCallback(async (viewId) => {
+    if (!author) return;
+    setMeta((m) => {
+      if (!m) return m;
+      const prefs = m.userPreferences || {};
+      const m2 = {
+        ...m,
+        userPreferences: {
+          ...prefs,
+          [author]: { ...(prefs[author] || {}), defaultViewOverride: viewId || null },
+        },
+      };
+      saveMeta(m2);
+      return m2;
+    });
+    if (viewId) {
+      const label = DEFAULT_VIEW_OPTIONS.find((o) => o.id === viewId)?.label || viewId;
+      showToast(`Your personal default: "${label}"`);
+    } else {
+      showToast(`Cleared personal override (will follow workspace default)`);
+    }
   }, [author]);
 
   // v30 Phase 3 — Owner impersonation state. In-memory only; cleared on refresh.
