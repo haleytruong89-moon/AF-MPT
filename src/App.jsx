@@ -954,6 +954,67 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
   return out;
 }
 
+// v30 RAID Phase 4 — Aggregate RAID items that need the user's attention across
+// all projects/programs. Pure read; no mutation. Mirrors the shape of
+// computeMyWork: returns named buckets that MyRaidSection renders directly.
+function computeMyRaid(author, projects, isOwner) {
+  const out = {
+    pendingApproval: [],   // owner-only — items awaiting their approval
+    escalating: [],        // items where owner===author AND trend==='escalating' AND status active
+    overdueActions: [],    // mitigation actions where pic===author AND status!==Done AND due<today
+    needsReview: [],       // items where owner===author AND daysSinceReview>7 AND status active
+    dueThisWeek: [],       // mitigation actions where pic===author AND status!==Done AND due<=today+7
+    owned: [],             // all active items where owner===author
+  };
+  if (!author) return out;
+  const startOfToday = today();
+  const weekFromToday = new Date(startOfToday);
+  weekFromToday.setDate(weekFromToday.getDate() + 7);
+
+  for (const proj of Object.values(projects || {})) {
+    for (const pg of (proj.programs || [])) {
+      for (const item of (pg.raid || [])) {
+        const isActive = item.status === 'Active' || item.status === 'Mitigating';
+        const isClosed = item.status === 'Closed' || item.status === 'Resolved' || item.status === 'Accepted';
+        const enriched = { item, project: proj, program: pg };
+
+        // Pending approval — owner only, items not created by the owner themselves.
+        if (item.status === 'PendingApproval' && isOwner) {
+          out.pendingApproval.push(enriched);
+        }
+
+        // Escalating — items I own that are trending bad.
+        if (isActive && item.owner === author && item.trend === 'escalating') {
+          out.escalating.push(enriched);
+        }
+
+        // Needs review — items I own that haven't been reviewed in over 7 days.
+        if (isActive && item.owner === author && raidDaysSinceReview(item) > RAID_REVIEW_STALE_DAYS) {
+          out.needsReview.push(enriched);
+        }
+
+        // All owned active items.
+        if (item.owner === author && !isClosed && item.status !== 'Draft') {
+          out.owned.push(enriched);
+        }
+
+        // Mitigation actions assigned to me — overdue + due this week.
+        for (const act of (item.mitigationActions || [])) {
+          if (act.pic !== author || act.status === 'Done') continue;
+          const dueDate = parseDate(act.due);
+          const actionEnriched = { action: act, item, project: proj, program: pg };
+          if (dueDate && dueDate < startOfToday) {
+            out.overdueActions.push(actionEnriched);
+          } else if (dueDate && dueDate <= weekFromToday) {
+            out.dueThisWeek.push(actionEnriched);
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 // Aggregate credits across all projects, optionally filtered by year.
 // Projects without a `creditYear` are always included (no filter applied to them).
 // Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
