@@ -9576,7 +9576,7 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
 // v30 RAID Phase 4 — Renders the 3 RAID-related sections inside MyWorkView.
 // onNavigateRaid(projectId, programId) switches the view to RAID with that
 // program selected.
-function MyRaidSection({ myRaid, currentUser, teamMembers, onNavigateRaid }) {
+function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
   const attentionCount =
     myRaid.pendingApproval.length +
     myRaid.escalating.length +
