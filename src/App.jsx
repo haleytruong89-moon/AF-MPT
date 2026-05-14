@@ -9140,7 +9140,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
                 <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
               </>
             )}
-            {item.status === 'Resolved' || item.status === 'Accepted' ? (
+            {(item.status === 'Resolved' || item.status === 'Accepted') ? (
               <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
             ) : null}
             {onDelete && (item.createdBy === currentUser || isOwner) && (
