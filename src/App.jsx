@@ -10817,6 +10817,20 @@ export default function App() {
     return w.needsAttention.length + (hasVisited ? w.unreadMentions.length : 0);
   }, [projects, author, isOwner, userPrefs]);
 
+  // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
+  const raidPendingBadge = useMemo(() => {
+    if (!isOwner) return 0;
+    let n = 0;
+    for (const proj of Object.values(projects || {})) {
+      for (const pg of (proj.programs || [])) {
+        for (const r of (pg.raid || [])) {
+          if (r.status === 'PendingApproval') n++;
+        }
+      }
+    }
+    return n;
+  }, [projects, isOwner]);
+
   // Resolve landing view once meta + author are ready. Fallback chain:
   // personal override → workspace default → 'my-work' (the new v30 default).
   useEffect(() => {
@@ -11221,6 +11235,27 @@ export default function App() {
         log({ type: 'raid_action_done', description: `Mitigation done: "${act.name}" on "${updatedItem.title}" (${act.pic || '—'})${tag}` });
       }
     }
+  }, [projects, updateProject, logActivityForProject]);
+
+  // v30 RAID Phase 2 — Delete a RAID item. Distinct from applyRaidUpdate because
+  // delete is not a merge. Logs a typed raid_delete event.
+  const deleteRaidItem = useCallback((itemId, projectId, programId, source = '', actingAs = '') => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const program = (targetProj.programs || []).find((p) => p.id === programId);
+    const oldItem = (program?.raid || []).find((r) => r.id === itemId);
+    if (!oldItem) return;
+    const updated = cloneDeep(targetProj);
+    updated.programs = updated.programs.map((p) =>
+      p.id !== programId ? p : { ...p, raid: (p.raid || []).filter((r) => r.id !== itemId) }
+    );
+    updateProject(updated);
+    const tag = source ? ` (from ${source})` : '';
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
+    logActivityForProject(projectId, {
+      type: 'raid_delete',
+      description: `${actingPrefix}Deleted ${oldItem.type} "${oldItem.title}"${tag}`,
+    });
   }, [projects, updateProject, logActivityForProject]);
 
   // v30.A.1 — Create a new action in any project (from My Work entry points).
@@ -11633,6 +11668,7 @@ export default function App() {
                 { id: 'decisions', label: 'Decisions', icon: <CheckCircle2 size={12} />, count: (project?.decisions?.length || 0) },
                 { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
                 { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
+                { id: 'raid', label: 'RAID', icon: <AlertTriangle size={12} /> },
                 { id: 'activity', label: 'Activity', icon: <Activity size={12} /> },
                 ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
                 ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
@@ -11653,6 +11689,12 @@ export default function App() {
                     background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
                     lineHeight: '14px', minWidth: 16, textAlign: 'center',
                   }}>{myWorkBadge}</span>
+                )}{v.id === 'raid' && raidPendingBadge > 0 && (
+                  <span style={{
+                    marginLeft: 2, padding: '0 6px', borderRadius: 999,
+                    background: '#B7791F', color: '#fff', fontSize: 10, fontWeight: 500,
+                    lineHeight: '14px', minWidth: 16, textAlign: 'center',
+                  }} title={`${raidPendingBadge} pending approval${raidPendingBadge === 1 ? '' : 's'}`}>{raidPendingBadge}</span>
                 )}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
               ));
             })()}
@@ -11772,6 +11814,24 @@ export default function App() {
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
               {view === 'aggregation' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} />}
+              {view === 'raid' && (
+                <RaidRegisterView
+                  projects={projects}
+                  currentProjectId={isAllProjectsMode ? null : currentId}
+                  author={effectiveAuthor}
+                  isOwner={isOwner && !impersonatingAs}
+                  teamMembers={teamMembers}
+                  scopeProgramId={scopeProgramId}
+                  onApplyRaidUpdate={(item, projectId, programId, source) =>
+                    applyRaidUpdate(item, projectId, programId, source || 'raid', impersonatingAs || '')
+                  }
+                  onRaidNavigate={{
+                    deleteHandler: (itemId, projectId, programId) =>
+                      deleteRaidItem(itemId, projectId, programId, 'raid', impersonatingAs || ''),
+                  }}
+                  dialogs={dialogs}
+                />
+              )}
               {view === 'activity' && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} />}
               {view === 'portfolio' && isOwner && (
                 <PortfolioView projects={projects} onProjectClick={(pid) => switchProject(pid)} />
