@@ -207,6 +207,30 @@ const fmtDateTime = (s) => { const d = parseDate(s); return d ? d.toLocaleString
 const toISODate = (s) => { const d = parseDate(s); return d ? d.toISOString().slice(0, 10) : ''; };
 const isOverdue = (t) => { if (!t || t.status === 'Completed' || t.status === 'Dropped') return false; const e = parseDate(t.end); return e ? e < today() : false; };
 
+// ─── v30 RAID helpers (pure, no side effects) ───
+// riskLevel is COMPUTED every render — never persisted. Spec §9.1.
+const raidRiskLevel = (likelihood, impact) =>
+  RAID_RISK_MATRIX[`${likelihood}:${impact}`] ?? 'Medium';
+
+// Days since the most recent review note. Falls back to createdAt when an item
+// has no history yet. Returns 0 if neither field is set (defensive — should not happen).
+const raidDaysSinceReview = (item) => {
+  const ts = item?.lastReviewedAt || item?.createdAt;
+  if (!ts) return 0;
+  const ms = Date.now() - new Date(ts).getTime();
+  return Math.floor(ms / 86400000);
+};
+
+// On-load migration — ensures every program has a `raid` array. Idempotent.
+// Mutates and returns the project for convenience in the load loop.
+function ensureProjectRaid(project) {
+  if (!project || !Array.isArray(project.programs)) return project;
+  for (const pg of project.programs) {
+    if (!Array.isArray(pg.raid)) pg.raid = [];
+  }
+  return project;
+}
+
 // ─── Activity Dashboard / Briefing date helpers ───
 function weeksAgo(n) {
   const d = new Date();
