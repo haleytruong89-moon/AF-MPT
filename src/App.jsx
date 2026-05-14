@@ -10113,6 +10113,91 @@ export default function App() {
     }
   }, [projects, updateProject, logActivityForProject]);
 
+  // v30 RAID Phase 2 — Apply a RAID item update to any project/program.
+  // updatedItem must include `id`. If `programId` does not contain an item
+  // with that id, the item is treated as new and appended to that program's
+  // raid array. Otherwise the existing item is shallow-merged.
+  // Diff-logger emits typed raid_* activity entries with the standard
+  // `(from <source>)` suffix and `acting as <name>: ` prefix conventions.
+  const applyRaidUpdate = useCallback((updatedItem, projectId, programId, source = '', actingAs = '') => {
+    const targetProj = projects[projectId];
+    if (!targetProj) return;
+    const program = (targetProj.programs || []).find((p) => p.id === programId);
+    if (!program) return;
+    const oldItem = (program.raid || []).find((r) => r.id === updatedItem.id);
+
+    const updated = cloneDeep(targetProj);
+    updated.programs = updated.programs.map((p) => {
+      if (p.id !== programId) return p;
+      const existing = (p.raid || []).some((r) => r.id === updatedItem.id);
+      if (existing) {
+        return { ...p, raid: (p.raid || []).map((r) => r.id === updatedItem.id ? { ...r, ...updatedItem } : r) };
+      }
+      return { ...p, raid: [...(p.raid || []), updatedItem] };
+    });
+    updateProject(updated);
+
+    const tag = source ? ` (from ${source})` : '';
+    const actingPrefix = actingAs ? `acting as ${actingAs}: ` : '';
+    const log = (entry) => logActivityForProject(projectId, {
+      ...entry,
+      description: actingPrefix + entry.description,
+    });
+
+    // New item — single "create" entry; skip diff comparison.
+    if (!oldItem) {
+      log({
+        type: 'raid_create',
+        description: `Created ${updatedItem.type || 'RAID item'} "${updatedItem.title || '(untitled)'}" in ${program.name}${tag}`,
+      });
+      return;
+    }
+
+    // Status transitions — emit specific events for the important ones.
+    if (oldItem.status !== updatedItem.status) {
+      if (updatedItem.status === 'Active' && oldItem.status === 'PendingApproval') {
+        log({ type: 'raid_approve', description: `Approved ${updatedItem.type} "${updatedItem.title}"${tag}` });
+      } else if (updatedItem.status === 'Draft' && oldItem.status === 'PendingApproval') {
+        log({ type: 'raid_reject', description: `Rejected ${updatedItem.type} "${updatedItem.title}" — returned to Draft${tag}` });
+      } else if (updatedItem.status === 'Closed' || updatedItem.status === 'Resolved' || updatedItem.status === 'Accepted') {
+        log({ type: 'raid_close', description: `${updatedItem.type} "${updatedItem.title}": ${oldItem.status} → ${updatedItem.status}${tag}` });
+      } else {
+        log({ type: 'raid_status_change', description: `${updatedItem.type} "${updatedItem.title}": ${oldItem.status} → ${updatedItem.status}${tag}` });
+      }
+    }
+
+    // Trend change — emitted when explicit review note is added (length of history grew).
+    if ((oldItem.history?.length || 0) < (updatedItem.history?.length || 0)) {
+      const newest = updatedItem.history[updatedItem.history.length - 1];
+      const trendLabel = (RAID_TREND_CONFIG[newest?.trend]?.label) || newest?.trend || '—';
+      log({
+        type: 'raid_review',
+        description: `Added review note (${trendLabel}) on ${updatedItem.type} "${updatedItem.title}"${tag}`,
+      });
+    }
+
+    // Mitigation action diffs — additions, completions, deletions.
+    const oldActs = oldItem.mitigationActions || [];
+    const newActs = updatedItem.mitigationActions || [];
+    const oldActMap = new Map(oldActs.map((a) => [a.id, a]));
+    const newActMap = new Map(newActs.map((a) => [a.id, a]));
+    for (const [id, act] of newActMap.entries()) {
+      if (oldActMap.has(id)) continue;
+      log({ type: 'raid_action_add', description: `Added mitigation "${act.name}" → ${act.pic || '—'} on "${updatedItem.title}"${tag}` });
+    }
+    for (const [id, act] of oldActMap.entries()) {
+      if (newActMap.has(id)) continue;
+      log({ type: 'raid_action_remove', description: `Removed mitigation "${act.name}" from "${updatedItem.title}"${tag}` });
+    }
+    for (const [id, act] of newActMap.entries()) {
+      const prev = oldActMap.get(id);
+      if (!prev) continue;
+      if (prev.status !== act.status && act.status === 'Done') {
+        log({ type: 'raid_action_done', description: `Mitigation done: "${act.name}" on "${updatedItem.title}" (${act.pic || '—'})${tag}` });
+      }
+    }
+  }, [projects, updateProject, logActivityForProject]);
+
   // v30.A.1 — Create a new action in any project (from My Work entry points).
   // Prepends to actionItems so it shows immediately at the top of the
   // Actions tab list. Activity log entry tags "(from My Work)".
