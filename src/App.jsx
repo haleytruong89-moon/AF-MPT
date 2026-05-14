@@ -8486,6 +8486,103 @@ function RiskLevelBadge({ likelihood, impact }) {
   );
 }
 
+// v30 RAID Phase 2 — One mitigation/resolution action row inside a RAIDCard.
+// Simpler than ActionRowInline: no priority, no sub-tasks, no inline rename.
+// Comments use the same shape as task/action updates: { id, author, text, ts }.
+// onUpdate receives a partial diff to merge into the action.
+function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRemove }) {
+  const [expanded, setExpanded] = useState(false);
+  const [commentDraft, setCommentDraft] = useState('');
+  const overdue = action.due && action.status !== 'Done' && parseDate(action.due) < today();
+  const comments = action.comments || [];
+  const canMarkDone = action.pic === currentUser && action.status !== 'Done';
+
+  const statusColor = {
+    Open: { fg: TOK.muted, bg: TOK.bg },
+    Blocked: { fg: '#A32D2D', bg: '#FCEBEB' },
+    Done: { fg: '#356512', bg: '#E6EFD6' },
+  }[action.status || 'Open'];
+
+  const postComment = () => {
+    const trimmed = commentDraft.trim();
+    if (!trimmed) return;
+    const newComment = { id: uid('c'), author: currentUser, text: trimmed, ts: new Date().toISOString() };
+    onUpdate({ comments: [...comments, newComment] });
+    setCommentDraft('');
+  };
+
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 7, marginBottom: 6, background: TOK.surface, fontFamily: FONT_STACK }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 36 }}>
+        <span style={{ color: TOK.subtle, fontSize: 12 }}>{action.status === 'Done' ? '☑' : '☐'}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, color: action.status === 'Done' ? TOK.muted : TOK.ink, fontWeight: 500, textDecoration: action.status === 'Done' ? 'line-through' : 'none', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {action.name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, fontSize: 10.5, color: TOK.muted }}>
+            <span>@{action.pic || '—'}</span>
+            {action.due && (
+              <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>
+                · 📅 {fmtDateShort(action.due)} {overdue ? '(overdue)' : ''}
+              </span>
+            )}
+            {comments.length > 0 && <span>· 💬 {comments.length}</span>}
+          </div>
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: statusColor.fg, background: statusColor.bg }}>
+          {action.status || 'Open'}
+        </span>
+        {canMarkDone && (
+          <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onUpdate({ status: 'Done' }); }} title="Mark done">✓</Btn>
+        )}
+        <ChevronDown size={13} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+      </div>
+      {expanded && (
+        <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, fontSize: 11, color: TOK.muted, flexWrap: 'wrap' }}>
+            <span>Status</span>
+            <select
+              value={action.status || 'Open'}
+              onChange={(e) => onUpdate({ status: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 5, background: TOK.surface, color: TOK.ink }}>
+              {['Open', 'Done', 'Blocked'].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {onRemove && (
+              <button onClick={(e) => { e.stopPropagation(); onRemove(); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: TOK.muted, cursor: 'pointer', fontSize: 11 }} title="Remove this mitigation action">
+                <Trash2 size={12} /> Remove
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>💬 Comments ({comments.length})</div>
+          {comments.map((c) => (
+            <div key={c.id} style={{ fontSize: 12, padding: '6px 0', borderBottom: '1px dashed ' + TOK.line }}>
+              <div style={{ fontSize: 10.5, color: TOK.muted, marginBottom: 2 }}>
+                <span style={{ color: TOK.ink, fontWeight: 500 }}>{c.author}</span> · {myWorkTimeAgo(c.ts)}
+              </div>
+              <MentionedText text={c.text} teamMembers={teamMembers} />
+            </div>
+          ))}
+          <div style={{ marginTop: 8 }}>
+            <MentionTextarea
+              value={commentDraft}
+              onChange={setCommentDraft}
+              rows={2}
+              placeholder={`Comment as ${currentUser || '…'}. Type @ to mention.`}
+              teamMembers={teamMembers}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+              <Btn size="sm" variant="primary" onClick={postComment} disabled={!commentDraft.trim()}>Post comment</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
