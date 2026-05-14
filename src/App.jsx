@@ -10785,6 +10785,42 @@ export default function App() {
                   <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 6 }}>{(meta?.ownershipLog || []).length} change{(meta?.ownershipLog || []).length === 1 ? '' : 's'} logged</div>
                 )}
               </div>
+              {/* v30 Phase 4 — Default landing view (workspace-wide, owner-set) */}
+              <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
+                <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                  Default landing view
+                </div>
+                {isOwner ? (
+                  <>
+                    <select
+                      value={meta?.defaultView || 'my-work'}
+                      onChange={(e) => setWorkspaceDefaultView(e.target.value)}
+                      style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
+                      {DEFAULT_VIEW_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                    </select>
+                    <div style={{ fontSize: 10.5, color: TOK.muted }}>Workspace-wide. Members can override their own below.</div>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: TOK.ink }}>
+                    {DEFAULT_VIEW_OPTIONS.find((o) => o.id === meta?.defaultView)?.label || 'My Work'}
+                    <span style={{ color: TOK.muted, fontWeight: 400, marginLeft: 6 }}>(set by owner)</span>
+                  </div>
+                )}
+              </div>
+              {/* v30 Phase 4 — Personal override (per-user) */}
+              <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
+                <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                  My personal override
+                </div>
+                <select
+                  value={userPrefs?.defaultViewOverride || ''}
+                  onChange={(e) => setPersonalDefaultOverride(e.target.value || null)}
+                  style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
+                  <option value="">(Use workspace default)</option>
+                  {DEFAULT_VIEW_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <div style={{ fontSize: 10.5, color: TOK.muted }}>Applies on your next app load.</div>
+              </div>
               <button
                 onClick={signOut}
                 style={{
