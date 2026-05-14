@@ -8421,6 +8421,71 @@ function TeamOverviewView({ projects, teamMembers, currentAuthor, onImpersonate 
   );
 }
 
+// v30 RAID Phase 2 — Interactive 3×3 likelihood × impact selector.
+// Used by AddRAIDForm. Renders 9 cells; each cell is clickable and shows
+// the computed risk level (Critical / High / Medium / Low).
+function RiskMatrixSelector({ likelihood, impact, onChange }) {
+  const levels = ['High', 'Medium', 'Low'];
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '60px repeat(3, 1fr)', gap: 4, fontFamily: FONT_STACK }}>
+      {/* Header row */}
+      <div />
+      {levels.map((i) => (
+        <div key={i} style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', textAlign: 'center', padding: 4 }}>
+          Imp: {i}
+        </div>
+      ))}
+      {/* Rows */}
+      {levels.map((l) => (
+        <React.Fragment key={l}>
+          <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', alignSelf: 'center', textAlign: 'right', paddingRight: 4 }}>
+            Lik: {l}
+          </div>
+          {levels.map((i) => {
+            const lvl = raidRiskLevel(l, i);
+            const selected = l === likelihood && i === impact;
+            const cellBg = lvl === 'Critical' ? '#FCEBEB' : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? '#FAEEDA' : '#E6EFD6';
+            const cellFg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? '#A32D2D' : lvl === 'Medium' ? '#B7791F' : '#356512';
+            return (
+              <button
+                key={l + i}
+                type="button"
+                onClick={() => onChange(l, i)}
+                style={{
+                  background: cellBg,
+                  color: cellFg,
+                  fontFamily: FONT_STACK,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '10px 6px',
+                  border: selected ? '2px solid ' + TOK.ink : '1px solid ' + TOK.line,
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                }}
+                title={`Likelihood ${l} × Impact ${i} = ${lvl}`}>
+                {lvl}
+              </button>
+            );
+          })}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// v30 RAID Phase 2 — Readonly badge for an already-set likelihood × impact pair.
+// Used in RAIDCard expanded view.
+function RiskLevelBadge({ likelihood, impact }) {
+  const lvl = raidRiskLevel(likelihood, impact);
+  const bg = lvl === 'Critical' ? '#FCEBEB' : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? '#FAEEDA' : '#E6EFD6';
+  const fg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? '#A32D2D' : lvl === 'Medium' ? '#B7791F' : '#356512';
+  return (
+    <span style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: bg, color: fg, fontFamily: FONT_STACK }}>
+      {lvl} risk
+    </span>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
