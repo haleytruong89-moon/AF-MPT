@@ -9573,6 +9573,163 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
   );
 }
 
+// v30 RAID Phase 4 — Renders the 3 RAID-related sections inside MyWorkView.
+// onNavigateRaid(projectId, programId) switches the view to RAID with that
+// program selected.
+function MyRaidSection({ myRaid, currentUser, teamMembers, onNavigateRaid }) {
+  const attentionCount =
+    myRaid.pendingApproval.length +
+    myRaid.escalating.length +
+    myRaid.overdueActions.length +
+    myRaid.needsReview.length;
+
+  const MiniItemCard = ({ enriched, badge }) => {
+    const tcfg = RAID_TYPES[enriched.item.type] || RAID_TYPES.Risk;
+    const tr = enriched.item.trend ? RAID_TREND_CONFIG[enriched.item.trend] : null;
+    return (
+      <div
+        onClick={() => onNavigateRaid(enriched.project.id, enriched.program.id)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+          border: '1px solid ' + TOK.line, borderRadius: 7, marginBottom: 5,
+          background: TOK.surface, cursor: 'pointer', fontFamily: FONT_STACK,
+        }}>
+        <span style={{ fontSize: 14 }}>{tcfg.icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 500, color: TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <MentionedText text={enriched.item.title} teamMembers={teamMembers} />
+          </div>
+          <div style={{ fontSize: 10.5, color: TOK.muted, marginTop: 1 }}>
+            {enriched.project.name} › {enriched.program.name} · @{enriched.item.owner || '—'}
+          </div>
+        </div>
+        {badge}
+        {tr && <span style={{ fontSize: 12 }} title={tr.label}>{tr.icon}</span>}
+        <ChevronRight size={13} style={{ color: TOK.subtle }} />
+      </div>
+    );
+  };
+
+  const MiniActionCard = ({ enriched, overdue }) => (
+    <div
+      onClick={() => onNavigateRaid(enriched.project.id, enriched.program.id)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+        border: '1px solid ' + (overdue ? '#F5C8C8' : TOK.line), borderRadius: 7,
+        marginBottom: 5, background: overdue ? '#FCEBEB' : TOK.surface,
+        cursor: 'pointer', fontFamily: FONT_STACK,
+      }}>
+      <span style={{ color: TOK.subtle, fontSize: 12 }}>☐</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 500, color: overdue ? '#7B1D1D' : TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {enriched.action.name}
+        </div>
+        <div style={{ fontSize: 10.5, color: overdue ? '#A32D2D' : TOK.muted, marginTop: 1 }}>
+          In: {enriched.item.title.slice(0, 50)}{enriched.item.title.length > 50 ? '…' : ''} · {enriched.program.name}
+          {enriched.action.due && <> · {overdue ? 'was due' : 'due'} {fmtDateShort(enriched.action.due)}</>}
+        </div>
+      </div>
+      <ChevronRight size={13} style={{ color: TOK.subtle }} />
+    </div>
+  );
+
+  return (
+    <>
+      {/* Attention section (only render if any sub-group is non-empty) */}
+      {attentionCount > 0 && (
+        <MyWorkSection
+          icon="⚠"
+          title="RAID items needing my attention"
+          count={attentionCount}
+          defaultOpen={true}>
+          {myRaid.pendingApproval.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: '#B7791F', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+                ⏳ Pending your approval ({myRaid.pendingApproval.length})
+              </div>
+              {myRaid.pendingApproval.map((e, i) => (
+                <MiniItemCard
+                  key={`pa-${i}`}
+                  enriched={e}
+                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: '#B7791F', background: '#FAEEDA' }}>Approve</span>}
+                />
+              ))}
+            </div>
+          )}
+          {myRaid.escalating.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: '#A32D2D', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+                🔴 Escalating risks I own ({myRaid.escalating.length})
+              </div>
+              {myRaid.escalating.map((e, i) => (
+                <MiniItemCard
+                  key={`es-${i}`}
+                  enriched={e}
+                  badge={e.item.type === 'Risk' ? <RiskLevelBadge likelihood={e.item.likelihood} impact={e.item.impact} /> : null}
+                />
+              ))}
+            </div>
+          )}
+          {myRaid.overdueActions.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: '#A32D2D', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+                ⚠ Overdue mitigation actions ({myRaid.overdueActions.length})
+              </div>
+              {myRaid.overdueActions.map((e, i) => (
+                <MiniActionCard key={`oa-${i}`} enriched={e} overdue={true} />
+              ))}
+            </div>
+          )}
+          {myRaid.needsReview.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: '#B7791F', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+                ⏰ Risks not reviewed in &gt;7 days ({myRaid.needsReview.length})
+              </div>
+              {myRaid.needsReview.map((e, i) => (
+                <MiniItemCard
+                  key={`nr-${i}`}
+                  enriched={e}
+                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: '#B7791F', background: '#FAEEDA' }}>Review</span>}
+                />
+              ))}
+            </div>
+          )}
+        </MyWorkSection>
+      )}
+
+      {/* Mitigation actions due this week */}
+      {myRaid.dueThisWeek.length > 0 && (
+        <MyWorkSection
+          icon="📅"
+          title="Mitigation actions due this week"
+          count={myRaid.dueThisWeek.length}
+          defaultOpen={true}>
+          {myRaid.dueThisWeek.map((e, i) => (
+            <MiniActionCard key={`dw-${i}`} enriched={e} overdue={false} />
+          ))}
+        </MyWorkSection>
+      )}
+
+      {/* All RAID items I own — collapsed by default */}
+      {myRaid.owned.length > 0 && (
+        <MyWorkSection
+          icon="📋"
+          title="All RAID items I own"
+          count={myRaid.owned.length}
+          defaultOpen={false}>
+          {myRaid.owned.map((e, i) => (
+            <MiniItemCard
+              key={`ow-${i}`}
+              enriched={e}
+              badge={e.item.type === 'Risk' ? <RiskLevelBadge likelihood={e.item.likelihood} impact={e.item.impact} /> : <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: TOK.muted, background: TOK.bg }}>{e.item.status}</span>}
+            />
+          ))}
+        </MyWorkSection>
+      )}
+    </>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
