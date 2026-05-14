@@ -10473,7 +10473,13 @@ export default function App() {
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkBadge > 0 && (
+                  <span style={{
+                    marginLeft: 2, padding: '0 6px', borderRadius: 999,
+                    background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
+                    lineHeight: '14px', minWidth: 16, textAlign: 'center',
+                  }}>{myWorkBadge}</span>
+                )}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
               ));
             })()}
           </div>
