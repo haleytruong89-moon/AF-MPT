@@ -2889,7 +2889,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
   const loc = useMemo(() => findTaskInProject(project, taskId), [project, taskId]);
   // ── All hooks declared before any early return (Rules of Hooks)
   // Panel tab state
@@ -3493,6 +3493,11 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
             </>
           )}
         </div>
+
+        {/* v30 RAID Phase 3 — Program RAID signal */}
+        {program && onNavigateRaid && (
+          <TaskProgramRaidSignal program={program} onNavigateRaid={onNavigateRaid} />
+        )}
       </div>
       {showDeadlineRequest && (
         <DeadlineRequestDialog
@@ -11090,6 +11095,10 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
   const [scopeProgramId, setScopeProgramId] = useState(null);
+  // v30 RAID Phase 3 — When navigating to the RAID tab from another view
+  // (e.g. via TaskDetail's "View all →"), this state pre-selects the program.
+  // Reset to null when the user manually clicks the RAID tab in the strip.
+  const [raidScopeProgramId, setRaidScopeProgramId] = useState(null);
   const [projectMenu, setProjectMenu] = useState(null);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [meetingMode, setMeetingMode] = useState(false);
@@ -12067,7 +12076,10 @@ export default function App() {
               // v30 Phase 3 — during impersonation, only My Work tab is visible.
               const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
               return visibleTabs.map((v) => (
-                <button key={v.id} onClick={() => setView(v.id)} style={{
+                <button key={v.id} onClick={() => {
+                  if (v.id === 'raid') setRaidScopeProgramId(null);
+                  setView(v.id);
+                }} style={{
                   fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
                   border: 'none', background: view === v.id ? TOK.surface : 'transparent',
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
@@ -12174,14 +12186,12 @@ export default function App() {
                     setView('actions');
                     if (actionId) setInitialActionEditId(actionId);
                   }}
-                  onNavigateRaid={async (projectId, _programId) => {
+                  onNavigateRaid={async (projectId, programId) => {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
                     }
+                    setRaidScopeProgramId(programId || null);
                     setView('raid');
-                    // Note: programId not used to scope yet — RaidRegisterView
-                    // auto-selects first program. Future enhancement: lift a
-                    // raidScopeProgramId state for cross-tab program pre-select.
                   }}
                   onCreateAction={(projectId, relatedTaskId) => setActionCreate({
                     projectId: projectId || currentId,
@@ -12220,7 +12230,7 @@ export default function App() {
                   author={effectiveAuthor}
                   isOwner={isOwner && !impersonatingAs}
                   teamMembers={teamMembers}
-                  scopeProgramId={scopeProgramId}
+                  scopeProgramId={raidScopeProgramId || scopeProgramId}
                   onApplyRaidUpdate={(item, projectId, programId, source) =>
                     applyRaidUpdate(item, projectId, programId, source || 'raid', impersonatingAs || '')
                   }
@@ -12281,7 +12291,11 @@ export default function App() {
               onUpdate={onTaskUpdate}
               onDelete={onTaskDelete}
               onProjectUpdate={updateProject}
-              isOwner={isOwner} />
+              isOwner={isOwner}
+              onNavigateRaid={(programId) => {
+                setRaidScopeProgramId(programId);
+                setView('raid');
+              }} />
           )}
         </div>
 
