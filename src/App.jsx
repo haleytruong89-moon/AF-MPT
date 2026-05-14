@@ -207,18 +207,19 @@ const fmtDateTime = (s) => { const d = parseDate(s); return d ? d.toLocaleString
 const toISODate = (s) => { const d = parseDate(s); return d ? d.toISOString().slice(0, 10) : ''; };
 const isOverdue = (t) => { if (!t || t.status === 'Completed' || t.status === 'Dropped') return false; const e = parseDate(t.end); return e ? e < today() : false; };
 
-// ─── v30 RAID helpers (pure, no side effects) ───
+// ─── v30 RAID helpers ───
 // riskLevel is COMPUTED every render — never persisted. Spec §9.1.
 const raidRiskLevel = (likelihood, impact) =>
   RAID_RISK_MATRIX[`${likelihood}:${impact}`] ?? 'Medium';
 
-// Days since the most recent review note. Falls back to createdAt when an item
-// has no history yet. Returns 0 if neither field is set (defensive — should not happen).
+// Days since the most recent review note. Falls back to createdAt when an
+// item has no history yet. Returns 0 if neither field is set or the timestamp
+// is unparseable (defensive — should not happen in normal data).
 const raidDaysSinceReview = (item) => {
   const ts = item?.lastReviewedAt || item?.createdAt;
-  if (!ts) return 0;
-  const ms = Date.now() - new Date(ts).getTime();
-  return Math.floor(ms / 86400000);
+  const d = parseDate(ts);
+  if (!d) return 0;
+  return Math.floor((Date.now() - d.getTime()) / 86400000);
 };
 
 // On-load migration — ensures every program has a `raid` array. Idempotent.
