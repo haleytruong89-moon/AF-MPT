@@ -1242,7 +1242,7 @@ async function parseExcelFile(file) {
     const pn = String(pickCol(r, COL.program) || 'Unassigned').trim();
     const wn = String(pickCol(r, COL.workstream) || 'General').trim();
     let pg = progMap.get(pn);
-    if (!pg) { pg = { id: uid('p'), name: pn, workstreams: [] }; project.programs.push(pg); progMap.set(pn, pg); }
+    if (!pg) { pg = { id: uid('p'), name: pn, workstreams: [], raid: [] }; project.programs.push(pg); progMap.set(pn, pg); }
     const wk = pn + '||' + wn;
     let wsN = wsMap.get(wk);
     if (!wsN) { wsN = { id: uid('w'), name: wn, tasks: [] }; pg.workstreams.push(wsN); wsMap.set(wk, wsN); }
@@ -6285,7 +6285,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   const addProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
-    const p = { id: uid('p'), name, workstreams: [] };
+    const p = { id: uid('p'), name, workstreams: [], raid: [] };
     onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
     setExpanded((s) => new Set([...s, p.id]));
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
