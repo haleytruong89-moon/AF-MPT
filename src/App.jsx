@@ -8003,12 +8003,83 @@ function MyWorkDeadlineTypePill({ type }) {
   );
 }
 
-function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction, onMarkDone }) {
+// v30.M — Collect "steps" for a task by walking linked action items.
+// In Option B we don't add a new task.steps[] schema; instead we treat each
+// open subtask of an actionItem with relatedTaskId === task.id as a step
+// shown inline under the task card. The parent action is tracked so the
+// caller knows which action document to mutate when a step is marked Done.
+function collectTaskSteps(task, project) {
+  if (!task?.id || !project?.actionItems) return [];
+  const out = [];
+  let order = 0;
+  for (const a of project.actionItems) {
+    if (a.relatedTaskId !== task.id) continue;
+    for (const sub of (a.subtasks || [])) {
+      order++;
+      out.push({ subtask: sub, action: a, order });
+    }
+  }
+  return out;
+}
+
+// v30.M — Compact step row used inline inside the task card. ✓ Done button
+// shows only when this user owns the step. Done steps render at the bottom
+// dimmed/strikethrough; not interactive.
+function StepLine({ entry, isFirstOpen, isMine, onDone }) {
+  const { subtask, order } = entry;
+  const done = subtask.status === 'Done';
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0',
+      opacity: done ? 0.55 : 1,
+    }}>
+      <div style={{
+        width: 18, height: 18, borderRadius: '50%',
+        background: done ? TOK.accent : (isFirstOpen ? TOK.ink : '#EDEBE4'),
+        color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 9, fontWeight: 700, flexShrink: 0,
+      }}>
+        {done ? '✓' : order}
+      </div>
+      <span style={{
+        fontSize: 12, flex: 1, color: done ? TOK.muted : TOK.ink,
+        textDecoration: done ? 'line-through' : 'none',
+        fontWeight: isFirstOpen && !done ? 500 : 400,
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>{subtask.title || '(untitled step)'}</span>
+      {isFirstOpen && !done && (
+        <span style={{
+          fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+          background: TOK.ink, color: '#fff', letterSpacing: 0.3,
+        }}>NEXT</span>
+      )}
+      {subtask.pic && !done && (
+        <span style={{ fontSize: 10, color: TOK.muted, marginLeft: 4 }}>· {subtask.pic}</span>
+      )}
+      {isMine && !done && onDone && (
+        <button onClick={(e) => { e.stopPropagation(); onDone(); }}
+          title="Mark step done"
+          style={{
+            fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid #9FCB75',
+            background: TOK.doneBg || '#E6EFD6', color: TOK.doneFg || '#356512',
+            cursor: 'pointer', fontWeight: 500,
+          }}>✓ Done</button>
+      )}
+    </div>
+  );
+}
+
+function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction, onMarkDone, onStepDone }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [isBlocker, setIsBlocker] = useState(false);
   const overdue = isOverdue(task);
   const endDate = parseDate(task.end);
+  const steps = useMemo(() => collectTaskSteps(task, project), [task, project]);
+  const openSteps = steps.filter((s) => s.subtask.status !== 'Done');
+  const doneCount = steps.length - openSteps.length;
+  const firstOpen = openSteps[0] || null;
+  const recentUpdates = (task.updates || []).slice(0, 2);
   return (
     <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 6, background: TOK.surface }}>
       <div
@@ -8027,6 +8098,9 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
               </span>
             )}
             <MyWorkDeadlineTypePill type={task.deadlineType} />
+            {openSteps.length > 0 && (
+              <span style={{ fontSize: 11, color: TOK.muted }}>· {openSteps.length} step{openSteps.length > 1 ? 's' : ''}</span>
+            )}
           </div>
         </div>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
@@ -8037,9 +8111,81 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
       </div>
+      {/* NEXT STEP preview strip — collapsed-only hint of what's next */}
+      {!expanded && firstOpen && (
+        <div style={{
+          padding: '6px 12px 8px 38px', borderTop: '1px dashed ' + TOK.line,
+          fontSize: 11, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <span style={{
+            fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+            background: TOK.ink, color: '#fff', letterSpacing: 0.3,
+          }}>NEXT</span>
+          <span style={{ color: TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {firstOpen.subtask.title || '(untitled step)'}
+          </span>
+          {firstOpen.subtask.pic && <span>· {firstOpen.subtask.pic}</span>}
+        </div>
+      )}
       {expanded && (
         <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
-          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>Quick update</div>
+          {/* Steps (subtasks of linked actions) — option B */}
+          {steps.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Steps</div>
+              {openSteps.slice(0, 6).map((entry, idx) => (
+                <StepLine
+                  key={entry.action.id + ':' + (entry.subtask.id || idx)}
+                  entry={entry}
+                  isFirstOpen={idx === 0}
+                  isMine={entry.subtask.pic === author}
+                  onDone={onStepDone ? () => onStepDone(entry.action, entry.subtask) : null}
+                />
+              ))}
+              {openSteps.length > 6 && (
+                <div style={{ fontSize: 11, color: TOK.muted, paddingLeft: 26, marginTop: 2 }}>
+                  +{openSteps.length - 6} more open step{openSteps.length - 6 > 1 ? 's' : ''}
+                </div>
+              )}
+              {doneCount > 0 && (
+                <div style={{ fontSize: 10, color: TOK.subtle, paddingLeft: 26, marginTop: 4 }}>
+                  ✓ {doneCount} completed step{doneCount > 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Recent updates feed (last 2) */}
+          {recentUpdates.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 4 }}>Recent updates</div>
+              {recentUpdates.map((u) => (
+                <div key={u.id} style={{
+                  display: 'flex', gap: 8, padding: '5px 0',
+                  borderTop: '1px dashed ' + TOK.line,
+                }}>
+                  <div style={{
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: TOK.bg, color: TOK.muted,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 9, fontWeight: 700, flexShrink: 0,
+                  }}>{(u.author || '??').slice(0, 2).toUpperCase()}</div>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 11.5 }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                      <strong style={{ fontSize: 11 }}>{u.author}</strong>
+                      <span style={{ fontSize: 10, color: TOK.subtle }}>{fmtDateTime ? fmtDateTime(u.timestamp) : ''}</span>
+                      {u.isBlocker && <span style={{ fontSize: 10, color: TOK.overdueFg }}>🚩 Blocker</span>}
+                    </div>
+                    <div style={{ color: TOK.ink, marginTop: 2, lineHeight: 1.5 }}>
+                      <MentionedText text={u.text || ''} teamMembers={teamMembers} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>Post update</div>
           <MentionTextarea
             value={draft}
             onChange={setDraft}
@@ -9826,6 +9972,330 @@ function TaskProgramRaidSignal({ program, onNavigateRaid }) {
   );
 }
 
+// v30.M — Convert "#0C447C" → "rgba(12,68,124,0.1)" for a soft background tint.
+function hex2rgba(hex, a = 0.1) {
+  const h = (hex || '').replace('#', '');
+  if (h.length !== 6) return `rgba(12,68,124,${a})`;
+  const [r, g, b] = h.match(/\w\w/g).map((x) => parseInt(x, 16));
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// v30.M — One project card showing today/overdue + actions visible, week/later/RAID collapsed.
+function ByProjectCard({
+  bundle, author, teamMembers, picSuggestions, lastSeenAt,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate,
+  handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
+  showToast, onNavigateRaid,
+}) {
+  const { project, owned, contributing, actions, mentions, unreadMentions, raid } = bundle;
+  const [collapsed, setCollapsed] = useState(false);
+  const [openSec, setOpenSec] = useState({ week: false, later: false, raid: false, contrib: false });
+  const togSec = (k) => setOpenSec((s) => ({ ...s, [k]: !s[k] }));
+
+  const overdueTasks = owned.today.filter((e) => isOverdue(e.task));
+  const totalTasks = owned.today.length + owned.week.length + owned.later.length;
+  const totalActions = actions.today.length + actions.week.length + actions.later.length;
+  const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length;
+  const color = project.color || '#0C447C';
+  const colorBg = hex2rgba(color, 0.08);
+
+  const renderTaskCard = (e) => (
+    <TaskRowInline
+      key={`p-${project.id}-t-${e.task.id}`}
+      task={e.task} project={e.project} program={e.program} workstream={e.workstream}
+      author={author} teamMembers={teamMembers}
+      onStatusChange={(st) => handleStatusChange(e.task, e.project, st)}
+      onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
+      onRequestExtension={() => handleRequestExtension(e.task, e.project)}
+      onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
+      onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+      onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
+      onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
+    />
+  );
+
+  const renderActionEntry = (e, i) => {
+    if (e.kind === 'subtask') {
+      const sub = e.subtask;
+      const parent = e.parentAction;
+      return (
+        <SubtaskMyWorkRow
+          key={`p-${project.id}-sub-${sub.id || i}`}
+          subtask={sub}
+          parentAction={parent}
+          project={e.project}
+          teamMembers={teamMembers}
+          onMarkDone={() => {
+            const updatedParent = {
+              ...parent,
+              subtasks: (parent.subtasks || []).map((s) => s.id === sub.id ? { ...s, status: 'Done' } : s),
+            };
+            onActionUpdate(updatedParent, e.project.id);
+          }}
+          onOpenParent={() => onActionClick && onActionClick(e.project.id, parent.id)}
+        />
+      );
+    }
+    const a = e.action;
+    const related = a.relatedTaskId ? findTaskInProject(e.project, a.relatedTaskId) : null;
+    return (
+      <ActionRowInline
+        key={`p-${project.id}-a-${a.id || i}`}
+        action={a}
+        project={e.project}
+        related={related}
+        author={author}
+        teamMembers={teamMembers}
+        picSuggestions={picSuggestions}
+        onChange={(patch) => onActionUpdate({ ...a, ...patch }, e.project.id)}
+        onAddComment={(text, blocker) => onActionUpdate({
+          ...a,
+          updates: [
+            { id: uid('aupd'), timestamp: new Date().toISOString(), author, text, isBlocker: !!blocker },
+            ...(a.updates || []),
+          ],
+        }, e.project.id)}
+        onMarkDone={() => handleActionDone(a, e.project)}
+        onOpenDetails={onActionClick ? () => onActionClick(e.project.id, a.id) : null}
+        onSubtasksChange={(newSubtasks) => onActionUpdate({ ...a, subtasks: newSubtasks }, e.project.id)}
+      />
+    );
+  };
+
+  const sectionTitle = (label) => (
+    <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
+  );
+  const collapseToggle = (key, label) => (
+    <button onClick={() => togSec(key)} style={{
+      background: 'none', border: 'none', cursor: 'pointer',
+      fontFamily: FONT_STACK, fontSize: 10, color: TOK.muted, fontWeight: 600,
+      textTransform: 'uppercase', letterSpacing: 0.4,
+      display: 'flex', alignItems: 'center', gap: 5, padding: 0, marginBottom: 6,
+    }}>
+      {openSec[key] ? '▼' : '▶'} {label}
+    </button>
+  );
+
+  const raidTotal = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
+
+  return (
+    <div style={{
+      marginBottom: 14,
+      border: '1.5px solid ' + (urgentCount > 0 ? color : TOK.lineStrong),
+      borderRadius: 12, overflow: 'hidden', background: TOK.surface,
+      boxShadow: urgentCount > 0 ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
+    }}>
+      <div onClick={() => setCollapsed((c) => !c)} style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px',
+        cursor: 'pointer', background: colorBg,
+        borderBottom: collapsed ? 'none' : '1px solid ' + TOK.line,
+      }}>
+        <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <span style={{ fontSize: 15, fontWeight: 700, color }}>{project.name}</span>
+        {overdueTasks.length > 0 && (
+          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.overdueBg, color: TOK.overdueFg, fontWeight: 600 }}>⚠ {overdueTasks.length} overdue</span>
+        )}
+        {unreadMentions.length > 0 && (
+          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: '#E6EFD6', color: '#356512', fontWeight: 600 }}>💬 {unreadMentions.length} @you</span>
+        )}
+        {raid.escalating.length > 0 && (
+          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.overdueBg, color: TOK.overdueFg, fontWeight: 600 }}>🔴 {raid.escalating.length} escalating</span>
+        )}
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color, opacity: 0.7 }}>{totalTasks} task{totalTasks !== 1 ? 's' : ''} · {totalActions} action{totalActions !== 1 ? 's' : ''}</span>
+        <span style={{ color, fontSize: 12, marginLeft: 8 }}>{collapsed ? '▼' : '▲'}</span>
+      </div>
+
+      {!collapsed && (
+        <div style={{ padding: '12px 16px 14px' }}>
+          {urgentCount > 0 && (
+            <div style={{
+              padding: '8px 12px', background: '#FFF8F8',
+              border: '1px solid #F5C8C8', borderRadius: 8,
+              marginBottom: 12, fontSize: 12,
+            }}>
+              {overdueTasks.map((e) => (
+                <div key={'al-' + e.task.id} style={{ color: TOK.overdueFg, fontWeight: 500, marginBottom: 2 }}>
+                  ⚠ Task overdue: <strong>{e.task.name}</strong> — was due {fmtDateShort(e.task.end)}
+                </div>
+              ))}
+              {raid.escalating.map((r, i) => (
+                <div key={'ar-' + (r.item?.id || i)} style={{ color: TOK.overdueFg, marginBottom: 2 }}>
+                  🔴 Risk escalating: {r.item?.title || '(untitled)'}
+                </div>
+              ))}
+              {unreadMentions.slice(0, 5).map((m, i) => (
+                <div key={'am-' + i} style={{ color: '#356512', marginBottom: 2 }}>
+                  💬 {m.postAuthor || '—'}: "{(m.text || '').slice(0, 55)}…"
+                </div>
+              ))}
+            </div>
+          )}
+
+          {owned.today.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              {sectionTitle('Tasks due today / overdue')}
+              {owned.today.map(renderTaskCard)}
+            </div>
+          )}
+
+          {actions.today.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              {sectionTitle(`Action items (${actions.today.length})`)}
+              {actions.today.map(renderActionEntry)}
+            </div>
+          )}
+
+          {owned.week.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              {collapseToggle('week', `Tasks this week (${owned.week.length})`)}
+              {openSec.week && owned.week.map(renderTaskCard)}
+            </div>
+          )}
+
+          {owned.later.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              {collapseToggle('later', `Later (${owned.later.length})`)}
+              {openSec.later && owned.later.map(renderTaskCard)}
+            </div>
+          )}
+
+          {contributing.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              {collapseToggle('contrib', `Contributing (${contributing.length})`)}
+              {openSec.contrib && contributing.map(renderTaskCard)}
+            </div>
+          )}
+
+          {raidTotal > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              {collapseToggle('raid', `RAID (${raidTotal} need attention)`)}
+              {openSec.raid && (
+                <div>
+                  {[...raid.escalating, ...raid.overdueActions, ...raid.needsReview, ...raid.pendingApproval].map((r, i) => {
+                    const item = r.item || r;
+                    const title = item?.title || '(untitled)';
+                    return (
+                      <div key={'rd-' + i} onClick={() => onNavigateRaid && onNavigateRaid(project.id, r.program?.id)} style={{
+                        display: 'flex', gap: 8, padding: '6px 10px',
+                        border: '1px solid ' + TOK.line, borderRadius: 6,
+                        marginBottom: 4, background: TOK.surface,
+                        alignItems: 'center', fontSize: 12, cursor: 'pointer',
+                      }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: TOK.overdueFg }} />
+                        <span style={{ flex: 1 }}>{title}</span>
+                        {item?.level && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: TOK.bg, color: TOK.muted, fontWeight: 600 }}>{item.level}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {totalTasks + totalActions === 0 && (
+            <div style={{ color: TOK.muted, fontSize: 12.5, padding: '12px 0' }}>
+              No tasks or actions assigned to you in this project.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// v30.M — Regroup myWork + myRaid by project; render one card per project
+// with tasks/actions/RAID for that project. Sort: overdue first, then urgent
+// mentions, escalating RAID, alphabetical.
+function ByProjectView({
+  myWork, myRaid, author, teamMembers, picSuggestions, lastSeenAt,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate,
+  handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
+  showToast, onNavigateRaid,
+}) {
+  const bundles = useMemo(() => {
+    const map = new Map();
+    const ensure = (proj) => {
+      if (!proj?.id) return null;
+      if (!map.has(proj.id)) {
+        map.set(proj.id, {
+          project: proj,
+          owned: { today: [], week: [], later: [] },
+          contributing: [],
+          actions: { today: [], week: [], later: [] },
+          mentions: [],
+          unreadMentions: [],
+          raid: { escalating: [], overdueActions: [], needsReview: [], pendingApproval: [] },
+        });
+      }
+      return map.get(proj.id);
+    };
+    for (const bucket of ['today', 'week', 'later']) {
+      for (const e of (myWork.tasksOwned?.[bucket] || [])) ensure(e.project)?.owned[bucket].push(e);
+      for (const e of (myWork.actionItems?.[bucket] || [])) ensure(e.project)?.actions[bucket].push(e);
+    }
+    for (const e of (myWork.tasksContributing || [])) ensure(e.project)?.contributing.push(e);
+    for (const m of (myWork.allMentions || [])) ensure(m.project)?.mentions.push(m);
+    for (const m of (myWork.unreadMentions || [])) ensure(m.project)?.unreadMentions.push(m);
+    if (myRaid) {
+      for (const key of ['pendingApproval', 'escalating', 'overdueActions', 'needsReview']) {
+        for (const e of (myRaid[key] || [])) ensure(e.project)?.raid[key].push(e);
+      }
+    }
+    const arr = Array.from(map.values()).filter((b) => {
+      const tasks = b.owned.today.length + b.owned.week.length + b.owned.later.length + b.contributing.length;
+      const acts = b.actions.today.length + b.actions.week.length + b.actions.later.length;
+      const r = b.raid.escalating.length + b.raid.overdueActions.length + b.raid.needsReview.length + b.raid.pendingApproval.length;
+      return tasks + acts + b.unreadMentions.length + r > 0;
+    });
+    arr.sort((a, b) => {
+      const aOv = a.owned.today.filter((e) => isOverdue(e.task)).length;
+      const bOv = b.owned.today.filter((e) => isOverdue(e.task)).length;
+      if (aOv !== bOv) return bOv - aOv;
+      if (a.unreadMentions.length !== b.unreadMentions.length) return b.unreadMentions.length - a.unreadMentions.length;
+      if (a.raid.escalating.length !== b.raid.escalating.length) return b.raid.escalating.length - a.raid.escalating.length;
+      return (a.project.name || '').localeCompare(b.project.name || '');
+    });
+    return arr;
+  }, [myWork, myRaid]);
+
+  if (bundles.length === 0) {
+    return (
+      <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: '24px 18px', textAlign: 'center', color: TOK.muted, fontSize: 13 }}>
+        <div style={{ fontSize: 24, marginBottom: 8 }}>🌤</div>
+        <div style={{ color: TOK.ink, fontWeight: 500, marginBottom: 4 }}>No project work yet</div>
+        <div style={{ fontSize: 12 }}>You don't currently have tasks, actions, or RAID items assigned across any project.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {bundles.map((b) => (
+        <ByProjectCard
+          key={b.project.id}
+          bundle={b}
+          author={author}
+          teamMembers={teamMembers}
+          picSuggestions={picSuggestions}
+          lastSeenAt={lastSeenAt}
+          onTaskClick={onTaskClick}
+          onActionClick={onActionClick}
+          onCreateAction={onCreateAction}
+          onActionUpdate={onActionUpdate}
+          handleStatusChange={handleStatusChange}
+          handleAddUpdate={handleAddUpdate}
+          handleRequestExtension={handleRequestExtension}
+          handleActionDone={handleActionDone}
+          handleStepDone={handleStepDone}
+          showToast={showToast}
+          onNavigateRaid={onNavigateRaid}
+        />
+      ))}
+    </div>
+  );
+}
+
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
@@ -9850,6 +10320,19 @@ function MyWorkView({
   }, [teamMembers]);
   const [ownedTab, setOwnedTab] = useState('today');
   const [actionsTab, setActionsTab] = useState('today');
+
+  // v30.M — Dual-view toggle. "project" focus mode is the default; "urgency"
+  // is the morning-triage list. Persists to localStorage so the user's pick
+  // survives page reload.
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      const v = localStorage.getItem('myWorkViewMode');
+      return v === 'urgency' || v === 'project' ? v : 'project';
+    } catch { return 'project'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('myWorkViewMode', viewMode); } catch { /* ignore */ }
+  }, [viewMode]);
 
   useEffect(() => {
     if (!onMarkSeen || !author) return;
@@ -9882,6 +10365,17 @@ function MyWorkView({
   const handleActionDone = (action, project) => {
     onActionUpdate({ ...action, status: 'Done', completedAt: new Date().toISOString() }, project.id);
   };
+  // v30.M — Mark a step done by mutating the parent action's subtasks. The
+  // step is identified by (action, subtask) returned from collectTaskSteps;
+  // we find the project the action belongs to via the enriched task entry.
+  const handleStepDone = (action, subtask, project) => {
+    if (!action || !subtask?.id) return;
+    const nextSubs = (action.subtasks || []).map((s) =>
+      s.id === subtask.id ? { ...s, status: 'Done', completedAt: new Date().toISOString() } : s
+    );
+    onActionUpdate({ ...action, subtasks: nextSubs }, project.id);
+    if (showToast) showToast('✓ Step done');
+  };
 
   const counts = {
     owned: myWork.tasksOwned.today.length + myWork.tasksOwned.week.length + myWork.tasksOwned.later.length,
@@ -9899,12 +10393,74 @@ function MyWorkView({
 
   const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
+  // Red badge on "By urgency" tab: overdue tasks + unread mentions + RAID
+  // needing attention. needsAttention already includes overdue tasks and
+  // overdue subtasks; add RAID counts from myRaid for completeness.
+  const urgencyBadge = (
+    myWork.needsAttention.length +
+    myWork.unreadMentions.length +
+    (myRaid?.pendingApproval?.length || 0) +
+    (myRaid?.escalating?.length || 0)
+  );
+
+  const ToggleHint = (
+    <div style={{
+      fontSize: 11, color: TOK.subtle, fontStyle: 'italic',
+      maxWidth: 240, lineHeight: 1.4, marginLeft: 4,
+    }}>
+      {viewMode === 'urgency' ? "Morning triage — what's on fire?" : 'Focus mode — block time per project'}
+    </div>
+  );
+
+  const ViewToggle = (
+    <div style={{
+      display: 'inline-flex', background: TOK.bg, borderRadius: 8,
+      padding: 3, border: '1px solid ' + TOK.line,
+    }}>
+      {[
+        { id: 'urgency', label: '⚡ By urgency', badge: urgencyBadge > 0 ? urgencyBadge : null },
+        { id: 'project', label: '📁 By project', badge: null },
+      ].map((t) => {
+        const active = viewMode === t.id;
+        return (
+          <button key={t.id} onClick={() => setViewMode(t.id)} style={{
+            padding: '6px 14px', borderRadius: 6, border: 'none',
+            background: active ? TOK.surface : 'transparent',
+            fontFamily: FONT_STACK, fontSize: 12,
+            color: active ? TOK.ink : TOK.muted,
+            fontWeight: active ? 600 : 400, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            transition: 'background 0.12s',
+          }}>
+            {t.label}
+            {t.badge != null && (
+              <span style={{
+                background: '#FCEBEB', color: '#A32D2D', borderRadius: 999,
+                padding: '1px 6px', fontSize: 10, fontWeight: 700,
+              }}>{t.badge}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
   const Header = (
-    <div style={{ marginBottom: 16 }}>
-      <h1 style={{ fontFamily: FONT_STACK, fontSize: 22, fontWeight: 600, margin: 0, color: TOK.ink, letterSpacing: -0.2 }}>My Work</h1>
-      <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4 }}>
-        {author ? <><span style={{ color: TOK.ink, fontWeight: 500 }}>{author}</span> · </> : null}
-        Today: {todayLabel}
+    <div style={{
+      marginBottom: 16, display: 'flex', alignItems: 'flex-start',
+      gap: 16, flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <h1 style={{ fontFamily: FONT_STACK, fontSize: 22, fontWeight: 600, margin: 0, color: TOK.ink, letterSpacing: -0.2 }}>My Work</h1>
+        <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4 }}>
+          {author ? <><span style={{ color: TOK.ink, fontWeight: 500 }}>{author}</span> · </> : null}
+          Today: {todayLabel}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {ViewToggle}
+        {ToggleHint}
       </div>
     </div>
   );
@@ -9937,6 +10493,28 @@ function MyWorkView({
     <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
       {Header}
 
+      {viewMode === 'project' ? (
+        <ByProjectView
+          myWork={myWork}
+          myRaid={myRaid}
+          author={author}
+          teamMembers={teamMembers}
+          picSuggestions={picSuggestions}
+          lastSeenAt={lastSeenAt}
+          onTaskClick={onTaskClick}
+          onActionClick={onActionClick}
+          onCreateAction={onCreateAction}
+          onActionUpdate={onActionUpdate}
+          handleStatusChange={handleStatusChange}
+          handleAddUpdate={handleAddUpdate}
+          handleRequestExtension={handleRequestExtension}
+          handleActionDone={handleActionDone}
+          handleStepDone={handleStepDone}
+          showToast={showToast}
+          onNavigateRaid={onNavigateRaid}
+        />
+      ) : (
+        <>
       {urgentEmpty && (
         <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: '16px 18px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 14 }}>
           <span style={{ fontSize: 24 }}>🌤</span>
@@ -10206,6 +10784,7 @@ function MyWorkView({
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
             onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
             onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
+            onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
           />
         ))}
       </MyWorkSection>
@@ -10229,6 +10808,7 @@ function MyWorkView({
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
             onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
             onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
+            onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
           />
         ))}
       </MyWorkSection>
@@ -10310,6 +10890,8 @@ function MyWorkView({
           </div>
         )}
       </MyWorkSection>
+        </>
+      )}
     </div>
   );
 }
