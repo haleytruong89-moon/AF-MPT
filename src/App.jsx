@@ -5995,7 +5995,7 @@ function buildMindTree(project, collapsed) {
   const mk = (o, kind, children, ref) => ({ _id: o.id, _ref: ref ?? o, name: o.name, kind, children, _collapsed: collapsed.has(o.id) });
   const programs = (project.programs || []).map((p) => {
     const ws = (p.workstreams || []).map((w) => {
-      const tasks = (w.tasks || []).map((t) => mk(t, 'task', null));
+      const tasks = sortTasksByStart(w.tasks).map((t) => mk(t, 'task', null));
       return mk(w, 'workstream', tasks);
     });
     return mk(p, 'program', ws);
