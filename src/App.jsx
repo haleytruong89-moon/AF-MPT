@@ -9980,21 +9980,30 @@ function hex2rgba(hex, a = 0.1) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
-// v30.M — One project card showing today/overdue + actions visible, week/later/RAID collapsed.
+// v30.M — One project card with 4 labeled blocks: Task / Action / RAID / Decision.
+// Each block surfaces its "today/now" items inline and nests less-urgent
+// buckets behind collapse toggles. Card header acts as the project alert
+// summary; the alert strip lists each urgent item by name.
 function ByProjectCard({
   bundle, author, teamMembers, picSuggestions, lastSeenAt,
-  onTaskClick, onActionClick, onCreateAction, onActionUpdate,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onDecisionClick,
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
-  const { project, owned, contributing, actions, mentions, unreadMentions, raid } = bundle;
+  const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions } = bundle;
   const [collapsed, setCollapsed] = useState(false);
-  const [openSec, setOpenSec] = useState({ week: false, later: false, raid: false, contrib: false });
+  const [openSec, setOpenSec] = useState({
+    taskWeek: false, taskLater: false, taskContrib: false,
+    actionWeek: false, actionLater: false,
+    raidEsc: false, raidOver: false, raidReview: false, raidApprove: false,
+  });
   const togSec = (k) => setOpenSec((s) => ({ ...s, [k]: !s[k] }));
 
   const overdueTasks = owned.today.filter((e) => isOverdue(e.task));
   const totalTasks = owned.today.length + owned.week.length + owned.later.length;
   const totalActions = actions.today.length + actions.week.length + actions.later.length;
+  const totalRaid = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
+  const totalDecisions = decisions.length;
   const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length;
   const color = project.color || '#0C447C';
   const colorBg = hex2rgba(color, 0.08);
@@ -10062,21 +10071,32 @@ function ByProjectCard({
     );
   };
 
-  const sectionTitle = (label) => (
-    <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
+  const BlockHeader = ({ icon, label, count }) => (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '6px 10px', marginBottom: 8, marginTop: 4,
+      background: colorBg, borderRadius: 6,
+      borderLeft: '3px solid ' + color,
+    }}>
+      <span style={{ fontSize: 13 }}>{icon}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: TOK.ink, letterSpacing: 0.2 }}>{label}</span>
+      {count > 0 && (
+        <span style={{
+          fontSize: 10, padding: '1px 7px', borderRadius: 999,
+          background: TOK.surface, color: TOK.muted, fontWeight: 600,
+        }}>{count}</span>
+      )}
+    </div>
   );
-  const collapseToggle = (key, label) => (
+  const subToggle = (key, label) => (
     <button onClick={() => togSec(key)} style={{
       background: 'none', border: 'none', cursor: 'pointer',
-      fontFamily: FONT_STACK, fontSize: 10, color: TOK.muted, fontWeight: 600,
-      textTransform: 'uppercase', letterSpacing: 0.4,
-      display: 'flex', alignItems: 'center', gap: 5, padding: 0, marginBottom: 6,
+      fontFamily: FONT_STACK, fontSize: 11, color: TOK.muted, fontWeight: 500,
+      display: 'flex', alignItems: 'center', gap: 5, padding: '4px 0', marginTop: 4,
     }}>
       {openSec[key] ? '▼' : '▶'} {label}
     </button>
   );
-
-  const raidTotal = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
 
   return (
     <div style={{
@@ -10100,6 +10120,9 @@ function ByProjectCard({
         )}
         {raid.escalating.length > 0 && (
           <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.overdueBg, color: TOK.overdueFg, fontWeight: 600 }}>🔴 {raid.escalating.length} escalating</span>
+        )}
+        {totalDecisions > 0 && (
+          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.bg, color: TOK.ink, fontWeight: 600 }}>🤔 {totalDecisions}</span>
         )}
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color, opacity: 0.7 }}>{totalTasks} task{totalTasks !== 1 ? 's' : ''} · {totalActions} action{totalActions !== 1 ? 's' : ''}</span>
@@ -10132,70 +10155,128 @@ function ByProjectCard({
             </div>
           )}
 
-          {owned.today.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              {sectionTitle('Tasks due today / overdue')}
-              {owned.today.map(renderTaskCard)}
-            </div>
-          )}
-
-          {actions.today.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              {sectionTitle(`Action items (${actions.today.length})`)}
-              {actions.today.map(renderActionEntry)}
-            </div>
-          )}
-
-          {owned.week.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              {collapseToggle('week', `Tasks this week (${owned.week.length})`)}
-              {openSec.week && owned.week.map(renderTaskCard)}
-            </div>
-          )}
-
-          {owned.later.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              {collapseToggle('later', `Later (${owned.later.length})`)}
-              {openSec.later && owned.later.map(renderTaskCard)}
-            </div>
-          )}
-
-          {contributing.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              {collapseToggle('contrib', `Contributing (${contributing.length})`)}
-              {openSec.contrib && contributing.map(renderTaskCard)}
-            </div>
-          )}
-
-          {raidTotal > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              {collapseToggle('raid', `RAID (${raidTotal} need attention)`)}
-              {openSec.raid && (
-                <div>
-                  {[...raid.escalating, ...raid.overdueActions, ...raid.needsReview, ...raid.pendingApproval].map((r, i) => {
-                    const item = r.item || r;
-                    const title = item?.title || '(untitled)';
-                    return (
-                      <div key={'rd-' + i} onClick={() => onNavigateRaid && onNavigateRaid(project.id, r.program?.id)} style={{
-                        display: 'flex', gap: 8, padding: '6px 10px',
-                        border: '1px solid ' + TOK.line, borderRadius: 6,
-                        marginBottom: 4, background: TOK.surface,
-                        alignItems: 'center', fontSize: 12, cursor: 'pointer',
-                      }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: TOK.overdueFg }} />
-                        <span style={{ flex: 1 }}>{title}</span>
-                        {item?.level && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: TOK.bg, color: TOK.muted, fontWeight: 600 }}>{item.level}</span>}
-                      </div>
-                    );
-                  })}
-                </div>
+          {/* 📋 BLOCK 1 — TASKS */}
+          {totalTasks + contributing.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <BlockHeader icon="📋" label="Tasks" count={totalTasks + contributing.length} />
+              {owned.today.length > 0 ? (
+                owned.today.map(renderTaskCard)
+              ) : (
+                <div style={{ fontSize: 11.5, color: TOK.muted, padding: '4px 4px 6px' }}>Nothing due today / overdue.</div>
+              )}
+              {owned.week.length > 0 && (
+                <>
+                  {subToggle('taskWeek', `This week (${owned.week.length})`)}
+                  {openSec.taskWeek && owned.week.map(renderTaskCard)}
+                </>
+              )}
+              {owned.later.length > 0 && (
+                <>
+                  {subToggle('taskLater', `Later (${owned.later.length})`)}
+                  {openSec.taskLater && owned.later.map(renderTaskCard)}
+                </>
+              )}
+              {contributing.length > 0 && (
+                <>
+                  {subToggle('taskContrib', `Contributing (${contributing.length})`)}
+                  {openSec.taskContrib && contributing.map(renderTaskCard)}
+                </>
               )}
             </div>
           )}
 
-          {totalTasks + totalActions === 0 && (
+          {/* ✅ BLOCK 2 — ACTIONS */}
+          {totalActions > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <BlockHeader icon="✅" label="Actions" count={totalActions} />
+              {actions.today.length > 0 ? (
+                actions.today.map(renderActionEntry)
+              ) : (
+                <div style={{ fontSize: 11.5, color: TOK.muted, padding: '4px 4px 6px' }}>Nothing due today / overdue.</div>
+              )}
+              {actions.week.length > 0 && (
+                <>
+                  {subToggle('actionWeek', `This week (${actions.week.length})`)}
+                  {openSec.actionWeek && actions.week.map(renderActionEntry)}
+                </>
+              )}
+              {actions.later.length > 0 && (
+                <>
+                  {subToggle('actionLater', `Later (${actions.later.length})`)}
+                  {openSec.actionLater && actions.later.map(renderActionEntry)}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* 🔴 BLOCK 3 — RAID */}
+          {totalRaid > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <BlockHeader icon="🔴" label="RAID" count={totalRaid} />
+              {[
+                { key: 'raidEsc', label: 'Escalating', list: raid.escalating },
+                { key: 'raidOver', label: 'Overdue mitigation actions', list: raid.overdueActions },
+                { key: 'raidReview', label: 'Needs review', list: raid.needsReview },
+                { key: 'raidApprove', label: 'Pending your approval', list: raid.pendingApproval },
+              ].filter((b) => b.list.length > 0).map((b) => (
+                <div key={b.key}>
+                  {subToggle(b.key, `${b.label} (${b.list.length})`)}
+                  {openSec[b.key] && b.list.map((r, i) => {
+                    const item = r.item || r;
+                    return (
+                      <div key={b.key + '-' + i}
+                        onClick={() => onNavigateRaid && onNavigateRaid(project.id, r.program?.id)}
+                        style={{
+                          display: 'flex', gap: 8, padding: '6px 10px',
+                          border: '1px solid ' + TOK.line, borderRadius: 6,
+                          marginBottom: 4, background: TOK.surface,
+                          alignItems: 'center', fontSize: 12, cursor: 'pointer',
+                        }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: TOK.overdueFg, flexShrink: 0 }} />
+                        <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {item?.title || '(untitled)'}
+                        </span>
+                        {item?.level && (
+                          <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: TOK.bg, color: TOK.muted, fontWeight: 600 }}>{item.level}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 🤔 BLOCK 4 — DECISIONS */}
+          {totalDecisions > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <BlockHeader icon="🤔" label="Decisions awaiting input" count={totalDecisions} />
+              {decisions.map((d, i) => {
+                const dec = d.decision;
+                const reviewDate = dec?.expectedReviewDate || dec?.date;
+                return (
+                  <div key={'dec-' + (dec?.id || i)}
+                    onClick={() => onDecisionClick && onDecisionClick(d.project.id, dec?.id)}
+                    style={{
+                      padding: '8px 10px', border: '1px solid ' + TOK.line, borderRadius: 6,
+                      marginBottom: 4, background: TOK.surface, cursor: 'pointer',
+                    }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, color: TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {dec?.text || dec?.title || '(untitled decision)'}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: TOK.muted, marginTop: 2 }}>
+                      {dec?.followUpStatus && <span>{dec.followUpStatus} · </span>}
+                      {reviewDate && <span>review {fmtDateShort(reviewDate)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {totalTasks + contributing.length + totalActions + totalRaid + totalDecisions === 0 && (
             <div style={{ color: TOK.muted, fontSize: 12.5, padding: '12px 0' }}>
-              No tasks or actions assigned to you in this project.
+              No work assigned to you in this project right now.
             </div>
           )}
         </div>
@@ -10209,7 +10290,7 @@ function ByProjectCard({
 // mentions, escalating RAID, alphabetical.
 function ByProjectView({
   myWork, myRaid, author, teamMembers, picSuggestions, lastSeenAt,
-  onTaskClick, onActionClick, onCreateAction, onActionUpdate,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onDecisionClick,
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
@@ -10226,6 +10307,7 @@ function ByProjectView({
           mentions: [],
           unreadMentions: [],
           raid: { escalating: [], overdueActions: [], needsReview: [], pendingApproval: [] },
+          decisions: [],
         });
       }
       return map.get(proj.id);
@@ -10237,6 +10319,7 @@ function ByProjectView({
     for (const e of (myWork.tasksContributing || [])) ensure(e.project)?.contributing.push(e);
     for (const m of (myWork.allMentions || [])) ensure(m.project)?.mentions.push(m);
     for (const m of (myWork.unreadMentions || [])) ensure(m.project)?.unreadMentions.push(m);
+    for (const d of (myWork.decisions || [])) ensure(d.project)?.decisions.push(d);
     if (myRaid) {
       for (const key of ['pendingApproval', 'escalating', 'overdueActions', 'needsReview']) {
         for (const e of (myRaid[key] || [])) ensure(e.project)?.raid[key].push(e);
@@ -10246,7 +10329,7 @@ function ByProjectView({
       const tasks = b.owned.today.length + b.owned.week.length + b.owned.later.length + b.contributing.length;
       const acts = b.actions.today.length + b.actions.week.length + b.actions.later.length;
       const r = b.raid.escalating.length + b.raid.overdueActions.length + b.raid.needsReview.length + b.raid.pendingApproval.length;
-      return tasks + acts + b.unreadMentions.length + r > 0;
+      return tasks + acts + b.unreadMentions.length + r + b.decisions.length > 0;
     });
     arr.sort((a, b) => {
       const aOv = a.owned.today.filter((e) => isOverdue(e.task)).length;
@@ -10283,6 +10366,7 @@ function ByProjectView({
           onActionClick={onActionClick}
           onCreateAction={onCreateAction}
           onActionUpdate={onActionUpdate}
+          onDecisionClick={onDecisionClick}
           handleStatusChange={handleStatusChange}
           handleAddUpdate={handleAddUpdate}
           handleRequestExtension={handleRequestExtension}
@@ -10505,6 +10589,7 @@ function MyWorkView({
           onActionClick={onActionClick}
           onCreateAction={onCreateAction}
           onActionUpdate={onActionUpdate}
+          onDecisionClick={onDecisionClick}
           handleStatusChange={handleStatusChange}
           handleAddUpdate={handleAddUpdate}
           handleRequestExtension={handleRequestExtension}
