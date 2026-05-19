@@ -2962,8 +2962,25 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   if (!loc) return null;
   const { task, workstream, program } = loc;
 
+  // Fields the edit form does NOT control but other UI elements mutate inline
+  // via direct onUpdate calls (references, posted updates, status pill, weight
+  // badge, deadline request flow). Pulling them from `draft` at save time
+  // would silently wipe inline edits made between entering edit mode and
+  // clicking Save — so we always preserve whatever's in the current task.
+  const LIVE_FIELDS = [
+    'references',
+    'updates',
+    'checkIns',
+    'deadlineRequest',
+    'deadlineRequestHistory',
+    'status',
+    'weight',
+  ];
+
   const save = () => {
-    let toSave = { ...draft };
+    const editedDraft = { ...draft };
+    for (const f of LIVE_FIELDS) delete editedDraft[f];
+    let toSave = { ...task, ...editedDraft };
     if (draft.end !== task.end) {
       toSave = logDeadlineChange(toSave, draft.end, author);
     }
