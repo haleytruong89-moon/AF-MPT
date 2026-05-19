@@ -6722,7 +6722,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                       <Btn size="sm" variant="ghost" onClick={() => renameWorkstream(pg, ws)} title="Rename"><Edit2 size={12} /></Btn>
                       <Btn size="sm" variant="ghost" onClick={() => deleteWorkstream(pg, ws)} title="Delete"><Trash2 size={12} /></Btn>
                     </div>
-                    {wsOpen && (ws.tasks || []).map((t) => {
+                    {wsOpen && sortTasksByStart(ws.tasks).map((t) => {
                       if (q && !pgMatches && !wsMatches && !matches(t.name)) return null;
                       const sel = t.id === selectedTaskId;
                       const dropped = t.status === 'Dropped';
