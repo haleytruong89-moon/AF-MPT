@@ -81,7 +81,7 @@ Below the update textarea, above the existing blocker checkbox, add:
 ```
 
 - Only rendered when `project.googleChatWebhook` is set.
-- Default: unchecked. Optional: persist last choice in localStorage so power users don't re-tick every time. **Decision deferred — needs user confirmation.**
+- Default state for first time per project = unchecked. Subsequent loads read `localStorage["myWork:chatNotify:{projectId}"]` — checkbox starts ticked if the user ticked it last time on this project. Unchecking on any post writes `false` to that key.
 - On "Post update":
   1. Apply the existing update mutation (write to action.updates[]).
   2. If checkbox ticked AND webhook URL present: `fetch(webhookUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(card) })`.
@@ -89,30 +89,49 @@ Below the update textarea, above the existing blocker checkbox, add:
 
 ## Message structure
 
-**The exact card JSON structure is deferred — to be confirmed with user before implementation.** The placeholder design has full context; user will sign off on the actual layout.
+**Chosen layout — Variant C (minimal, notification-style, left accent bar, most compact):**
 
-Content elements that MUST appear in the final card (decided):
-- Project name + colored accent (match `project.color`)
-- Action title
-- PIC name (mentioned by display name, plain text — Google Chat auto-parses @mention if the user is in the space)
-- Status pill (Open / In Progress / Blocked / Done)
-- Due date (with overdue indicator if past today)
-- Posted by (author display name + timestamp)
-- Update text (the comment the user just typed)
-- Blocker flag if `isBlocker === true`
-- Deep link "View in app" → `https://af-mpt.vercel.app/?project={id}&action={id}` (route may need a small handler in App.jsx to focus that action on load — see "Open scope" below)
+```
+┌─ Sender row (handled by Google Chat) ────────────────────┐
+│ M  AF MTP Tracker  App  8 May 2026, 10:42 AM             │
+│                                                            │
+│ ┃ Submit to BRA portal + obtain receipt          [Open] │  ← title bold + status pill right
+│ ┃ CRP › LLCs › HIO · Overdue · @hattt4                  │  ← meta line
+│ ┃ ─────────────────────────────────────                  │
+│ ┃ @An Nguyen confirmed both docs ready. Submitting       │  ← body (update text, @mention preserved)
+│ ┃ now will update once receipt obtained.                 │
+│ ┃ ─────────────────────────────────────                  │
+│ ┃ hattt4, 8 May 2026, 10:42 AM             View →       │  ← footer: author + timestamp + deep link
+└────────────────────────────────────────────────────────────┘
+```
 
-Format will be **Google Chat card v2** (`cardsV2` in the payload) because it lets us style and group fields; falls back to plain text if the space rejects cards.
+Left accent bar (`┃`) colored with `project.color` (default `#0C447C`).
 
-## Open scope to confirm before writing the plan
+**Content fields, in this order:**
 
-These are flagged so the implementation plan can be exact:
+| Field | Source | Notes |
+|---|---|---|
+| Accent bar color | `project.color` or `#0C447C` | Visual project identity |
+| Title (bold) | `action.title` | |
+| Status pill (right) | `action.status` | Open / In Progress / Blocked / Done |
+| Meta line | `project.name › program.name › workstream.name` (if action is task-linked) OR `project.name › Action item` (if standalone) · `due {date}` or `Overdue` · `@{pic}` | |
+| Body | The update text that triggered the notify (the comment just posted) | Preserve `@mention` syntax — Google Chat parses it client-side if recipients are in the space |
+| Blocker tag | `🚩 Blocker` chip if `update.isBlocker === true` | Appended to meta line |
+| Footer | `{author}, {timestamp}` left + `View →` link right | |
 
-1. **Card layout** — exact field order, color usage, button placement. I'll mock 2-3 variants and you pick.
-2. **Persist "notify" checkbox state** — remember last choice per user, or always default to unchecked?
-3. **Deep link routing** — does the app need a new query-param handler (`?project=&action=`) that auto-opens the action detail, or is "click takes user to home, they navigate themselves" OK for Stage 1?
-4. **Test message wording** — what should the "Send test" payload look like? (Important: this gets posted to a real space, so wording matters.)
-5. **Failure UX** — if `fetch` returns 4xx/5xx (bad URL, revoked webhook, space deleted), do we just toast and continue, or also disable the checkbox for the rest of the session?
+**Format:** Google Chat card v2 (`cardsV2` payload), with `decoratedText` widgets for the meta line and body. If the space rejects cards (rare), fall back to plain-text rendering of the same fields concatenated.
+
+## Confirmed decisions (resolved from earlier open scope)
+
+1. **Card layout — Variant C (minimal, accent bar).** Locked. See "Message structure" above.
+
+2. **Persist "notify" checkbox state — Yes, per-user localStorage.** Key: `myWork:chatNotify:{projectId}`. Default for first time per project = unchecked. Saves friction for users who always want to notify; allows opt-out per post by unchecking.
+
+3. **Deep link routing — Yes, add `?project={id}&action={id}` handler.** On app load, App.jsx reads these query params; if both present and the user has access to the project, switch the current project, open the Actions tab, and select that action. URL params are consumed (cleared from address bar via `history.replaceState`) once the navigation completes so a refresh doesn't re-trigger.
+
+4. **Test message wording:** `"✅ Test message from [Project name] — Google Chat integration working. Sent by [author] at [timestamp]."` Plain text (no card), to make it visually distinct from real notifications.
+
+5. **Failure UX — Toast error, keep checkbox enabled.** On `fetch` 4xx/5xx, show toast: `"Update posted. Chat notify failed: {status} {statusText} — owner can re-check the webhook URL in Project Settings."` Checkbox stays enabled for retry on the next post. The update itself is NOT rolled back — it's saved locally regardless of chat delivery outcome.
 
 ## Data flow
 
@@ -154,12 +173,14 @@ Stage 2 is OUT OF SCOPE for this spec. Mentioned only so the Stage 1 design does
 
 ## Acceptance criteria
 
-- [ ] Workspace owner can paste a webhook URL in Project Settings and save it.
+- [ ] Workspace owner / project owner can paste a webhook URL in Project Settings and save it.
 - [ ] Non-owner sees the URL field but cannot edit it.
-- [ ] "Send test message" button posts to the space and shows success/error.
+- [ ] "Send test message" button posts the plain-text test wording (with project name + author + timestamp) and shows success/error.
 - [ ] When a project has a webhook URL set, action update form shows "📢 Notify [Project] chat" checkbox.
-- [ ] When that checkbox is ticked and user posts an update, a card is delivered to the space within 2 seconds.
-- [ ] If webhook delivery fails (revoked, 404, etc.), the update still saves locally and the user sees an error toast.
+- [ ] Checkbox default state respects `localStorage["myWork:chatNotify:{projectId}"]` — ticked if last time was ticked, unchecked first time per project.
+- [ ] When checkbox is ticked and user posts an update, a Variant-C card is delivered to the space within 2 seconds.
+- [ ] Card content includes accent bar (`project.color`), action title, status pill, meta line (`project › program › workstream · due/overdue · @PIC`), update body, blocker tag (if `isBlocker`), footer (author + timestamp + `View →` deep link).
+- [ ] Clicking `View →` opens the app with `?project=X&action=Y` → app switches to that project, opens Actions tab, selects the action, then clears the query params.
+- [ ] If webhook delivery fails (4xx/5xx), the update still saves locally, the toast shows `"Update posted. Chat notify failed: {status} {statusText} — owner can re-check the webhook URL in Project Settings."`, and the checkbox stays enabled for retry on the next post.
 - [ ] If the webhook URL is cleared, the checkbox disappears from update forms — no broken state.
 - [ ] URL validation rejects non-`https://chat.googleapis.com/` strings on save with an inline error.
-- [ ] Card content includes: project name, action title, PIC, status, due, author, timestamp, update text, blocker flag (if set), link to action.
