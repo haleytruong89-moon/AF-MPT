@@ -66,6 +66,21 @@ interface Props {
   scopeProgramId: string | null;
 }
 
+// Visual sort for task lists. Tasks with a start date come first in
+// ascending order; tasks without a start date fall to the end. Mirrors
+// sortTasksByStart in App.jsx — keep in sync. Returns a new array.
+function sortTasksByStart<T extends { start?: string | null }>(tasks: T[] | null | undefined): T[] {
+  const list = Array.isArray(tasks) ? tasks : [];
+  return [...list].sort((a, b) => {
+    const ad = a?.start ? +new Date(a.start) : Infinity;
+    const bd = b?.start ? +new Date(b.start) : Infinity;
+    if (isNaN(ad) && isNaN(bd)) return 0;
+    if (isNaN(ad)) return 1;
+    if (isNaN(bd)) return -1;
+    return ad - bd;
+  });
+}
+
 export function GanttView({ project, selectedTaskId, onTaskClick, scopeProgramId }: Props) {
   const [zoom, setZoom] = useState<ZoomLevel>('week');
   const dayPx = ZOOM_DAY_PX[zoom];
@@ -76,11 +91,7 @@ export function GanttView({ project, selectedTaskId, onTaskClick, scopeProgramId
     for (const pg of project.programs || []) {
       if (scopeProgramId && pg.id !== scopeProgramId) continue;
       for (const ws of pg.workstreams || []) {
-        const sorted = [...(ws.tasks || [])].sort((a, b) => {
-          const ad = a.start ? +new Date(a.start) : Infinity;
-          const bd = b.start ? +new Date(b.start) : Infinity;
-          return ad - bd;
-        });
+        const sorted = sortTasksByStart(ws.tasks);
         for (const t of sorted) {
           out.push({ task: t, programName: pg.name, workstreamName: ws.name, programId: pg.id });
         }
