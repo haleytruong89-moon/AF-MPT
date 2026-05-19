@@ -643,6 +643,24 @@ function getDecisionDecay(decision, now = new Date()) {
   };
 }
 
+// v30 — Visual sort for task lists. Tasks with a start date come first in
+// ascending order; tasks without a start date fall to the end. Stable on
+// modern engines, so equal keys keep their original array order. Returns a
+// new array — does NOT mutate the input. Used by MindMap, Outline, and
+// Gantt render paths so a newly-created task with an earlier start date
+// naturally moves up instead of always landing at the bottom.
+function sortTasksByStart(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  return [...list].sort((a, b) => {
+    const ad = a?.start ? +new Date(a.start) : Infinity;
+    const bd = b?.start ? +new Date(b.start) : Infinity;
+    if (isNaN(ad) && isNaN(bd)) return 0;
+    if (isNaN(ad)) return 1;
+    if (isNaN(bd)) return -1;
+    return ad - bd;
+  });
+}
+
 // ─── Credit allocation helpers (v22) ───
 
 // Equal split: returns array of N items each = 100/N (rounded to 2 decimals).
