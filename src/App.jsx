@@ -5,7 +5,7 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, Users
+  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -1717,15 +1717,26 @@ function DialogHost({ dialog, close }) {
     );
   }
   // prompt
+  const canSubmit = dialog.allowEmpty || value.trim().length > 0;
+  const submit = () => { if (canSubmit) close(value.trim()); };
   return (
     <Modal title={dialog.title || 'Enter value'} onClose={() => close(null)} width={420} zHigh>
       {dialog.message && <p style={{ margin: '0 0 12px', fontSize: 13, color: TOK.muted }}>{dialog.message}</p>}
-      <Input value={value} onChange={setValue} placeholder={dialog.placeholder} autoFocus />
+      <Input
+        value={value}
+        onChange={setValue}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); close(null); }
+        }}
+        placeholder={dialog.placeholder}
+        autoFocus
+      />
       <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Btn onClick={() => close(null)}>Cancel</Btn>
         <Btn variant="primary"
-          disabled={!dialog.allowEmpty && !value.trim()}
-          onClick={() => close(value.trim())}>{dialog.okLabel || 'OK'}</Btn>
+          disabled={!canSubmit}
+          onClick={submit}>{dialog.okLabel || 'OK'}</Btn>
       </div>
     </Modal>
   );
@@ -6135,6 +6146,15 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   };
 
   // Actions
+  const actAddProgram = async () => {
+    const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
+    if (!name) return;
+    const p = { id: uid('p'), name, workstreams: [], raid: [] };
+    onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
+    // Expand the new program so its (empty) workstream slot is visible
+    setCollapsed((s) => { const n = new Set(s); n.delete(p.id); return n; });
+    onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
+  };
   const actAddWorkstream = async (pg) => {
     const name = await dialogs.prompt({ title: 'New work stream', message: `Under "${pg.name}"`, placeholder: 'Work stream name', okLabel: 'Create' });
     if (!name) return;
@@ -6195,6 +6215,15 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
 
   const menuItems = (node) => {
     if (!node) return [];
+    if (node.kind === 'project') {
+      return [
+        { label: 'Add program', icon: <Plus size={13} />, onClick: actAddProgram },
+        { separator: true },
+        { label: 'Expand all', icon: <ChevronDown size={13} />, onClick: expandAll },
+        { label: 'Collapse to programs', icon: <ChevronRight size={13} />, onClick: collapseToPrograms },
+        { label: 'Fit view', icon: <Maximize2 size={13} />, onClick: fit },
+      ];
+    }
     if (node.kind === 'program') {
       const pg = node.data;
       return [
@@ -14084,14 +14113,24 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
 
 function NewProjectModal({ onClose, onCreate }) {
   const [name, setName] = useState('');
+  const submit = () => { if (name.trim()) onCreate(name); };
   return (
     <Modal title="Create new project" onClose={onClose} width={420}>
       <p style={{ margin: '0 0 12px', fontSize: 13, color: TOK.muted }}>Start fresh with an empty project you'll build out manually.</p>
       <FieldLabel>Project name</FieldLabel>
-      <Input value={name} onChange={setName} placeholder="e.g., Vietnam Expansion 2027" autoFocus />
+      <Input
+        value={name}
+        onChange={setName}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+          else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+        }}
+        placeholder="e.g., Vietnam Expansion 2027"
+        autoFocus
+      />
       <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Btn onClick={onClose}>Cancel</Btn>
-        <Btn variant="primary" disabled={!name.trim()} onClick={() => onCreate(name)}>Create</Btn>
+        <Btn variant="primary" disabled={!name.trim()} onClick={submit}>Create</Btn>
       </div>
     </Modal>
   );
