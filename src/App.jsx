@@ -11905,6 +11905,24 @@ export default function App() {
         }
       }
       setLoading(false);
+
+      // Stage 1 deep link — Google Chat "View" → ?project=X&action=Y. Switch to
+      // the project and Actions tab if the user has access. Clear the params so a
+      // refresh doesn't re-trigger.
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const dpProj = params.get('project');
+        const dpAct = params.get('action');
+        if (dpProj && dpAct && ps[dpProj]) {
+          setCurrentId(dpProj);
+          setView('actions');
+          // Note: scrolling to / expanding the specific action is a follow-up.
+          // Stage 1 only switches view + project so the user lands in the right place.
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      } catch {
+        /* ignore — defensive guard for any URL parse oddity */
+      }
     })();
   }, []);
 
