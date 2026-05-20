@@ -11916,8 +11916,8 @@ export default function App() {
         if (dpProj && dpAct && ps[dpProj]) {
           setCurrentId(dpProj);
           setView('actions');
-          // Note: scrolling to / expanding the specific action is a follow-up.
-          // Stage 1 only switches view + project so the user lands in the right place.
+          setInitialActionEditId(dpAct);
+          // Opens the action's edit form via ActionItemsView's initialEditId prop.
           window.history.replaceState({}, '', window.location.pathname);
         }
       } catch {

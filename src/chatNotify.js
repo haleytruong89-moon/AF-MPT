@@ -56,7 +56,6 @@ export function buildActionCard(ctx) {
     appBaseUrl = 'https://af-mpt.vercel.app',
   } = ctx;
 
-  const color = project.color || '#0C447C';
   const dueLabel = formatDueLabel(action);
   const breadcrumb = related
     ? `${project.name} › ${related.program?.name || '—'} › ${related.workstream?.name || '—'}`
@@ -107,10 +106,6 @@ export function buildActionCard(ctx) {
         },
       },
     ],
-    // Used only by the plain-text fallback; Google Chat ignores it for cards.
-    text: `${action.title || '(untitled action)'} — ${text}\n${deepLink}`,
-    // Accent color hint (Google Chat may or may not render; harmless if ignored).
-    cardHeaderAccent: color,
   };
 }
 
