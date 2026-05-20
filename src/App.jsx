@@ -6252,8 +6252,10 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: FONT_STACK, background: TOK.bg }}>
       <div style={{ padding: '10px 16px', borderBottom: '1px solid ' + TOK.line, background: TOK.surface, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Btn size="sm" onClick={collapseToPrograms}>Programs</Btn>
-        <Btn size="sm" onClick={showWorkstreams}>+ Work streams</Btn>
+        <Btn size="sm" variant="primary" onClick={actAddProgram} title="Add a new program to this project"><FolderPlus size={12} /> Program</Btn>
+        <div style={{ width: 1, height: 20, background: TOK.line, margin: '0 2px' }} />
+        <Btn size="sm" onClick={collapseToPrograms}>Programs only</Btn>
+        <Btn size="sm" onClick={showWorkstreams}>Work streams</Btn>
         <Btn size="sm" onClick={expandAll}>Expand all</Btn>
         <Btn size="sm" onClick={fit}><MapIcon size={12} /> Fit</Btn>
         <div style={{ flex: 1 }} />
