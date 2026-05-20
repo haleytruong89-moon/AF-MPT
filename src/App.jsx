@@ -10135,6 +10135,7 @@ function ByProjectCard({
         onMarkDone={() => handleActionDone(a, e.project)}
         onOpenDetails={onActionClick ? () => onActionClick(e.project.id, a.id) : null}
         onSubtasksChange={(newSubtasks) => onActionUpdate({ ...a, subtasks: newSubtasks }, e.project.id)}
+        showToast={showToast}
       />
     );
   };
@@ -10867,6 +10868,7 @@ function MyWorkView({
               onMarkDone={() => handleActionDone(a, e.project)}
               onOpenDetails={onActionClick ? () => onActionClick(e.project.id, a.id) : null}
               onSubtasksChange={(newSubtasks) => onActionUpdate({ ...a, subtasks: newSubtasks }, e.project.id)}
+              showToast={showToast}
             />
           );
         })}
