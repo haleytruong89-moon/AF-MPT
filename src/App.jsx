@@ -6330,7 +6330,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
     ? `${STATUS_LABEL[n.data.status || 'Planned']}${n.data.pic ? ' · ' + n.data.pic : ''}`
     : `${r.pct}% · ${r.done}/${r.total} task${r.total === 1 ? '' : 's'}${r.dropped ? ' · ' + r.dropped + ' dropped' : ''}`;
 
-  const hasMenu = (n.kind === 'program' || n.kind === 'workstream');
+  const hasMenu = (n.kind === 'project' || n.kind === 'program' || n.kind === 'workstream');
   const opacity = isDropped ? 0.55 : 1;
   const taskHealth = isTask ? (n.data.health || 'green') : null;
   const healthColor = taskHealth === 'red' ? TOK.healthRed : taskHealth === 'amber' ? TOK.healthAmber : TOK.healthGreen;
