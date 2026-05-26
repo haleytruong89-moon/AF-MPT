@@ -1034,6 +1034,60 @@ function computeMyRaid(author, projects, isOwner) {
   return out;
 }
 
+// v30 — Flat list of mitigation actions across all RAID items in a project.
+// Pure read; no mutation. Used by Actions view to surface mitigations next
+// to regular action items, and by computeMyWork to bucket mitigations into
+// the My Work actionItems buckets.
+//
+// opts:
+//   picOnly  — only mitigations assigned to this PIC (default: no filter)
+//   openOnly — only mitigations whose status !== 'Done' (default: true)
+function getProjectMitigations(project, { picOnly = null, openOnly = true } = {}) {
+  if (!project?.programs) return [];
+  const out = [];
+  for (const pg of project.programs) {
+    for (const item of (pg.raid || [])) {
+      for (const mitigation of (item.mitigationActions || [])) {
+        if (openOnly && mitigation.status === 'Done') continue;
+        if (picOnly && mitigation.pic !== picOnly) continue;
+        out.push({
+          kind: 'mitigation',
+          mitigation,
+          parentItem: item,
+          parentProgram: pg,
+          project,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// v30 — Produce a new project object with a single mitigation patched.
+// Pure; caller passes the result into updateProject. The (parentProgram,
+// parentItem, mitigation) triple uniquely identifies the mitigation; we
+// match by id when re-assembling so reorderings inside the parent are safe.
+function applyMitigationUpdate(project, parentProgram, parentItem, mitigationId, patch) {
+  return {
+    ...project,
+    programs: (project.programs || []).map((pg) => {
+      if (pg.id !== parentProgram.id) return pg;
+      return {
+        ...pg,
+        raid: (pg.raid || []).map((it) => {
+          if (it.id !== parentItem.id) return it;
+          return {
+            ...it,
+            mitigationActions: (it.mitigationActions || []).map((m) =>
+              m.id === mitigationId ? { ...m, ...patch } : m
+            ),
+          };
+        }),
+      };
+    }),
+  };
+}
+
 // Aggregate credits across all projects, optionally filtered by year.
 // Projects without a `creditYear` are always included (no filter applied to them).
 // Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
