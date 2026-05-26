@@ -4210,6 +4210,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
 
 /* ═════════ ACTION ITEMS ═════════ */
 const ACTION_STATUSES = ['Pending', 'Pushed to OP', 'InProgress', 'Done', 'Cancelled'];
+const MITIGATION_STATUSES = ['Open', 'Blocked', 'Done'];
 const PRIORITIES = ['High', 'Medium', 'Low'];
 
 function priorityColor(p) {
@@ -8138,7 +8139,8 @@ function StatusQuickPill({ status, onChange, statuses }) {
     'Pushed to OP': { fg: TOK.programFg, bg: TOK.programBg, icon: <Activity size={10} /> },
     Done: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Cancelled: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
-    Open: { fg: TOK.plannedFg, bg: TOK.plannedBg, icon: <Circle size={10} /> },
+    Open: { fg: TOK.muted, bg: TOK.bg, icon: <Circle size={10} /> },
+    Blocked: { fg: '#A32D2D', bg: '#FCEBEB', icon: <X size={10} /> },
   };
   const s = map[safeStatus] || map.Planned;
   const openMenu = (e) => {
@@ -8606,8 +8608,8 @@ function MitigationRowInline({
 }) {
   const { mitigation, parentItem, parentProgram, project } = entry;
   const [expanded, setExpanded] = useState(false);
-  const [titleDraft, setTitleDraft] = useState(mitigation.title || '');
-  useEffect(() => { setTitleDraft(mitigation.title || ''); }, [mitigation.title]);
+  const [titleDraft, setTitleDraft] = useState(mitigation.name || '');
+  useEffect(() => { setTitleDraft(mitigation.name || ''); }, [mitigation.name]);
 
   // Map RAID risk level → action priority pill (visual continuity with
   // the regular ActionRowInline priority chip).
@@ -8632,13 +8634,13 @@ function MitigationRowInline({
 
   const commitTitle = () => {
     const trimmed = titleDraft.trim();
-    if (trimmed && trimmed !== mitigation.title) writePatch({ title: trimmed });
-    else if (!trimmed) setTitleDraft(mitigation.title || '');
+    if (trimmed && trimmed !== mitigation.name) writePatch({ name: trimmed });
+    else if (!trimmed) setTitleDraft(mitigation.name || '');
   };
 
   const markDone = () => {
     writePatch({ status: 'Done', completedAt: new Date().toISOString() });
-    showToast && showToast('✓ Mitigation done');
+    showToast?.('✓ Mitigation done');
   };
 
   const breadcrumbText = `RAID: ${parentItem.title || '(untitled risk)'}`.slice(0, 80);
@@ -8661,7 +8663,7 @@ function MitigationRowInline({
             />
           ) : (
             <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              <MentionedText text={mitigation.title || '(untitled mitigation)'} teamMembers={teamMembers} />
+              <MentionedText text={mitigation.name || '(untitled mitigation)'} teamMembers={teamMembers} />
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
@@ -8681,7 +8683,7 @@ function MitigationRowInline({
           <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{derivedPriority}</span>
         )}
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={mitigation.status || 'Open'} onChange={(st) => writePatch({ status: st })} statuses={ACTION_STATUSES} />
+          <StatusQuickPill status={mitigation.status || 'Open'} onChange={(st) => writePatch({ status: st })} statuses={MITIGATION_STATUSES} />
         </span>
         {mitigation.status !== 'Done' && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); markDone(); }} title="Mark done">✓</Btn>
