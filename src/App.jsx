@@ -8518,6 +8518,142 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
   );
 }
 
+// v30 — Inline row for a RAID mitigation action surfaced inside Actions /
+// My Work / By Project. Mirrors ActionRowInline collapsed-vs-expanded UX
+// but writes back to project.programs[].raid[].mitigationActions[] via
+// applyMitigationUpdate. Footer has a "→ Open RAID item" link that calls
+// onNavigateRaid(projectId, programId).
+function MitigationRowInline({
+  entry, // { mitigation, parentItem, parentProgram, project }
+  author, teamMembers, picSuggestions,
+  onApplyMitigation, // (newProject) => void — typically wraps updateProject
+  onNavigateRaid,    // (projectId, programId) => void
+  showToast,
+}) {
+  const { mitigation, parentItem, parentProgram, project } = entry;
+  const [expanded, setExpanded] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(mitigation.title || '');
+  useEffect(() => { setTitleDraft(mitigation.title || ''); }, [mitigation.title]);
+
+  // Map RAID risk level → action priority pill (visual continuity with
+  // the regular ActionRowInline priority chip).
+  const derivedPriority = (() => {
+    const lvl = parentItem.type === 'Risk'
+      ? raidRiskLevel(parentItem.likelihood, parentItem.impact)
+      : parentItem.level || null;
+    if (!lvl) return null;
+    if (lvl === 'Critical' || lvl === 'High') return 'High';
+    if (lvl === 'Medium') return 'Medium';
+    return 'Low';
+  })();
+  const pc = derivedPriority ? priorityColor(derivedPriority) : null;
+
+  const overdue = mitigation.due && mitigation.status !== 'Done'
+    && parseDate(mitigation.due) < today();
+
+  const writePatch = (patch) => {
+    const next = applyMitigationUpdate(project, parentProgram, parentItem, mitigation.id, patch);
+    onApplyMitigation(next);
+  };
+
+  const commitTitle = () => {
+    const trimmed = titleDraft.trim();
+    if (trimmed && trimmed !== mitigation.title) writePatch({ title: trimmed });
+    else if (!trimmed) setTitleDraft(mitigation.title || '');
+  };
+
+  const markDone = () => {
+    writePatch({ status: 'Done', completedAt: new Date().toISOString() });
+    showToast && showToast('✓ Mitigation done');
+  };
+
+  const breadcrumbText = `RAID: ${parentItem.title || '(untitled risk)'}`.slice(0, 80);
+
+  return (
+    <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 6, background: TOK.surface }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 44 }}>
+        <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {expanded ? (
+            <input
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 13, fontWeight: 500, width: '100%', padding: '4px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, outline: 'none' }}
+            />
+          ) : (
+            <div style={{ fontSize: 13, color: TOK.ink, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <MentionedText text={mitigation.title || '(untitled mitigation)'} teamMembers={teamMembers} />
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
+            <span style={{
+              fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 4,
+              background: TOK.overdueBg, color: TOK.overdueFg,
+            }}>🛡 RAID</span>
+            <span>{breadcrumbText}</span>
+            {mitigation.due && (
+              <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>
+                · 📅 {fmtDateShort(mitigation.due)}
+              </span>
+            )}
+          </div>
+        </div>
+        {pc && (
+          <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{derivedPriority}</span>
+        )}
+        <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+          <StatusQuickPill status={mitigation.status || 'Open'} onChange={(st) => writePatch({ status: st })} statuses={ACTION_STATUSES} />
+        </span>
+        {mitigation.status !== 'Done' && (
+          <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); markDone(); }} title="Mark done">✓</Btn>
+        )}
+        <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
+      </div>
+      {expanded && (
+        <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
+            <select
+              value={mitigation.pic || ''}
+              onChange={(e) => writePatch({ pic: e.target.value })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
+              <option value="">(unassigned)</option>
+              {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>Due</span>
+            <input
+              type="date"
+              value={mitigation.due || ''}
+              onChange={(e) => writePatch({ due: e.target.value || null })}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink }}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: TOK.subtle, fontStyle: 'italic', borderTop: '1px solid ' + TOK.line, paddingTop: 8 }}>
+            💬 Comments and full risk context live in the RAID detail. Use "Open RAID item" below to view or comment.
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid ' + TOK.line }}>
+            {mitigation.status !== 'Done' && (
+              <Btn size="sm" variant="primary" onClick={markDone}>✓ Mark done</Btn>
+            )}
+            <Btn size="sm" variant="ghost" onClick={() => onNavigateRaid && onNavigateRaid(project.id, parentProgram.id)}>
+              → Open RAID item
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // v30.B — Minimal row for a sub-task in sub-PIC's My Work. No expand,
 // no comments — just title + parent breadcrumb + ✓ Mark done + → Open
 // parent. Sub-task structure: { id, title, pic, status }.
