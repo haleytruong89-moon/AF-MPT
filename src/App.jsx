@@ -4627,7 +4627,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 </div>`;
 }
 
-function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction }) {
+function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [mode, setMode] = useState('grouped'); // grouped | flat
@@ -4638,6 +4638,13 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   const [selected, setSelected] = useState(new Set());
   const [emailPicsDialog, setEmailPicsDialog] = useState(null); // { groups: Map<pic, items[]> } | null
   const [copyHelper, setCopyHelper] = useState(null); // { html, title, gmailUrl } | null
+
+  // v30.C — Surface open RAID mitigations above the actions list so PMs can see
+  // and act on them without leaving the Actions tab.
+  const mitigations = useMemo(
+    () => getProjectMitigations(project, { openOnly: true }),
+    [project]
+  );
 
   // v30.A.1 — Auto-open Edit form when navigated with initialEditId
   // (e.g., from My Work "→ Open"). Scroll the form into view.
@@ -4890,6 +4897,40 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           <Btn size="sm" onClick={() => exportExcel()} disabled={targetActions.length === 0}><FileSpreadsheet size={11} /> Excel template</Btn>
           <Btn size="sm" onClick={emailAllPics} disabled={targetActions.length === 0}>📧 Email PICs</Btn>
         </div>
+
+        {/* v30.C — RAID mitigations surfaced from the register, shown above the actions list */}
+        {mitigations.length > 0 && (
+          <div style={{
+            background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8,
+            padding: 12, marginBottom: 14,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+              fontSize: 12, fontWeight: 600, color: TOK.ink,
+            }}>
+              <span style={{
+                fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
+                background: TOK.overdueBg, color: TOK.overdueFg,
+              }}>🛡 RAID</span>
+              Mitigations ({mitigations.length})
+              <span style={{ fontSize: 11, fontWeight: 400, color: TOK.muted, marginLeft: 4 }}>
+                — surfaced from RAID register so they're visible alongside actions
+              </span>
+            </div>
+            {mitigations.map((entry, i) => (
+              <MitigationRowInline
+                key={`actions-mit-${entry.mitigation.id || i}`}
+                entry={entry}
+                author={author}
+                teamMembers={teamMembers}
+                picSuggestions={(teamMembers || []).map((m) => m.name).sort()}
+                onApplyMitigation={(nextProject) => onProjectUpdate(nextProject)}
+                onNavigateRaid={onNavigateRaid}
+                showToast={showToast}
+              />
+            ))}
+          </div>
+        )}
 
         {showForm && (
           <div data-action-form style={{ marginBottom: 14 }}>
@@ -13259,7 +13300,7 @@ export default function App() {
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
-              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} />}
+              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(programId) => { setRaidScopeProgramId(programId || null); setView('raid'); }} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
               {view === 'aggregation' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} />}
