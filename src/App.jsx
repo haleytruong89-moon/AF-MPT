@@ -942,6 +942,39 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
       }
     }
 
+    // v30 — Mitigation actions assigned to the viewer, bucketed by
+    // mitigation.due into the same today/week/later structure as
+    // regular action items so MyWorkView and ByProjectCard pick them
+    // up alongside meeting-born actions.
+    for (const pg of (proj.programs || [])) {
+      for (const item of (pg.raid || [])) {
+        for (const mitigation of (item.mitigationActions || [])) {
+          if (mitigation.pic !== author) continue;
+          if (mitigation.status === 'Done') continue;
+          const due = mitigation.due ? parseDate(mitigation.due) : null;
+          const enriched = {
+            kind: 'mitigation',
+            mitigation,
+            parentItem: item,
+            parentProgram: pg,
+            project: proj,
+          };
+          if (!due) {
+            out.actionItems.later.push(enriched);
+          } else if (due <= todayEnd) {
+            out.actionItems.today.push(enriched);
+            if (due < startOfToday) {
+              out.needsAttention.push({ kind: 'overdue_mitigation', mitigation, parentItem: item, parentProgram: pg, project: proj });
+            }
+          } else if (due <= weekEnd) {
+            out.actionItems.week.push(enriched);
+          } else {
+            out.actionItems.later.push(enriched);
+          }
+        }
+      }
+    }
+
     for (const d of (proj.decisions || [])) {
       if (!Array.isArray(d.decidedBy) || !d.decidedBy.includes(author)) continue;
       if (d.followUpStatus === 'Done') continue;
