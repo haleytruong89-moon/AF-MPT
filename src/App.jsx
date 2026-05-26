@@ -10308,7 +10308,7 @@ function hex2rgba(hex, a = 0.1) {
 // summary; the alert strip lists each urgent item by name.
 function ByProjectCard({
   bundle, author, teamMembers, picSuggestions, lastSeenAt,
-  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onDecisionClick,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onProjectUpdate, onDecisionClick,
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
@@ -10346,6 +10346,20 @@ function ByProjectCard({
   );
 
   const renderActionEntry = (e, i) => {
+    if (e.kind === 'mitigation') {
+      return (
+        <MitigationRowInline
+          key={`p-${project.id}-mit-${e.mitigation.id || i}`}
+          entry={e}
+          author={author}
+          teamMembers={teamMembers}
+          picSuggestions={picSuggestions}
+          onApplyMitigation={(nextProject) => onProjectUpdate(nextProject)}
+          onNavigateRaid={onNavigateRaid}
+          showToast={showToast}
+        />
+      );
+    }
     if (e.kind === 'subtask') {
       const sub = e.subtask;
       const parent = e.parentAction;
@@ -10613,7 +10627,7 @@ function ByProjectCard({
 // mentions, escalating RAID, alphabetical.
 function ByProjectView({
   myWork, myRaid, author, teamMembers, picSuggestions, lastSeenAt,
-  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onDecisionClick,
+  onTaskClick, onActionClick, onCreateAction, onActionUpdate, onProjectUpdate, onDecisionClick,
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
@@ -10689,6 +10703,7 @@ function ByProjectView({
           onActionClick={onActionClick}
           onCreateAction={onCreateAction}
           onActionUpdate={onActionUpdate}
+          onProjectUpdate={onProjectUpdate}
           onDecisionClick={onDecisionClick}
           handleStatusChange={handleStatusChange}
           handleAddUpdate={handleAddUpdate}
@@ -10706,7 +10721,7 @@ function ByProjectView({
 function MyWorkView({
   projects, author, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
-  onTaskUpdate, onActionUpdate, onDecisionUpdate,
+  onTaskUpdate, onActionUpdate, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
   onNavigateRaid,
@@ -10912,6 +10927,7 @@ function MyWorkView({
           onActionClick={onActionClick}
           onCreateAction={onCreateAction}
           onActionUpdate={onActionUpdate}
+          onProjectUpdate={onProjectUpdate}
           onDecisionClick={onDecisionClick}
           handleStatusChange={handleStatusChange}
           handleAddUpdate={handleAddUpdate}
@@ -11079,6 +11095,20 @@ function MyWorkView({
         {myWork.actionItems[actionsTab].length === 0 ? (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>No action items in this bucket.</div>
         ) : myWork.actionItems[actionsTab].map((e, i) => {
+          if (e.kind === 'mitigation') {
+            return (
+              <MitigationRowInline
+                key={`mit-${actionsTab}-${e.mitigation.id || i}`}
+                entry={e}
+                author={author}
+                teamMembers={teamMembers}
+                picSuggestions={picSuggestions}
+                onApplyMitigation={(nextProject) => onProjectUpdate(nextProject)}
+                onNavigateRaid={onNavigateRaid}
+                showToast={showToast}
+              />
+            );
+          }
           if (e.kind === 'subtask') {
             const sub = e.subtask;
             const parent = e.parentAction;
@@ -13217,6 +13247,7 @@ export default function App() {
                   onDecisionUpdate={(updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work', impersonatingAs || '')}
                   onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work', impersonatingAs || '')}
                   onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work', impersonatingAs || '')}
+                  onProjectUpdate={updateProject}
                   onApproveDeadline={impersonatingAs ? null : myWorkApproveDeadline}
                   onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
                   onMarkSeen={impersonatingAs ? null : markMyWorkSeen}
