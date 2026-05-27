@@ -3207,11 +3207,23 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   };
 
   // Action save (insert or update)
-  const saveAction = (a) => {
+  const saveAction = (a, opts = {}) => {
+    const wasEditing = !!editingAction;
     const list = project.actionItems || [];
     const next = editingAction ? list.map((x) => x.id === a.id ? a : x) : [a, ...list];
     onProjectUpdate({ ...project, actionItems: next });
     setShowActionForm(false); setEditingAction(null);
+    // v30 — notify chat on create (opt-in). Fire-and-forget; never blocks.
+    // TaskDetail has no showToast prop, so we log failures to console rather
+    // than threading a toast through this secondary path.
+    if (!wasEditing && opts.notifyChat && project.googleChatWebhook) {
+      const related = a.relatedTaskId ? findTaskInProject(project, a.relatedTaskId) : null;
+      postToChat(project.googleChatWebhook, buildNewActionCard({
+        project, action: a, related, author,
+      })).then((res) => {
+        if (!res.ok) console.error('New-action chat notify failed:', res.status, res.statusText);
+      });
+    }
   };
   const editAction = (a) => { setEditingAction(a); setShowActionForm(true); };
   const removeAction = async (a) => {
