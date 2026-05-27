@@ -130,55 +130,80 @@ export function buildNewActionCard(ctx) {
   const breadcrumb = related
     ? `${project.name} › ${related.program?.name || '—'} › ${related.workstream?.name || '—'} › ${related.task?.name || '—'}`
     : `${project.name} › Action item`;
-  const dueLabel = action.dueDate
-    ? `due ${new Date(action.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
-    : null;
-  const metaLine = [
-    breadcrumb,
-    dueLabel,
-    action.pic ? `@${action.pic}` : null,
-    action.priority ? `${action.priority} priority` : null,
-  ].filter(Boolean).join(' · ');
 
-  const bodyLines = [`🆕 New action created by ${author}`];
-  if (action.description) bodyLines.push(action.description);
-  const body = bodyLines.join('\n');
+  // Due row — overdue-aware. Google Chat can't color card text, so the
+  // ⚠ glyph + the word "Overdue" carries the urgency signal.
+  let dueText = null;
+  if (action.dueDate) {
+    const due = new Date(action.dueDate);
+    if (!isNaN(due.getTime())) {
+      const label = due.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      const now = new Date();
+      const isPast = due < new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      dueText = (isPast && action.status !== 'Done') ? `⚠ Overdue — was due ${label}` : `Due ${label}`;
+    }
+  }
+
+  // Priority row — colored dot emoji is the indicator (no startIcon).
+  const PRIORITY_DOT = { High: '🔴', Medium: '🟡', Low: '🟢' };
+  const priorityText = action.priority
+    ? `${PRIORITY_DOT[action.priority] || '⚪'} ${action.priority} priority`
+    : null;
 
   const deepLink = `${appBaseUrl}/?project=${encodeURIComponent(project.id)}&action=${encodeURIComponent(action.id)}`;
-  const footer = `${author}, ${formatDisplayTimestamp(timestamp)}`;
+  const createdBy = `Created by ${author} · ${formatDisplayTimestamp(timestamp)}`;
+
+  // Build widgets in priority-of-attention order. Omit rows for absent fields.
+  const widgets = [
+    {
+      decoratedText: {
+        topLabel: '🆕 NEW ACTION',
+        text: `<b>${escapeChatText(action.title || '(untitled action)')}</b>`,
+        wrapText: true,
+        startIcon: { knownIcon: 'DESCRIPTION' },
+      },
+    },
+  ];
+  if (action.pic) {
+    widgets.push({
+      decoratedText: {
+        startIcon: { knownIcon: 'PERSON' },
+        text: escapeChatText(action.pic),
+      },
+    });
+  }
+  if (dueText) {
+    widgets.push({
+      decoratedText: {
+        startIcon: { knownIcon: 'CLOCK' },
+        text: escapeChatText(dueText),
+      },
+    });
+  }
+  if (priorityText) {
+    widgets.push({ decoratedText: { text: escapeChatText(priorityText) } });
+  }
+  if (action.description) {
+    widgets.push({ textParagraph: { text: escapeChatText(action.description) } });
+  }
+  widgets.push({ divider: {} });
+  widgets.push({ textParagraph: { text: escapeChatText(breadcrumb) } });
+  widgets.push({
+    decoratedText: {
+      text: escapeChatText(createdBy),
+      button: {
+        text: 'View',
+        onClick: { openLink: { url: deepLink } },
+      },
+    },
+  });
 
   return {
     cardsV2: [
       {
         cardId: `new-action-${action.id}-${Date.now()}`,
         card: {
-          sections: [
-            {
-              widgets: [
-                {
-                  decoratedText: {
-                    topLabel: '🆕 New action',
-                    text: `<b>${escapeChatText(action.title || '(untitled action)')}</b>`,
-                    wrapText: true,
-                    startIcon: { knownIcon: 'DESCRIPTION' },
-                  },
-                },
-                { textParagraph: { text: escapeChatText(metaLine) } },
-                { divider: {} },
-                { textParagraph: { text: escapeChatText(body) } },
-                { divider: {} },
-                {
-                  decoratedText: {
-                    text: escapeChatText(footer),
-                    button: {
-                      text: 'View',
-                      onClick: { openLink: { url: deepLink } },
-                    },
-                  },
-                },
-              ],
-            },
-          ],
+          sections: [{ widgets }],
         },
       },
     ],
