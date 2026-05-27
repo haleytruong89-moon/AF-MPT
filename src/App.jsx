@@ -4716,12 +4716,24 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     return Array.from(s).sort();
   }, [actions]);
 
-  const saveAction = (a) => {
+  const saveAction = (a, opts = {}) => {
+    const wasEditing = !!editing;
     const next = editing ? actions.map((x) => x.id === a.id ? a : x) : [a, ...actions];
     onProjectUpdate({ ...project, actionItems: next });
     onActivity({ type: editing ? 'action_edit' : 'action_create', description: `${editing ? 'Updated' : 'Created'} action: "${a.title}" → ${a.pic}` });
     setShowForm(false);
     setEditing(null);
+    // v30 — notify chat on create (opt-in). Never blocks the create.
+    if (!wasEditing && opts.notifyChat && project.googleChatWebhook) {
+      const related = a.relatedTaskId ? findTaskInProject(project, a.relatedTaskId) : null;
+      postToChat(project.googleChatWebhook, buildNewActionCard({
+        project, action: a, related, author,
+      })).then((res) => {
+        if (showToast) showToast(res.ok
+          ? 'Action created · 📢 Sent to chat'
+          : `Action created. Chat notify failed: ${res.status} ${res.statusText}`);
+      });
+    }
   };
 
   const startEdit = (a) => { setEditing(a); setShowForm(true); };
