@@ -14,24 +14,26 @@ export function validateWebhookUrl(url) {
   return trimmed.startsWith(WEBHOOK_PREFIX);
 }
 
-/** localStorage key for the per-project "notify chat" checkbox preference. */
-function notifyPrefKey(projectId) {
-  return `myWork:chatNotify:${projectId}`;
+/** localStorage key for a per-project "notify chat" checkbox preference.
+ *  suffix distinguishes independent checkboxes (e.g. 'NewAction'); empty
+ *  suffix is the original comment-notify key (unchanged for back-compat). */
+function notifyPrefKey(projectId, suffix = '') {
+  return `myWork:chatNotify${suffix}:${projectId}`;
 }
 
 /** Read the user's last notify-checkbox state for a project. Default false. */
-export function getNotifyPref(projectId) {
+export function getNotifyPref(projectId, suffix = '') {
   try {
-    return localStorage.getItem(notifyPrefKey(projectId)) === 'true';
+    return localStorage.getItem(notifyPrefKey(projectId, suffix)) === 'true';
   } catch {
     return false;
   }
 }
 
 /** Persist the user's notify-checkbox state for a project. */
-export function setNotifyPref(projectId, value) {
+export function setNotifyPref(projectId, value, suffix = '') {
   try {
-    localStorage.setItem(notifyPrefKey(projectId), value ? 'true' : 'false');
+    localStorage.setItem(notifyPrefKey(projectId, suffix), value ? 'true' : 'false');
   } catch {
     /* ignore quota / disabled storage */
   }
@@ -90,6 +92,80 @@ export function buildActionCard(ctx) {
                 { textParagraph: { text: escapeChatText(metaLine) } },
                 { divider: {} },
                 { textParagraph: { text: escapeChatText(text) } },
+                { divider: {} },
+                {
+                  decoratedText: {
+                    text: escapeChatText(footer),
+                    button: {
+                      text: 'View',
+                      onClick: { openLink: { url: deepLink } },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/** Build a "new action created" cardsV2 payload. Sibling of buildActionCard
+ *  (which is comment-focused). Variant-C styling.
+ *  @param ctx.project    { id, name, color? }
+ *  @param ctx.action     { id, title, status, pic, dueDate?, priority?, description? }
+ *  @param ctx.related    { program: { name }, workstream: { name }, task: { name } } | null
+ *  @param ctx.author     string — who created the action
+ *  @param ctx.timestamp  ISO string (defaults to now)
+ *  @param ctx.appBaseUrl defaults to https://af-mpt.vercel.app
+ */
+export function buildNewActionCard(ctx) {
+  const {
+    project, action, related, author,
+    timestamp = new Date().toISOString(),
+    appBaseUrl = 'https://af-mpt.vercel.app',
+  } = ctx;
+
+  const breadcrumb = related
+    ? `${project.name} › ${related.program?.name || '—'} › ${related.workstream?.name || '—'} › ${related.task?.name || '—'}`
+    : `${project.name} › Action item`;
+  const dueLabel = action.dueDate
+    ? `due ${new Date(action.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+    : null;
+  const metaLine = [
+    breadcrumb,
+    dueLabel,
+    action.pic ? `@${action.pic}` : null,
+    action.priority ? `${action.priority} priority` : null,
+  ].filter(Boolean).join(' · ');
+
+  const bodyLines = [`🆕 New action created by ${author}`];
+  if (action.description) bodyLines.push(action.description);
+  const body = bodyLines.join('\n');
+
+  const deepLink = `${appBaseUrl}/?project=${encodeURIComponent(project.id)}&action=${encodeURIComponent(action.id)}`;
+  const footer = `${author}, ${formatDisplayTimestamp(timestamp)}`;
+
+  return {
+    cardsV2: [
+      {
+        cardId: `new-action-${action.id}-${Date.now()}`,
+        card: {
+          sections: [
+            {
+              widgets: [
+                {
+                  decoratedText: {
+                    topLabel: '🆕 New action',
+                    text: `<b>${escapeChatText(action.title || '(untitled action)')}</b>`,
+                    wrapText: true,
+                    startIcon: { knownIcon: 'DESCRIPTION' },
+                  },
+                },
+                { textParagraph: { text: escapeChatText(metaLine) } },
+                { divider: {} },
+                { textParagraph: { text: escapeChatText(body) } },
                 { divider: {} },
                 {
                   decoratedText: {
