@@ -4538,9 +4538,9 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
           teamMembers={teamMembers}
           author={effectivePic}
           defaultRelatedTaskId={defaultRelatedTaskId || null}
-          onSave={(newAction) => {
+          onSave={(newAction, opts) => {
             const finalAction = { ...newAction, pic: newAction.pic || effectivePic || '' };
-            onCreate(finalAction, projectId);
+            onCreate(finalAction, projectId, opts);
             onClose();
           }}
           onCancel={onClose}
@@ -12773,7 +12773,7 @@ export default function App() {
   // v30.A.1 — Create a new action in any project (from My Work entry points).
   // Prepends to actionItems so it shows immediately at the top of the
   // Actions tab list. Activity log entry tags "(from My Work)".
-  const createActionFromMyWork = useCallback((newAction, projectId, actingAs = '') => {
+  const createActionFromMyWork = useCallback((newAction, projectId, actingAs = '', opts = {}) => {
     const targetProj = projects[projectId];
     if (!targetProj) return;
     const updated = cloneDeep(targetProj);
@@ -12784,8 +12784,20 @@ export default function App() {
       type: 'action_create',
       description: `${actingPrefix}Created action: "${newAction.title}" → ${newAction.pic || '—'} (from My Work)`,
     });
-    showToast(`Action created in ${targetProj.name}`);
-  }, [projects, updateProject, logActivityForProject]);
+    // v30 — notify chat on create (opt-in). Never blocks the create.
+    if (opts.notifyChat && targetProj.googleChatWebhook) {
+      const related = newAction.relatedTaskId ? findTaskInProject(targetProj, newAction.relatedTaskId) : null;
+      postToChat(targetProj.googleChatWebhook, buildNewActionCard({
+        project: targetProj, action: newAction, related, author: effectiveAuthor,
+      })).then((res) => {
+        showToast(res.ok
+          ? `Action created in ${targetProj.name} · 📢 Sent to chat`
+          : `Action created. Chat notify failed: ${res.status} ${res.statusText}`);
+      });
+    } else {
+      showToast(`Action created in ${targetProj.name}`);
+    }
+  }, [projects, updateProject, logActivityForProject, effectiveAuthor]);
 
   // v30 — Owner-only inline approve/reject of a deadline change request,
   // callable from My Work needs-attention. Mirrors TaskDetail's flow but
@@ -13422,7 +13434,7 @@ export default function App() {
             defaultPic={actionCreate.defaultPic || null}
             teamMembers={teamMembers}
             onClose={() => setActionCreate(null)}
-            onCreate={(newAction, projectId) => createActionFromMyWork(newAction, projectId, impersonatingAs || '')}
+            onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, impersonatingAs || '', opts)}
           />
         )}
         <Toast toast={toast} onClose={() => setToast(null)} />
