@@ -1910,63 +1910,6 @@ function PopoverMenu({ x, y, items, onClose }) {
 }
 
 /* ═════════ NAME DIALOG ═════════ */
-function NameDialog({ onSubmit, onCancel }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const validEmail = !email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  const canSubmit = name.trim() && validEmail;
-  return (
-    <Modal title="Welcome — tell us about you" onClose={() => {}} width={440} hideClose>
-      <p style={{ margin: '0 0 14px', fontSize: 13, color: TOK.muted, lineHeight: 1.55 }}>
-        Your name attaches to your changes and check-ins. Your email lets the app pre-fill action-item emails to you. Both are stored locally on this device only.
-      </p>
-      <FieldLabel>Your name</FieldLabel>
-      <Input value={name} onChange={setName} placeholder="e.g., Thao Nguyen" autoFocus />
-      <div style={{ height: 12 }} />
-      <FieldLabel>Your email (optional, recommended)</FieldLabel>
-      <Input value={email} onChange={setEmail} placeholder="e.g., thao@smartosc.com" type="email" />
-      {!validEmail && <div style={{ marginTop: 6, fontSize: 11, color: TOK.overdueFg }}>Invalid email format</div>}
-      <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-        {onCancel && <Btn onClick={onCancel}>Back</Btn>}
-        <Btn variant="primary" disabled={!canSubmit} onClick={() => onSubmit(name.trim(), email.trim() || null)}>Continue</Btn>
-      </div>
-    </Modal>
-  );
-}
-
-/* ═════════ SIGNED OUT LANDING ═════════ */
-// Calm landing page after deliberate sign-out — distinct from first-time visit.
-function SignedOutLanding({ onSignIn }) {
-  return (
-    <div style={{
-      width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontFamily: FONT_STACK, background: TOK.bg, padding: 20,
-    }}>
-      <div style={{
-        maxWidth: 440, width: '100%', textAlign: 'center',
-        padding: '40px 32px',
-        background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 12,
-        boxShadow: '0 4px 16px rgba(0,0,0,0.04)',
-      }}>
-        <div style={{
-          width: 56, height: 56, margin: '0 auto 16px',
-          background: TOK.bg, borderRadius: '50%',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: TOK.accent,
-        }}>
-          <UserCircle size={32} />
-        </div>
-        <h2 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 500, color: TOK.ink }}>You're signed out</h2>
-        <p style={{ margin: '0 0 24px', fontSize: 13, color: TOK.muted, lineHeight: 1.6 }}>
-          Your projects and team data are still safe on the workspace.
-          Sign in again to continue working.
-        </p>
-        <Btn variant="primary" onClick={onSignIn}>Sign in</Btn>
-      </div>
-    </div>
-  );
-}
-
 /* ═════════ CHECK-IN FORM ═════════ */
 /* ═════════ MENTION-AWARE TEXTAREA ═════════ */
 // Renders a textarea + small autocomplete dropdown when user types `@`
@@ -12189,8 +12132,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [author, setAuthor] = useState(null);
   const [authorEmail, setAuthorEmail] = useState(null);
-  const [signedOut, setSignedOut] = useState(false);
-  const [showNameDialog, setShowNameDialog] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [meta, setMeta] = useState(null);
   const [projects, setProjects] = useState({}); // id → project
@@ -12307,7 +12248,6 @@ export default function App() {
     if (!fbName) return;
     setAuthor(fbName);
     setAuthorEmail(authUser.email || null);
-    setSignedOut(false);
     ssetLocal(K.userLocal, JSON.stringify({ name: fbName, email: authUser.email || '' })).catch(() => { /* ignore */ });
   }, [authUser, author]);
 
@@ -12489,14 +12429,6 @@ export default function App() {
       setActivity(log);
     }
   }, [author, currentId]);
-
-  const onNameSubmit = async (n, e) => {
-    setAuthor(n);
-    setAuthorEmail(e);
-    setSignedOut(false);
-    setShowNameDialog(false);
-    await ssetLocal(K.userLocal, JSON.stringify({ name: n, email: e }));
-  };
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen
@@ -13097,31 +13029,19 @@ export default function App() {
     );
   }
 
-  // Auth gate.
-  //   - With Firebase signed in (authUser present): identity auto-derives from
-  //     Google profile via the effect above; render a brief loading state in
-  //     the small race window before author state catches up.
-  //   - Without Firebase user (e.g. legacy localStorage-only flow or after
-  //     sign-out before AuthGate unmounts us): fall back to NameDialog /
-  //     SignedOutLanding so the app stays usable.
+  // Auth gate. AuthGate (auth.tsx) only renders App when Firebase user is
+  // signed in, so authUser is non-null here. Identity auto-derives from the
+  // Google profile via the effect above; we just show a brief loader during
+  // the race between authUser arriving and author state catching up.
   if (!author) {
-    if (authUser) {
-      // Firebase identity exists; the auto-derive effect will set author
-      // imminently. Show loading rather than the welcome dialog.
-      return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
-          Signing you in as {authUser.email}…
-        </div>
-      );
-    }
-    if (signedOut && !showNameDialog) {
-      return <SignedOutLanding onSignIn={() => setShowNameDialog(true)} />;
-    }
+    // AuthGate (auth.tsx) only renders App when Firebase user !== null, so
+    // authUser is always present here. The auto-derive effect above sets
+    // author from authUser.name/email moments after render. Show a brief
+    // loader during that race.
     return (
-      <NameDialog
-        onSubmit={onNameSubmit}
-        onCancel={signedOut ? () => setShowNameDialog(false) : undefined}
-      />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
+        Signing you in as {authUser?.email || '…'}…
+      </div>
     );
   }
 
