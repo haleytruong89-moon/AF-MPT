@@ -13780,12 +13780,24 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
   const performLegacyMerge = async ({ from, to, email }) => {
     if (!from || !to || from === to) return;
     let touched = 0;
-    const renameAuthors = (arr) => Array.isArray(arr)
-      ? arr.map((e) => (e && e.author === from ? { ...e, author: to } : e))
+
+    // Rewrite { author?, resolvedBy? } on an array of update/check-in
+    // entries. Idempotent: only mutates entries where the field equals
+    // `from`. Returns a new array; the immutable .map preserves
+    // identity equality when nothing changes.
+    const renameUpdateMeta = (arr) => Array.isArray(arr)
+      ? arr.map((u) => {
+          if (!u) return u;
+          let next = u;
+          if (u.author === from) next = { ...next, author: to };
+          if (u.resolvedBy === from) next = { ...next, resolvedBy: to };
+          return next;
+        })
       : arr;
-    const updatedPrograms = (project.programs || []).map((pg) => ({
-      ...pg,
-      workstreams: (pg.workstreams || []).map((ws) => ({
+
+    // Programs walk — rewrite tasks AND raid items inside each program.
+    const updatedPrograms = (project.programs || []).map((pg) => {
+      const nextWorkstreams = (pg.workstreams || []).map((ws) => ({
         ...ws,
         tasks: (ws.tasks || []).map((t) => {
           let next = t;
@@ -13806,8 +13818,8 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
             next = { ...next, creditShares: nsh };
             dirty = true;
           }
-          const newCheckIns = renameAuthors(t.checkIns);
-          const newUpdates = renameAuthors(t.updates);
+          const newCheckIns = renameUpdateMeta(t.checkIns);
+          const newUpdates = renameUpdateMeta(t.updates);
           if (newCheckIns !== t.checkIns || newUpdates !== t.updates) {
             next = { ...next, checkIns: newCheckIns, updates: newUpdates };
             dirty = true;
@@ -13815,17 +13827,44 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
           if (dirty) touched++;
           return next;
         }),
-      })),
-    }));
+      }));
+      // RAID rewrite — owner / createdBy / approvedBy / validationOwner /
+      // history[].author and mitigationActions[].pic.
+      const nextRaid = Array.isArray(pg.raid)
+        ? pg.raid.map((item) => {
+            let next = item;
+            if (item.owner === from) next = { ...next, owner: to };
+            if (item.createdBy === from) next = { ...next, createdBy: to };
+            if (item.approvedBy === from) next = { ...next, approvedBy: to };
+            if (item.validationOwner === from) next = { ...next, validationOwner: to };
+            if (Array.isArray(item.history)) {
+              const nh = item.history.map((h) => (h && h.author === from ? { ...h, author: to } : h));
+              if (nh.some((h, i) => h !== item.history[i])) next = { ...next, history: nh };
+            }
+            if (Array.isArray(item.mitigationActions)) {
+              const nm = item.mitigationActions.map((m) => (m && m.pic === from ? { ...m, pic: to } : m));
+              if (nm.some((m, i) => m !== item.mitigationActions[i])) next = { ...next, mitigationActions: nm };
+            }
+            return next;
+          })
+        : pg.raid;
+      return { ...pg, workstreams: nextWorkstreams, raid: nextRaid };
+    });
+
     const updatedLead = project.projectLead === from ? to : project.projectLead;
+
+    // Decisions — decidedBy[] (existing) + author (new).
     const updatedDecisions = (project.decisions || []).map((d) => {
       let nd = d;
       if (Array.isArray(d.decidedBy) && d.decidedBy.includes(from)) {
         const s = new Set(d.decidedBy); s.delete(from); s.add(to);
         nd = { ...nd, decidedBy: Array.from(s) };
       }
+      if (d.author === from) nd = { ...nd, author: to };
       return nd;
     });
+
+    // Action items — pic, decidedBy[] (existing) + subtasks[].pic + updates[].author (new).
     const updatedActions = (project.actionItems || []).map((a) => {
       let na = a;
       if (a.pic === from) na = { ...na, pic: to };
@@ -13833,8 +13872,15 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
         const s = new Set(a.decidedBy); s.delete(from); s.add(to);
         na = { ...na, decidedBy: Array.from(s) };
       }
+      if (Array.isArray(a.subtasks)) {
+        const ns = a.subtasks.map((s) => (s && s.pic === from ? { ...s, pic: to } : s));
+        if (ns.some((s, i) => s !== a.subtasks[i])) na = { ...na, subtasks: ns };
+      }
+      const newAUpd = renameUpdateMeta(a.updates);
+      if (newAUpd !== a.updates) na = { ...na, updates: newAUpd };
       return na;
     });
+
     const updatedLog = Array.isArray(project.weightChangeLog)
       ? project.weightChangeLog.map((l) => (l && l.by === from ? { ...l, by: to } : l))
       : project.weightChangeLog;
@@ -13847,7 +13893,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
 
     const ok = await dialogs.confirm({
       title: 'Merge legacy name?',
-      message: `Replace "${from}" with "${to}" across this project — ${touched} task occurrence${touched === 1 ? '' : 's'}, plus decisions, action items, check-ins, updates, project lead, weight log, and team list. Cannot be undone.`,
+      message: `Replace "${from}" with "${to}" across this project — ${touched} task occurrence${touched === 1 ? '' : 's'}, plus decisions, action items, subtasks, action updates, check-ins, task updates (incl. resolved-by), RAID items (owner / createdBy / approvedBy / validationOwner / history / mitigations), project lead, weight log, and team list. Cannot be undone.`,
       okLabel: 'Merge',
     });
     if (!ok) return;
