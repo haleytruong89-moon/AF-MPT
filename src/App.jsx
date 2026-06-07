@@ -9106,7 +9106,39 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
         value={query}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         onFocus={() => { setFocused(true); setOpen(true); }}
-        onBlur={() => { setFocused(false); setTimeout(() => setOpen(false), 150); onChange(query.trim()); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && suggestions[0]) {
+            e.preventDefault();
+            commit(suggestions[0].name);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setOpen(false);
+            e.currentTarget.blur();
+          }
+        }}
+        onBlur={() => {
+          setFocused(false);
+          setTimeout(() => setOpen(false), 150);
+          const raw = (query || '').trim();
+          if (!raw) { onChange(''); return; }
+          // 1. Email-typed and a member has that email → canonicalize.
+          const resolved = resolvePicValue(raw, teamMembers);
+          if (resolved !== raw) { setQuery(resolved); onChange(resolved); return; }
+          // 2. Smart-pick: if exactly one teamMember name substring-matches
+          //    the raw input (case-insensitive), auto-pick that member.
+          //    Avoids ambiguous matches.
+          const lc = raw.toLowerCase();
+          const subMatches = (teamMembers || []).filter((m) =>
+            m?.name && m.name.toLowerCase().includes(lc)
+          );
+          if (subMatches.length === 1) {
+            setQuery(subMatches[0].name);
+            onChange(subMatches[0].name);
+            return;
+          }
+          // 3. Fall back: save raw free-text. The warning chip surfaces below.
+          onChange(raw);
+        }}
         placeholder={placeholder || 'Type a name or email…'}
         style={{ width: '100%', padding: '8px 10px', border: '1px solid ' + (focused ? TOK.lineStrong : TOK.lineStrong), borderRadius: 7, fontFamily: FONT_STACK, fontSize: 12, outline: 'none', background: TOK.surface, color: TOK.ink, boxSizing: 'border-box' }}
       />
@@ -9126,6 +9158,25 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
             </button>
           ))}
         </div>
+      )}
+      {value && !(teamMembers || []).some((m) => m?.name === value) && (
+        <button
+          type="button"
+          onClick={(e) => {
+            const inp = e.currentTarget.parentElement?.querySelector('input');
+            if (inp) inp.focus();
+          }}
+          style={{
+            marginTop: 4, padding: '2px 8px', borderRadius: 999,
+            fontSize: 10.5, fontFamily: FONT_STACK, fontWeight: 500,
+            color: '#A8660C', background: '#FAEEDA',
+            border: '1px solid #E0BC75', cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}
+          title="Click to edit — free-text PIC won't show in the team-member dropdown elsewhere."
+        >
+          ⚠ Not a team member — free-text saved
+        </button>
       )}
     </div>
   );
