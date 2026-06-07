@@ -2526,9 +2526,11 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
   const member = combined.find((m) => m.name === value);
 
   const pick = (name) => {
-    // Strip leading @ if user typed @-mention syntax
+    // Strip leading @ if user typed @-mention syntax, then resolve
+    // email → canonical name if the typed value matches a member's email.
     const cleaned = (name || '').trim().replace(/^@+/, '');
-    onChange(cleaned || null);
+    const resolved = resolvePicValue(cleaned, combined);
+    onChange(resolved || null);
     setDraft('');
     setEditing(false);
   };
