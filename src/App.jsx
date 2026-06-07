@@ -1239,6 +1239,23 @@ function MentionedText({ text, teamMembers }) {
 // using the directory name as canonical (Firebase displayName wins over
 // free-text typed into the welcome dialog). Names without email keep using
 // name-based dedup so legacy free-text PICs still appear.
+// v30.1.2 — Canonicalize a typed PIC value before it's saved into a domain
+// field. If the input looks like an email AND a teamMember has that email,
+// return the member's name (e.g. 'hattt4@smartosc.com' → 'Hà Trương Thị Thu').
+// Otherwise return the input verbatim (trimmed). Returns '' for empty input.
+// Pure, idempotent, no throw.
+function resolvePicValue(input, teamMembersList) {
+  if (input == null) return input;
+  const trimmed = String(input).trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.includes('@')) {
+    const lc = trimmed.toLowerCase();
+    const match = (teamMembersList || []).find((m) => (m?.email || '').toLowerCase() === lc);
+    if (match?.name) return match.name;
+  }
+  return trimmed;
+}
+
 function deriveTeamMembers(projects, currentAuthor, currentUserEmail, directory) {
   // Build email → canonical name map from authoritative sources first
   // (directory > project.teamMembers with email > observed). Any later add()
