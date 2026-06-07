@@ -3681,8 +3681,10 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
 
   const add = (name) => {
     const trimmed = (name || '').trim().replace(/^@+/, '');
-    if (!trimmed || list.includes(trimmed)) return;
-    onChange([...list, trimmed]);
+    if (!trimmed) return;
+    const resolved = resolvePicValue(trimmed, teamMembers);
+    if (list.includes(resolved)) return;
+    onChange([...list, resolved]);
     setDraft('');
     setAdding(false);
   };
