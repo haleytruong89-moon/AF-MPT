@@ -1256,6 +1256,124 @@ function resolvePicValue(input, teamMembersList) {
   return trimmed;
 }
 
+// v30.1.3 — Walk every PIC reference in the project, dedup by lowercase
+// name, return Map<lcName, { name, count, sources }>. Sources are
+// human-readable labels for the tooltip (e.g. 'task.pic', 'raid.owner').
+// Pure — must mirror the field set the 1.1 merge tool rewrites; if either
+// is updated, update the other in lockstep.
+function collectProjectPicNames(project) {
+  const map = new Map();
+  const add = (rawName, source) => {
+    if (!rawName) return;
+    const trimmed = String(rawName).trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (!map.has(key)) {
+      map.set(key, { name: trimmed, count: 0, sources: new Set() });
+    }
+    const entry = map.get(key);
+    entry.count++;
+    entry.sources.add(source);
+  };
+  for (const pg of (project?.programs || [])) {
+    for (const ws of (pg.workstreams || [])) {
+      for (const t of (ws.tasks || [])) {
+        if (t.pic) add(t.pic, 'task.pic');
+        for (const c of (t.contributors || [])) add(c, 'task.contributors');
+        for (const ci of (t.checkIns || [])) {
+          if (ci?.author) add(ci.author, 'task.checkIns.author');
+        }
+        for (const u of (t.updates || [])) {
+          if (u?.author) add(u.author, 'task.updates.author');
+          if (u?.resolvedBy) add(u.resolvedBy, 'task.updates.resolvedBy');
+        }
+      }
+    }
+    for (const item of (pg.raid || [])) {
+      if (item.owner) add(item.owner, 'raid.owner');
+      if (item.createdBy) add(item.createdBy, 'raid.createdBy');
+      if (item.approvedBy) add(item.approvedBy, 'raid.approvedBy');
+      if (item.validationOwner) add(item.validationOwner, 'raid.validationOwner');
+      for (const h of (item.history || [])) {
+        if (h?.author) add(h.author, 'raid.history.author');
+      }
+      for (const m of (item.mitigationActions || [])) {
+        if (m?.pic) add(m.pic, 'mitigation.pic');
+      }
+    }
+  }
+  for (const a of (project?.actionItems || [])) {
+    if (a.pic) add(a.pic, 'action.pic');
+    for (const db of (a.decidedBy || [])) add(db, 'action.decidedBy');
+    for (const s of (a.subtasks || [])) {
+      if (s?.pic) add(s.pic, 'subtask.pic');
+    }
+    for (const u of (a.updates || [])) {
+      if (u?.author) add(u.author, 'action.updates.author');
+    }
+  }
+  for (const d of (project?.decisions || [])) {
+    if (d.author) add(d.author, 'decision.author');
+    for (const db of (d.decidedBy || [])) add(db, 'decision.decidedBy');
+  }
+  if (project?.projectLead) add(project.projectLead, 'project.projectLead');
+  for (const l of (project?.weightChangeLog || [])) {
+    if (l?.by) add(l.by, 'project.weightChangeLog.by');
+  }
+  // Freeze Set → sorted Array for stable render
+  const out = new Map();
+  for (const [k, v] of map.entries()) {
+    out.set(k, { name: v.name, count: v.count, sources: Array.from(v.sources).sort() });
+  }
+  return out;
+}
+
+// v30.1.3 — Classify a PIC name as 'known' (in teamMembers OR a directory
+// entry of a memberIds uid), 'group' (matches contributorRegistry), or
+// 'orphan'. Case-insensitive comparison throughout.
+function categorizePicName(name, teamMembers, directory, memberIds, contributorRegistry) {
+  if (!name) return 'orphan';
+  const lc = String(name).trim().toLowerCase();
+  if (!lc) return 'orphan';
+  if ((teamMembers || []).some((m) => (m?.name || '').toLowerCase() === lc)) return 'known';
+  const dirByUid = new Map((directory || []).map((u) => [u.uid, u]));
+  for (const uid of (memberIds || [])) {
+    const entry = dirByUid.get(uid);
+    if (entry?.name && entry.name.toLowerCase() === lc) return 'known';
+  }
+  if ((contributorRegistry || []).some((r) => (r?.name || '').toLowerCase() === lc)) return 'group';
+  return 'orphan';
+}
+
+// v30.1.3 — Suggest a single merge target for an orphan name. Three
+// tiers in order: exact email match, unique email-prefix match, unique
+// name-substring match. Returns { name, email } or null when no
+// unambiguous suggestion exists.
+function suggestMergeTarget(orphanName, teamMembers) {
+  if (!orphanName) return null;
+  const trimmed = String(orphanName).trim();
+  if (!trimmed) return null;
+  const lc = trimmed.toLowerCase();
+  // 1. Email match
+  if (trimmed.includes('@')) {
+    const match = (teamMembers || []).find((m) => (m?.email || '').toLowerCase() === lc);
+    if (match?.name) return { name: match.name, email: match.email || '' };
+  }
+  // 2. Email-prefix match (unique)
+  const prefixMatches = (teamMembers || []).filter((m) => {
+    if (!m?.email) return false;
+    const prefix = m.email.split('@')[0].toLowerCase();
+    return prefix === lc;
+  });
+  if (prefixMatches.length === 1) return { name: prefixMatches[0].name, email: prefixMatches[0].email || '' };
+  // 3. Substring match in member names (unique)
+  const subMatches = (teamMembers || []).filter((m) =>
+    m?.name && m.name.toLowerCase().includes(lc)
+  );
+  if (subMatches.length === 1) return { name: subMatches[0].name, email: subMatches[0].email || '' };
+  return null;
+}
+
 function deriveTeamMembers(projects, currentAuthor, currentUserEmail, directory) {
   // Build email → canonical name map from authoritative sources first
   // (directory > project.teamMembers with email > observed). Any later add()
