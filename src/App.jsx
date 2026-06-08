@@ -13872,6 +13872,29 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
     return seen;
   }, [project]);
 
+  // v30.1.3 — Audit panel data: walk project content for unique PIC names,
+  // classify each, and compute a merge suggestion for orphans.
+  const [showKnownNames, setShowKnownNames] = useState(false);
+  const auditData = useMemo(() => {
+    const picMap = collectProjectPicNames(project);
+    const known = [];
+    const group = [];
+    const orphan = [];
+    for (const [, entry] of picMap.entries()) {
+      const cat = categorizePicName(entry.name, members, directory, project.memberIds, contributorRegistry);
+      if (cat === 'known') known.push(entry);
+      else if (cat === 'group') group.push(entry);
+      else orphan.push({ ...entry, suggested: suggestMergeTarget(entry.name, members) });
+    }
+    const byCount = (a, b) => (b.count - a.count) || a.name.localeCompare(b.name);
+    return {
+      known: known.sort(byCount),
+      group: group.sort(byCount),
+      orphan: orphan.sort(byCount),
+      total: picMap.size,
+    };
+  }, [project, members, directory, contributorRegistry]);
+
   const addMember = () => {
     const n = newName.trim();
     if (!n) return;
@@ -14310,6 +14333,18 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
       </div>
 
       <div style={{ height: 20 }} />
+      <div style={{
+        background: TOK.bg, border: '1px solid ' + TOK.line, borderRadius: 8,
+        padding: 12, marginBottom: 12, fontSize: 12, color: TOK.ink, lineHeight: 1.55,
+      }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>👥 How members work in this project</div>
+        <div style={{ marginBottom: 6 }}>
+          To grant <strong>access</strong>, click <strong>Manage Members</strong> in the top toolbar (RBAC). Anyone with access automatically appears in PIC autocomplete elsewhere — you don't need to re-add them here.
+        </div>
+        <div>
+          The list below is for <strong>external contacts not yet signed in</strong> (vendors, advisors). Add them so their name autocompletes in PIC fields and emails. They will NOT get access until you also add them via Manage Members.
+        </div>
+      </div>
       <FieldLabel>Team members & emails</FieldLabel>
       <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
         Names here are autocomplete-able with @mention. Emails are used for action-item emails. PIC names already used in tasks are picked up automatically — add their emails here.
@@ -14447,6 +14482,111 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
             </Btn>
           </div>
         ))}
+      </div>
+
+      {/* v30.1.3 — PIC names audit panel */}
+      <div style={{ height: 20 }} />
+      <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, padding: 12, background: TOK.surface }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <FieldLabel>🔎 PIC names in this project</FieldLabel>
+          <span style={{ fontSize: 10, color: TOK.subtle }}>({auditData.total} unique)</span>
+          {!isOwner && <span style={{ fontSize: 10, color: TOK.subtle, fontStyle: 'italic' }}>(owner only)</span>}
+        </div>
+        <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
+          Every name actually used as a PIC anywhere in this project's tasks, actions, decisions, or RAID items. Flagged names (⚠) don't match a member — merge them into a canonical member to consolidate.
+        </div>
+
+        {auditData.orphan.length === 0 && auditData.group.length === 0 && auditData.known.length === 0 && (
+          <div style={{ fontSize: 12, color: TOK.muted, padding: '8px 4px', fontStyle: 'italic' }}>
+            No PIC names in this project yet — add tasks or actions to see them here.
+          </div>
+        )}
+
+        {auditData.orphan.map((entry) => {
+          const sug = entry.suggested;
+          return (
+            <div key={'o-' + entry.name} title={`Sources: ${entry.sources.join(', ')}`} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+              border: '1px solid ' + TOK.line, borderRadius: 6, marginBottom: 4,
+              background: TOK.bg,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: '#A8660C', background: '#FAEEDA' }}>⚠</span>
+              <span style={{ fontSize: 12, fontWeight: 500, minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
+              <span style={{ fontSize: 10, color: TOK.subtle, whiteSpace: 'nowrap' }}>{entry.count}×</span>
+              {sug ? (
+                <>
+                  <span style={{ fontSize: 11, color: TOK.muted, whiteSpace: 'nowrap' }}>→ Suggested: <strong>{sug.name}</strong></span>
+                  {isOwner && (
+                    <Btn size="sm" variant="primary" onClick={() => performLegacyMerge({ from: entry.name, to: sug.name, email: sug.email })}>
+                      Merge
+                    </Btn>
+                  )}
+                </>
+              ) : (
+                isOwner && members.length > 0 && (
+                  <select
+                    defaultValue=""
+                    onChange={(e) => {
+                      const targetName = e.target.value;
+                      if (!targetName) return;
+                      if (targetName === '__add__') {
+                        setMembers([...members, { name: entry.name, email: '' }]);
+                        return;
+                      }
+                      const target = members.find((m) => m.name === targetName);
+                      if (target) performLegacyMerge({ from: entry.name, to: target.name, email: target.email || '' });
+                    }}
+                    style={{ fontFamily: FONT_STACK, fontSize: 11, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, maxWidth: 200 }}
+                  >
+                    <option value="">Merge into…</option>
+                    {members.map((m) => (
+                      <option key={m.name} value={m.name}>{m.name}{m.email ? ` (${m.email})` : ''}</option>
+                    ))}
+                    <option value="__add__">+ Add "{entry.name}" to Team Members</option>
+                  </select>
+                )
+              )}
+              {!isOwner && <span style={{ fontSize: 10, color: TOK.subtle, fontStyle: 'italic' }}>(owner only)</span>}
+            </div>
+          );
+        })}
+
+        {auditData.group.map((entry) => (
+          <div key={'g-' + entry.name} title={`Sources: ${entry.sources.join(', ')}`} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px',
+            fontSize: 12, color: TOK.muted,
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: TOK.muted, background: TOK.bg }}>📁</span>
+            <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
+            <span style={{ fontSize: 10, color: TOK.subtle }}>group · {entry.count}×</span>
+          </div>
+        ))}
+
+        {auditData.known.length > 0 && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowKnownNames((v) => !v)}
+              style={{ fontFamily: FONT_STACK, fontSize: 11, color: TOK.muted, background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              {showKnownNames ? '▾' : '▸'} ✅ {auditData.known.length} known name{auditData.known.length === 1 ? '' : 's'}
+            </button>
+            {showKnownNames && (
+              <div style={{ marginTop: 4 }}>
+                {auditData.known.map((entry) => (
+                  <div key={'k-' + entry.name} title={`Sources: ${entry.sources.join(', ')}`} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '3px 8px',
+                    fontSize: 12, color: TOK.ink,
+                  }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: TOK.doneFg || '#356512', background: TOK.doneBg || '#E6EFD6' }}>✓</span>
+                    <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
+                    <span style={{ fontSize: 10, color: TOK.subtle }}>{entry.count}×</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Contributor Registry (v26) */}
