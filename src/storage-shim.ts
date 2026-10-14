@@ -32,6 +32,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { metaForWrite } from './ownership';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -245,6 +246,9 @@ window.storage = {
         try {
           incoming = JSON.parse(value);
         } catch {}
+        // B1: owner fields are written only by flagged owner writes; a stale
+        // in-memory copy can neither revert them nor get the write rejected.
+        incoming = metaForWrite(incoming);
         const {
           projectIds: _pids,
           names: _names,
