@@ -12803,7 +12803,7 @@ export default function App() {
     if ((oldTask.deadlineType || 'hard') !== (updatedTask.deadlineType || 'hard')) {
       log({ type: 'deadline_type_change', description: `Changed "${updatedTask.name}" deadline type: ${oldTask.deadlineType || 'hard'} → ${updatedTask.deadlineType || 'hard'}${tag}` });
     }
-  }, [projects, updateProject, logActivityForProject]);
+  }, [updateProject, logActivityForProject]); // reads projectsRef.current
 
   const onTaskUpdate = (updatedTask) => {
     if (!project) return;
