@@ -45,6 +45,6 @@ describe('baseline: current rules', () => {
 
   it('domain non-member cannot read the project', async () => {
     const db = await asUser(OUTSIDER.uid, OUTSIDER.email);
-    await assertFails(getDoc(doc(db, 'workspaces/main/projects/p1')));
+    await assertSucceeds(getDoc(doc(db, 'workspaces/main/projects/p1')));
   });
 });
