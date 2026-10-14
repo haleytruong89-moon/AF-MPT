@@ -35,3 +35,27 @@ export function nextSaveState(prev, pid, status, name) {
 export function hasUnsavedWork(pendingCount, saveState) {
   return pendingCount > 0 || Object.keys(saveState || {}).length > 0;
 }
+
+// B3 fix: serialize async jobs per key (e.g. per project id) so a second save
+// never pre-reads the doc while the first save's write is still in flight —
+// that overlap made a single user see a false "someone else changed it" conflict.
+export function createKeyedQueue() {
+  const tails = new Map();
+  return {
+    run(key, job) {
+      const prev = tails.get(key) || Promise.resolve();
+      const next = prev.then(job, job);
+      const tail = next.then(() => undefined, () => undefined);
+      tails.set(key, tail);
+      tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+      return next;
+    },
+  };
+}
+
+// Flag an explicit owner restore so the shim skips the stale-write guard.
+export const FORCE_WRITE_FLAG = '__forceOverwrite';
+
+export function failedRestores(results) {
+  return (results || []).filter((r) => r.status !== 'ok').map((r) => r.name);
+}

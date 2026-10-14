@@ -16,7 +16,7 @@ import { useAuth } from './auth';
 import { useUserDirectory } from './data';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
-import { nextSaveState, hasUnsavedWork } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG } from './persistence';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 
 /* ═════════ SEED DATA ═════════ */
@@ -13279,9 +13279,18 @@ export default function App() {
       const data = JSON.parse(text);
       if (!data.meta || !data.projects) throw new Error('Invalid backup file.');
       await saveMeta(data.meta);
+      const results = [];
       for (const pid of data.meta.projectIds) {
-        if (data.projects[pid]) await saveProject(data.projects[pid]);
+        if (data.projects[pid]) {
+          // Explicit restore overrides the stale-write guard (B3) for this write only.
+          const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
+          results.push({ name: data.projects[pid].name || pid, status });
+        }
         if (data.activity && data.activity[pid]) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
+      }
+      const failed = failedRestores(results);
+      if (failed.length) {
+        await dialogs.alert({ title: 'Restore incomplete', message: `These projects were NOT restored: ${failed.join(', ')}. Check your permissions or connection and try again. Other projects were restored.` });
       }
       window.location.reload();
     } catch (err) { await dialogs.alert({ title: 'Restore failed', message: err.message }); }
