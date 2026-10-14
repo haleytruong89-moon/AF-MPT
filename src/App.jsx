@@ -1926,9 +1926,12 @@ function SaveBanner({ saveState }) {
 function Toast({ toast, onClose }) {
   if (!toast) return null;
   return (
-    <div style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', background: TOK.ink, color: TOK.surface, padding: '10px 16px', borderRadius: 8, fontSize: 13, zIndex: 100, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
+    <div role="status" style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', background: TOK.ink, color: TOK.surface, padding: '10px 16px', borderRadius: 8, fontSize: 13, zIndex: 100, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
       <span>{toast.message}</span>
-      <button onClick={onClose} style={{ background: 'none', border: 'none', color: TOK.surface, cursor: 'pointer', opacity: 0.7 }}><X size={14} /></button>
+      {toast.action && (
+        <button onClick={() => { toast.action.onClick(); onClose(); }} style={{ background: 'none', border: '1px solid ' + TOK.surface, borderRadius: 6, color: TOK.surface, cursor: 'pointer', padding: '2px 8px', fontFamily: FONT_STACK, fontSize: 12 }}>{toast.action.label}</button>
+      )}
+      <button onClick={onClose} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: TOK.surface, cursor: 'pointer', opacity: 0.7 }}><X size={14} /></button>
     </div>
   );
 }
@@ -3400,7 +3403,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {!editing ? (
             <>
               <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit task"><Edit2 size={12} /></Btn>
-              <Btn variant="ghost" size="sm" onClick={() => onDelete(task)} title="Delete task"><Trash2 size={12} /></Btn>
+              <Btn variant="ghost" size="sm" onClick={() => onDelete(task)} title="Drop task" aria-label="Drop task"><Trash2 size={12} /></Btn>
             </>
           ) : (
             <>
@@ -11041,7 +11044,12 @@ function MyWorkView({
   }, [author, onMarkSeen]);
 
   const handleStatusChange = (task, project, newStatus) => {
+    const prevStatus = task.status || 'Planned';
     onTaskUpdate({ ...task, status: newStatus }, project.id);
+    // B4: completing a task from My Work is one click — offer Undo.
+    if (newStatus === 'Completed' && prevStatus !== 'Completed' && showToast) {
+      showToast(`Marked “${task.name}” done`, { label: 'Undo', onClick: () => onTaskUpdate({ ...task, status: prevStatus }, project.id) });
+    }
   };
   const handleAddUpdate = (task, project, text, blocker) => {
     onTaskUpdate({
@@ -12633,9 +12641,11 @@ export default function App() {
     setImpersonatingAs(null);
   }, []);
 
-  const showToast = (message) => {
-    setToast({ message, id: uid('t') });
-    setTimeout(() => setToast((t) => (t && t.message === message ? null : t)), 3500);
+  // action: optional { label, onClick } rendered as a button (e.g. Undo); stays 6s.
+  const showToast = (message, action) => {
+    const id = uid('t');
+    setToast({ message, id, action });
+    setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), action ? 6000 : 3500);
   };
 
   // Debounced save of a project. Failures surface in the save banner (B2/B3).
@@ -13066,17 +13076,13 @@ export default function App() {
     }, projectId, 'My Work');
   };
 
+  // CLAUDE.md: never hard-delete a task — mark it Dropped (reversible, keeps history and credit trail).
   const onTaskDelete = async (task) => {
     if (!project) return;
-    const ok = await dialogs.confirm({ title: 'Delete task?', message: `Delete task "${task.name}"?`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Drop task?', message: `Mark task "${task.name}" as Dropped? It stays in the plan (greyed out) and can be reopened by changing its status.`, okLabel: 'Drop task' });
     if (!ok) return;
-    const updated = cloneDeep(project);
-    for (const pg of updated.programs || [])
-      for (const ws of pg.workstreams || [])
-        ws.tasks = ws.tasks.filter((t) => t.id !== task.id);
-    updateProject(updated);
+    applyTaskUpdate({ ...task, status: 'Dropped' }, project.id);
     setSelectedTaskId(null);
-    logActivity({ type: 'task_delete', description: `Deleted task "${task.name}"` });
   };
 
   const switchProject = async (id) => {
@@ -13420,7 +13426,9 @@ export default function App() {
           <Btn size="sm" onClick={exportExcel} title="Export to Excel"><FileSpreadsheet size={12} /> Excel</Btn>
           <Btn size="sm" onClick={backupJson} title="Backup all workspace data to JSON"><Download size={12} /></Btn>
           <input type="file" ref={fileInputRef} accept=".json" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && restoreJson(e.target.files[0])} />
-          <Btn size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} title="Restore from JSON backup"><Upload size={12} /></Btn>
+          {isOwner && (
+            <Btn size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} title="Restore from JSON backup"><Upload size={12} /></Btn>
+          )}
           <button
             onClick={() => setUserMenuOpen(!userMenuOpen)}
             title="Account menu"
@@ -13641,8 +13649,11 @@ export default function App() {
             items={[
               { label: 'Manage members & related parties', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
               { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
-              { separator: true },
-              { label: meta.projectIds.length > 1 ? 'Delete project' : 'Delete project (need 2+)', icon: <Trash2 size={13} />, danger: true, onClick: deleteCurrentProject },
+              // B4: deleting a whole project is workspace-owner only.
+              ...(isOwner ? [
+                { separator: true },
+                { label: meta.projectIds.length > 1 ? 'Delete project' : 'Delete project (need 2+)', icon: <Trash2 size={13} />, danger: true, onClick: deleteCurrentProject },
+              ] : []),
             ]}
             onClose={() => setProjectMenu(null)} />
         )}

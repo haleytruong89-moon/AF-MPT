@@ -705,7 +705,7 @@ function fmt(d: Date): string {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 function isOverdue(t: Task): boolean {
-  if (!t || t.status === 'Completed') return false;
+  if (!t || t.status === 'Completed' || t.status === 'Dropped') return false;
   const e = parseDate(t.end);
   if (!e) return false;
   return e < stripTime(new Date());
