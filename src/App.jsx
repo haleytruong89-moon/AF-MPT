@@ -178,7 +178,7 @@ function isValidUrl(url) {
 }
 
 const TOK = {
-  bg: '#F7F5EF', surface: '#FFFFFF', ink: '#1A1A19', muted: '#6E6C66', subtle: '#95938C',
+  bg: '#F7F5EF', surface: '#FFFFFF', ink: '#1A1A19', muted: '#6E6C66', subtle: '#706E68',
   line: 'rgba(26,26,25,0.10)', lineStrong: 'rgba(26,26,25,0.22)',
   accent: '#3B6D11',
   plannedFg: '#6E6C66', plannedBg: '#EDEBE4',
@@ -191,7 +191,7 @@ const TOK = {
   projectFg: '#26215C', projectBg: '#EEEDFE',
   // Health (RAG)
   healthGreen: '#2D7A2D', healthGreenBg: '#E2F0DE',
-  healthAmber: '#B7791F', healthAmberBg: '#FBF1DC',
+  healthAmber: '#8A5A12', healthAmberBg: '#FBF1DC',
   healthRed: '#A32D2D', healthRedBg: '#FCEBEB',
   // Mention highlight
   mention: '#1F5EA8', mentionBg: '#E5EFFB',
@@ -1745,16 +1745,35 @@ function HealthPill({ health, withLabel = true, size = 'md' }) {
   );
 }
 
+// B4: only the top-most open Modal reacts to Escape (stacked dialogs close one at a time).
+const openModalStack = [];
 function Modal({ title, children, onClose, width = 480, zHigh = false, hideClose = false }) {
   // hideClose=true: no X button, no backdrop-click-to-close (for unskippable flows like sign-in).
   const handleBackdropClick = hideClose ? undefined : onClose;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const token = {};
+    openModalStack.push(token);
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || hideClose || e.defaultPrevented) return;
+      if (openModalStack[openModalStack.length - 1] !== token) return;
+      onCloseRef.current?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const i = openModalStack.indexOf(token);
+      if (i >= 0) openModalStack.splice(i, 1);
+    };
+  }, [hideClose]);
   return (
     <div onClick={handleBackdropClick} style={{ position: 'absolute', inset: 0, background: 'rgba(15,15,14,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: zHigh ? 80 : 50, fontFamily: FONT_STACK }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width, maxWidth: 'calc(100% - 40px)', maxHeight: 'calc(100% - 60px)', background: TOK.surface, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column' }}>
+      <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} style={{ width, maxWidth: 'calc(100% - 40px)', maxHeight: 'calc(100% - 60px)', background: TOK.surface, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid ' + TOK.line, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>{title}</h3>
           {!hideClose && (
-            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 4 }}><X size={18} /></button>
+            <button onClick={onClose} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 4 }}><X size={18} /></button>
           )}
         </div>
         <div style={{ padding: 18, overflowY: 'auto' }}>{children}</div>
@@ -2129,6 +2148,7 @@ function MentionTextarea({ value, onChange, placeholder, rows = 3, teamMembers =
       e.preventDefault();
       insertMention(filteredSuggest[0]);
     } else if (e.key === 'Escape') {
+      e.preventDefault(); // handled here — don't also close the surrounding Modal
       setSuggest(null);
     }
   };
@@ -2827,7 +2847,7 @@ function WeightBadge({ weight, effectiveWeight, onChange, locked, isOwner, label
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === 'Enter') commit();
-          else if (e.key === 'Escape') cancel();
+          else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
         }}
         placeholder={isExplicit ? String(weight) : ''}
         min={0}
