@@ -1,0 +1,16 @@
+{
+  "meta": { "projectIds": ["p1"], "workspaceOwner": "hattt4@smartosc.com" },
+  "projects": {
+    "p1": {
+      "id": "p1", "name": "CRP",
+      "teamMembers": [{ "name": "Hà Trương Thị Thu", "email": "hattt4@smartosc.com" }],
+      "contributorRegistry": ["Legal"],
+      "programs": [{ "id": "pg", "workstreams": [{ "id": "ws", "tasks": [
+        { "id": "t1", "pic": "hattt4@smartosc.com", "updates": [{ "author": "Hà Trương Thị Thu" }] },
+        { "id": "t2", "pic": "Legal" },
+        { "id": "t3", "pic": "Unknown Person" }
+      ] }] }]
+    }
+  },
+  "activity": { "p1": [{ "author": "lannt@smartosc.com", "authorName": "Lan Nguyen" }] }
+}
