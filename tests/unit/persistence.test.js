@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -62,5 +62,39 @@ describe('hasUnsavedWork', () => {
     expect(hasUnsavedWork(0, {})).toBe(false);
     expect(hasUnsavedWork(1, {})).toBe(true);
     expect(hasUnsavedWork(0, { p1: { status: 'error', name: 'X' } })).toBe(true);
+  });
+});
+
+describe('createKeyedQueue (B3 fix: no overlapping writes per project)', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  it('runs jobs with the same key strictly one after another', async () => {
+    const q = createKeyedQueue();
+    const events = [];
+    const job = (name) => async () => { events.push(name + ':start'); await tick(); events.push(name + ':end'); return name; };
+    const [a, b] = await Promise.all([q.run('p1', job('a')), q.run('p1', job('b'))]);
+    expect([a, b]).toEqual(['a', 'b']);
+    expect(events).toEqual(['a:start', 'a:end', 'b:start', 'b:end']);
+  });
+  it('lets different keys run concurrently', async () => {
+    const q = createKeyedQueue();
+    const events = [];
+    const job = (name) => async () => { events.push(name + ':start'); await tick(); events.push(name + ':end'); };
+    await Promise.all([q.run('p1', job('a')), q.run('p2', job('b'))]);
+    expect(events.slice(0, 2).sort()).toEqual(['a:start', 'b:start']);
+  });
+  it('a failing job does not block the next one', async () => {
+    const q = createKeyedQueue();
+    const first = q.run('p1', async () => { throw new Error('boom'); });
+    await expect(first).rejects.toThrow('boom');
+    await expect(q.run('p1', async () => 'ok')).resolves.toBe('ok');
+  });
+});
+
+describe('failedRestores (B3 fix: restore must not report success when saves failed)', () => {
+  it('lists the names of projects that were not saved', () => {
+    expect(failedRestores([
+      { name: 'A', status: 'ok' }, { name: 'B', status: 'conflict' }, { name: 'C', status: 'error' },
+    ])).toEqual(['B', 'C']);
+    expect(failedRestores([])).toEqual([]);
   });
 });
