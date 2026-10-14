@@ -26,8 +26,19 @@
 3. **Duyệt Done 1 cấp:** quản lý trực tiếp duyệt; Owner có quyền ghi đè. Action do PIC tự đóng, không duyệt.
 4. **Sửa plan lẻ không cần duyệt** nếu nằm trong hạn workstream. Chỉ **upload hàng loạt** và **đổi hạn workstream/program/project** cần Owner duyệt.
 
+### 2.1 Quyết định vòng 2 (14/10/2026, sau rà soát `docs/reviews/2026-10-14-permissions-uiux-market-review.md`)
+
+5. **Định danh theo `uid`**, không theo email. `members/{uid}` = `{email, displayName, aliases[], department, status}`; mọi trường người lưu uid (`picUid`, `pmUid`, `leadUid`…). Người chưa đăng nhập lần nào: `invites/{email}`, gắn uid ở lần đăng nhập đầu. Email chỉ dùng để nhập Excel và hiển thị.
+6. **Nhiều Owner:** workspace có `ownerUids[]`, rules cấm rỗng. Hiện chỉ HOD; Owner thứ 2 chọn sau. B1 ẩn nút Release.
+7. **Visibility theo project:** `visibility: 'restricted' | 'department'`. **Mặc định `restricted`** — chỉ thành viên được gán vào dự án (`project.memberUids`: PM, Sub-PM, Assignee, Viewer được mời) + Owner đọc được. **Owner đổi trong Project Settings**, mỗi lần đổi ghi activity (ai, lúc nào, cũ → mới). Project hiện có chuyển đổi thành `restricted` với danh sách thành viên hiện tại; Owner mở cho cả phòng nếu muốn.
+8. **Duyệt Done/Dropped áp cho tất cả project** (không có cờ bật/tắt).
+9. **Nhãn giao diện tiếng Anh**, thuật ngữ chuẩn: `Submitted` hiển thị "Pending approval", nút "Submit as done", tab "Approvals". Các nhãn tiếng Việt trong spec này là mô tả, không phải chữ trên UI.
+10. **Chuẩn bị đa workspace ngay trong P2:** đường dẫn và rules dùng `workspaces/{wid}` (AF giữ `wid = 'main'`); thành viên và vai trò theo workspace; mỗi doc con có `workspaceId`, `projectId`; cấu hình riêng của AF (phòng ban mặc định, quy tắc credit, màn mặc định, webhook) vào `workspaces/{wid}.config`; bỏ domain và URL gắn cứng. **Chưa** làm UI chuyển/tạo workspace.
+11. **Test rules chạy trên GitHub Actions** (Firebase Emulator), bắt buộc xanh trước khi deploy rules — kể cả B1.
+12. **Bổ sung quy tắc duyệt** (từ rà soát): cấm người duyệt trùng người gửi; Owner/PM chuyển được người duyệt (có log); request chờ quá 3 ngày làm việc hiện ở Approvals của cấp trên; mọi bản ghi duyệt và activity lưu `before`/`after`. **View as chỉ đọc.**
+
 **Giả định tạm (HOD sửa nếu sai):**
-- A1. Cả phòng (Viewer) xem được mọi program; riêng Credit, Team, Activity Dashboard chỉ Owner và PM (PM chỉ thấy người trong program mình).
+- A1. ~~Cả phòng xem được mọi program~~ → thay bằng quyết định 7 (visibility). Credit, Team, Activity Dashboard chỉ Owner và PM (PM chỉ thấy người trong program mình).
 - A2. Mỗi program có 1 PM, tùy chọn 1 Deputy PM cùng quyền.
 - A3. Mỗi workstream có 1 Sub-PM (lead). Có thể để trống, khi đó PM đảm nhận.
 - A4. Dropped được xử lý như Done: người được giao đề xuất, quản lý trực tiếp duyệt.
@@ -36,15 +47,15 @@
 
 | Vai trò | Gắn ở đâu | Ví dụ |
 |---|---|---|
-| **Owner** | `workspaces/main.workspaceOwnerEmail` (1 người) | HOD |
-| **PM** / Deputy PM | `program.pmEmail`, `program.deputyEmail` | PM của "LLCs" trong CRP |
-| **Sub-PM** | `workstream.leadEmail` | Control tower / OP lead phụ trách 1 KRA |
-| **Assignee** | `task.picEmail`, `task.contributorEmails[]`; `action.picEmail` | Người làm task/action |
-| **Viewer** | Mọi user `@smartosc.com` có trong danh bạ `members` (active) | Cả phòng |
+| **Owner** | `workspaces/{wid}.ownerUids[]` (≥1, khuyến nghị 2) | HOD |
+| **PM** / Deputy PM | `program.pmUid`, `program.deputyUid` | PM của "LLCs" trong CRP |
+| **Sub-PM** | `workstream.leadUid` | Control tower / OP lead phụ trách 1 KRA |
+| **Assignee** | `task.picUid`, `task.contributorUids[]`; `action.picUid` | Người làm task/action |
+| **Viewer** | Project `department`: mọi member active của workspace. Project `restricted`: người có trong `project.memberUids` | Cả phòng / người được mời |
 
 Một người có thể giữ nhiều vai trò ở các nơi khác nhau. Quyền = hợp của các vai trò tại phạm vi đang xét. Role cũ owner/operator/member theo project **thôi dùng** sau chuyển đổi (xem §8).
 
-**Định danh:** mọi trường người đều lưu **email chữ thường**. Tên hiển thị lấy từ danh bạ `members/{email}` lúc render. Đây là Members Phase 2 trong audit, nay là điều kiện tiên quyết vì rules so sánh bằng `request.auth.token.email`.
+**Định danh:** mọi trường người lưu **uid** (quyết định 5). Tên hiển thị lấy từ `members/{uid}` lúc render; email để nhập Excel và hiển thị. Rules so sánh bằng `request.auth.uid` — rẻ và không đổi khi người dùng đổi email.
 
 ## 4. Ma trận quyền
 
@@ -105,24 +116,25 @@ Hệ quả: quy trình "xuất Excel → sửa → upload lại" trở thành c�
 ## 7. Mô hình dữ liệu mới (Firestore)
 
 ```
-workspaces/main                                  meta; thêm workspaceOwnerEmail
-workspaces/main/members/{email}                  danh bạ chuẩn: displayName, aliases[], department, active
-workspaces/main/projects/{pid}                   meta project + programs (MAP theo id, không phải mảng)
-     programs: { [programId]: { name, order, pmEmail, deputyEmail, start, end, raid[] } }
+workspaces/{wid}  (AF: main)                     meta; ownerUids[] (cấm rỗng), config{…}
+workspaces/{wid}/members/{uid}                    danh bạ chuẩn: email, displayName, aliases[], department, status
+workspaces/{wid}/invites/{email}                  người chưa đăng nhập lần nào
+workspaces/{wid}/projects/{pid}                   meta project + visibility(restricted*|department) + memberUids[] + programs (MAP theo id, không phải mảng)
+     programs: { [programId]: { name, order, pmUid, deputyUid, start, end, raid[] } }
      decisions[], relatedParties, credit settings ... (giữ như cũ)
-workspaces/main/projects/{pid}/workstreams/{wsId}  { programId, name, order, leadEmail, start, end, version, updatedAt, updatedBy }
-workspaces/main/projects/{pid}/tasks/{taskId}      { programId, workstreamId, ...các field task hiện tại,
-                                                     picEmail, contributorEmails[], status (+ 'Submitted'),
+workspaces/{wid}/projects/{pid}/workstreams/{wsId}  { programId, name, order, leadUid, start, end, version, updatedAt, updatedBy }
+workspaces/{wid}/projects/{pid}/tasks/{taskId}      { programId, workstreamId, ...các field task hiện tại,
+                                                     picUid, contributorUids[], status (+ 'Submitted'),
                                                      version, updatedAt, updatedBy }
-workspaces/main/projects/{pid}/actions/{actionId}  { ...field action hiện tại, picEmail, workstreamId?, version }
-workspaces/main/projects/{pid}/approvals/{reqId}   { type, scope{programId,workstreamId,taskId}, requestedBy,
-                                                     approverEmail, payload, baseVersions, status, decidedBy,
+workspaces/{wid}/projects/{pid}/actions/{actionId}  { ...field action hiện tại, picUid, workstreamId?, version }
+workspaces/{wid}/projects/{pid}/approvals/{reqId}   { type, scope{programId,workstreamId,taskId}, requestedBy,
+                                                     approverUid, payload, baseVersions, status, decidedBy,
                                                      decidedAt, reason }
-workspaces/main/projects/{pid}/activity/{autoId}   1 document / 1 sự kiện, chỉ thêm
-workspaces/main/projects/{pid}/private/settings    googleChatWebhook (chỉ Owner + PM đọc)
+workspaces/{wid}/projects/{pid}/activity/{autoId}   1 document / 1 sự kiện, chỉ thêm
+workspaces/{wid}/projects/{pid}/private/settings    googleChatWebhook (chỉ Owner + PM đọc)
 ```
 
-**Vì sao `programs` là map:** rules không tìm được phần tử trong mảng theo id, nhưng đọc được `programs[ws.programId].pmEmail` qua `get()`.
+**Vì sao `programs` là map:** rules không tìm được phần tử trong mảng theo id, nhưng đọc được `programs[ws.programId].pmUid` qua `get()`.
 
 **Vì sao task là document riêng (không chỉ workstream):** để rules phân biệt Assignee chỉ sửa task của mình, và chặn Assignee tự đặt `Completed`. Đồng thời xóa hẳn giới hạn 1 MiB và giảm gần hết ghi đè lẫn nhau (2 người sửa 2 task khác nhau không còn đụng nhau).
 
@@ -138,23 +150,31 @@ workspaces/main/projects/{pid}/private/settings    googleChatWebhook (chỉ Owne
 ## 8. Rules (phác thảo, viết thật trong plan)
 
 ```
-function email() { return request.auth.token.email.lower(); }
-function proj(pid) { return get(/databases/$(database)/documents/workspaces/main/projects/$(pid)).data; }
-function ws(pid, wsId) { return get(/databases/$(database)/documents/workspaces/main/projects/$(pid)/workstreams/$(wsId)).data; }
-function isOwner() { return email() == get(/databases/$(database)/documents/workspaces/main).data.workspaceOwnerEmail; }
-function isPM(pid, prgId) { let p = proj(pid).programs[prgId]; return email() == p.pmEmail || email() == p.deputyEmail; }
-function isLead(pid, wsId) { return email() == ws(pid, wsId).leadEmail; }
+// wid là biến (AF = 'main'); người khóa theo uid — quyết định 14/10 vòng 2 (§2.1)
+function me() { return request.auth.uid; }
+function wsDoc(wid) { return get(/databases/$(database)/documents/workspaces/$(wid)).data; }
+function isActiveMember(wid) { let m = /databases/$(database)/documents/workspaces/$(wid)/members/$(me());
+  return exists(m) && get(m).data.status == 'active'; }
+function proj(wid, pid) { return get(/databases/$(database)/documents/workspaces/$(wid)/projects/$(pid)).data; }
+function ws(wid, pid, wsId) { return get(/databases/$(database)/documents/workspaces/$(wid)/projects/$(pid)/workstreams/$(wsId)).data; }
+function isOwner(wid) { return me() in wsDoc(wid).ownerUids; }
+function isPM(wid, pid, prgId) { let p = proj(wid, pid).programs[prgId]; return me() == p.pmUid || me() == p.deputyUid; }
+function isLead(wid, pid, wsId) { return me() == ws(wid, pid, wsId).leadUid; }
+// restricted: Owner + project.memberUids; department: mọi member active
+function canReadProject(wid, pid) { let p = proj(wid, pid);
+  return isOwner(wid) || (isActiveMember(wid) && (p.visibility == 'department' || me() in p.memberUids)); }
 
-match /workspaces/main {
-  allow read: if isDomainUser();
-  allow update: if isOwner()
-    || (isDomainUser() && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['workspaceOwnerEmail','workspaceOwner','ownershipLog','defaultView']));
-  // first-claim (owner trống) chỉ qua script admin, không qua client
+match /workspaces/{wid} {
+  allow read: if isActiveMember(wid);
+  allow update: if isOwner(wid)
+    || (isActiveMember(wid) && !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['ownerUids','workspaceOwner','ownershipLog','defaultView','config']));
+  // ownerUids không được rỗng; tạo workspace / Owner đầu tiên chỉ qua script admin
 }
 
-match /workspaces/main/projects/{pid}/tasks/{tid} {
-  allow read: if isMember();
+match /workspaces/{wid}/projects/{pid}/tasks/{tid} {
+  allow read: if canReadProject(wid, pid);
+  // các hàm bên dưới nhận thêm wid — viết gọn trong phác thảo
   allow create: if isOwner() || isPM(pid, request.resource.data.programId)
     || (isLead(pid, request.resource.data.workstreamId) && withinWs());
   allow delete: if isOwner() || isPM(pid, resource.data.programId);   // Sub-PM chuyển Dropped thay vì xóa
@@ -166,9 +186,9 @@ match /workspaces/main/projects/{pid}/tasks/{tid} {
   // Completed/Dropped chỉ do người duyệt đúng cấp (§4) đặt, kèm approvals/{reqId} Approved
 }
 
-match /workspaces/main/projects/{pid}/activity/{eid} {
-  allow read: if isMember();
-  allow create: if isMember() && request.resource.data.author == email();
+match /workspaces/{wid}/projects/{pid}/activity/{eid} {
+  allow read: if canReadProject(wid, pid);
+  allow create: if canReadProject(wid, pid) && request.resource.data.authorUid == me();
   allow update, delete: if false;
 }
 ```
@@ -182,7 +202,7 @@ match /workspaces/main/projects/{pid}/activity/{eid} {
 | Bước | Việc | Hoàn tác |
 |---|---|---|
 | M0 | Sao lưu: JSON + Excel từng project (HOD làm, 14/10) + export Firestore nếu có quyền gcloud | — |
-| M1 | Dựng danh bạ `members/{email}`. Script quét mọi chuỗi người trong 7 project → **bảng ánh xạ tên → email** (Excel) → **HOD duyệt từng dòng** | Xóa collection `members` |
+| M1 | Dựng danh bạ `members/{uid}` (+ `invites/{email}`). Script quét mọi chuỗi người trong 7 project → **bảng ánh xạ tên → email → uid** (Excel) → **HOD duyệt từng dòng** | Xóa collection `members` |
 | M2 | Script chuyển đổi chạy **dry-run** trên file export: sinh workstreams/tasks/actions mới + báo cáo (đếm, task thiếu PIC, tên không ánh xạ được). HOD xem | Không ghi gì |
 | M3 | HOD điền PM/Sub-PM cho từng program/WS (bảng Excel), bắt đầu với AF 2026 Key Results và AF 2026 Operation làm pilot | — |
 | M4 | Chạy thật: ghi collection mới. **Document project cũ giữ nguyên** (đổi thành chỉ đọc), thêm `schemaVersion: 2` | Đặt lại `schemaVersion: 1`, app đọc đường cũ |

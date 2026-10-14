@@ -56,23 +56,29 @@ Không có trường người phụ trách ở program/workstream. Task: `pic` (
 ## 3. Kiến trúc đích (to-be)
 
 ```
-workspaces/main                                   + workspaceOwnerEmail (chỉ Owner sửa)
-workspaces/main/members/{email}                   displayName, aliases[], department, active
-workspaces/main/projects/{pid}                    meta + programs: MAP {programId: {name, pmEmail, deputyEmail, start, end, raid[]}}
-  /workstreams/{wsId}                             programId, name, order, leadEmail, start, end, version
-  /tasks/{taskId}                                 programId, workstreamId, picEmail, contributorEmails[], status(+Submitted), version
-  /actions/{actionId}                             picEmail, workstreamId?, version
-  /approvals/{reqId}                              type, scope, requestedBy, approverEmail, payload, baseVersions, status
+workspaces/{wid}   (AF: wid='main')              ownerUids[] (chỉ Owner sửa, không rỗng), config{departments, creditRules, defaultView, chat…}
+workspaces/{wid}/members/{uid}                    email, displayName, aliases[], department, status(active|deactivated)
+workspaces/{wid}/invites/{email}                  người chưa đăng nhập lần nào → gắn uid ở lần đầu
+workspaces/{wid}/projects/{pid}                   meta + visibility(restricted*|department) + memberUids[]
+                                                  + programs: MAP {programId: {name, pmUid, deputyUid, start, end, raid[]}}
+  /workstreams/{wsId}                             programId, name, order, leadUid, start, end, version
+  /tasks/{taskId}                                 programId, workstreamId, picUid, contributorUids[], status(+Submitted), version
+  /actions/{actionId}                             picUid, workstreamId?, version
+  /approvals/{reqId}                              type, scope, requestedBy, approverUid, payload, baseVersions, status
   /activity/{autoId}                              1 sự kiện/doc, chỉ create
   /private/settings                               googleChatWebhook (Owner + PM)
+users/{uid}                                       hồ sơ chung + workspaceIds[] (cho bộ chuyển workspace sau này)
 ```
+Mọi doc con mang `workspaceId` + `projectId` để query xuyên project (ví dụ My Work bằng collection-group query). `*` = mặc định.
 
 **Nguyên tắc thiết kế:**
-1. **Đơn vị phân quyền = đơn vị document.** Rules đọc `programs[ws.programId].pmEmail` và `ws.leadEmail` bằng `get()` (2–3 lần/request, giới hạn 10).
-2. **Adapter, không viết lại.** `storage-shim.ts` ráp collection mới thành **đúng cây cũ** App.jsx đang dùng; khi lưu, so với bản đã load và chỉ ghi document thay đổi, có điều kiện `version`. App.jsx chỉ đổi ở điểm gọi lưu/xử lý lỗi và các trường người (`pic` → `picEmail` + tên từ danh bạ).
+1. **Đơn vị phân quyền = đơn vị document.** Rules đọc `programs[ws.programId].pmUid` và `ws.leadUid` bằng `get()` (2–3 lần/request, giới hạn 10).
+2. **Adapter, không viết lại.** `storage-shim.ts` ráp collection mới thành **đúng cây cũ** App.jsx đang dùng; khi lưu, so với bản đã load và chỉ ghi document thay đổi, có điều kiện `version`. App.jsx chỉ đổi ở điểm gọi lưu/xử lý lỗi và các trường người (`pic` → `picUid` + tên từ danh bạ).
 3. **Một đường ghi.** MembersModal và mọi chỗ ghi trực tiếp khác chuyển về adapter.
 4. **Mở rộng trước, thu gọn sau.** Document project cũ giữ nguyên (chỉ đọc) tới khi ổn định 2–4 tuần; `schemaVersion` quyết định app đọc đường nào.
-5. **Rules là code.** `firestore.rules` + `firebase.json` trong repo, deploy bằng `firebase deploy --only firestore:rules`, test bằng Emulator + `@firebase/rules-unit-testing` — mỗi dòng ma trận quyền ≥1 test cho phép + 1 test từ chối.
+5. **Sẵn sàng đa workspace, chưa làm UI.** `wid` là biến ở mọi đường dẫn, rules và adapter; không gắn cứng `'main'`, domain hay URL; cấu hình riêng của AF nằm trong `workspaces/{wid}.config`.
+6. **Định danh theo uid, project mặc định restricted, `ownerUids[]`** (quyết định 14/10 vòng 2, spec v2 §2.1).
+7. **Rules là code.** `firestore.rules` + `firebase.json` trong repo, deploy bằng `firebase deploy --only firestore:rules`, test bằng Emulator + `@firebase/rules-unit-testing` — mỗi dòng ma trận quyền ≥1 test cho phép + 1 test từ chối.
 
 ## 4. Giao diện (to-be, mockup duyệt ở P4)
 

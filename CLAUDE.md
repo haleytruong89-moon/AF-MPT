@@ -13,8 +13,9 @@ Việc phát sinh qua email **không** thuộc app này (đã có PMO Tracker).
 1. File này.
 2. `docs/SPEC.md` — app để làm gì, phạm vi đợt hiện tại, tiêu chí nghiệm thu.
 3. `docs/DESIGN.md` — kiến trúc hiện tại và đích, rủi ro, phân pha.
-4. `docs/superpowers/specs/2026-10-14-roles-permissions-v2-design.md` — spec chi tiết phân quyền v2 (đã chốt 4 quyết định).
-5. Bằng chứng: `docs/handover/HANDOVER_AFMPT_2026-10-14.md`, `docs/handover/AUDIT_APPENDIX_2026-10-14.md` (trích dẫn file:dòng tại commit `8971f1a`).
+4. `docs/superpowers/specs/2026-10-14-roles-permissions-v2-design.md` — spec chi tiết phân quyền v2 (đã chốt 12 quyết định, §2 + §2.1).
+5. `docs/reviews/2026-10-14-permissions-uiux-market-review.md` — rà soát phân quyền, UI/UX, so sánh thị trường, hướng đa workspace.
+6. Bằng chứng: `docs/handover/HANDOVER_AFMPT_2026-10-14.md`, `docs/handover/AUDIT_APPENDIX_2026-10-14.md` (trích dẫn file:dòng tại commit `8971f1a`).
 
 **Nguồn đúng = code + `docs/`.** `README.md` và `src/types.ts` đã lỗi thời (nói có realtime sync, gọi role là "Viewer", cấu trúc file cũ). Không dựa vào chúng.
 
@@ -68,7 +69,14 @@ Chưa có `npm test`, chưa có CI. Test đầu tiên dự kiến: Firestore rul
 | 14/10/2026 | **Phân quyền thực thi ở server**: tách workstream và task thành document riêng | Rules không duyệt được mảng lồng nhau; dữ liệu dùng chấm performance |
 | 14/10/2026 | **Duyệt Done/Dropped 1 cấp** (quản lý trực tiếp), Owner ghi đè; Action PIC tự đóng | Tránh nghẽn ở Owner |
 | 14/10/2026 | **Sửa plan lẻ không cần duyệt** nếu trong hạn workstream; upload hàng loạt + đổi hạn WS/program/project cần Owner duyệt | Ít ma sát cho việc hằng ngày |
-| 14/10/2026 | Vai trò: Owner / PM (program) / Sub-PM (workstream) / Assignee / Viewer; mọi trường người lưu **email chữ thường** | Hết trùng tên, rules so được với `auth.token.email` |
+| 14/10/2026 | Vai trò: Owner / PM (program) / Sub-PM (workstream) / Assignee / Viewer. ~~Mọi trường người lưu email~~ → **thay bằng quyết định uid bên dưới** | Hết trùng tên |
+| 14/10/2026 (vòng 2) | **Định danh theo `uid`**: `members/{uid}`, mọi trường người lưu uid; `invites/{email}` cho người chưa đăng nhập | Chuẩn thị trường: ID bất biến; rules so `request.auth.uid` |
+| 14/10/2026 (vòng 2) | **`ownerUids[]`** (cấm rỗng). Hiện chỉ HOD; Owner thứ 2 chọn sau. B1 ẩn Release | Tránh điểm hỏng duy nhất |
+| 14/10/2026 (vòng 2) | **Project mặc định `restricted`** (chỉ thành viên dự án + Owner); Owner đổi sang `department` trong Project Settings, có ghi log | Dự án nhạy cảm (MA, UBO) thay đổi theo năm |
+| 14/10/2026 (vòng 2) | **Duyệt Done/Dropped cho tất cả project**; cấm tự duyệt; chuyển người duyệt có log; quá 3 ngày đẩy lên cấp trên; View as chỉ đọc | Dữ liệu dùng chấm performance |
+| 14/10/2026 (vòng 2) | **Nhãn UI tiếng Anh** (Pending approval, Submit as done, Approvals) | Ít việc nhất; UI hiện đã 100% EN |
+| 14/10/2026 (vòng 2) | **Chuẩn bị đa workspace ngay trong P2**: `workspaces/{wid}` là biến (AF = `main`), thành viên/vai trò theo workspace, cấu hình AF vào `config`, bỏ domain/URL gắn cứng; chưa làm UI chuyển workspace | Mở rộng phòng ban sau này không phải chuyển dữ liệu lần 2 |
+| 14/10/2026 (vòng 2) | **Test rules chạy trên GitHub Actions** (Firebase Emulator), bắt buộc xanh trước mọi lần deploy rules, kể cả B1 | Máy không có Java; đồng thời là CI đầu tiên |
 | 14/10/2026 | **Không viết lại, không tách App.jsx hàng loạt.** Adapter trong `storage-shim.ts` giữ nguyên hình dạng cây trong bộ nhớ | Một người bảo trì, không có test |
 | 14/10/2026 | **Mức tự động hóa:** cơ bản + kỷ luật (push `main` → Vercel tự deploy). Nâng dần: rules vào repo + deploy bằng Firebase CLI + test emulator trước P2 | Dữ liệu thật của phòng, sắp onboard cả phòng |
 | 14/10/2026 | AF 2026 Key Results và AF 2026 Operation **không phải rác** — là khung pilot cho mô hình Sub-PM theo workstream | Xác nhận với HOD |
@@ -102,8 +110,9 @@ Chưa có `npm test`, chưa có CI. Test đầu tiên dự kiến: Firestore rul
 - Commit production: `8971f1a` (8/6/2026), không commit nào sau đó (đã kiểm `git log` 14/10; `main` = `origin/main`)
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
-- Đang làm: chờ HOD duyệt đề xuất B1
-- Tiếp theo: B1 khóa `workspaceOwner` trong rules → B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè dữ liệu cũ → B4 panel task kéo rộng/pop-up
+- Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
+- Đang làm: chờ HOD duyệt PR #1 (docs) → viết plan B1
+- Tiếp theo: **B0** CI GitHub Actions + `firebase.json` + test rules emulator → B1 khóa `workspaceOwner` (+ Transfer lưu email, ẩn Release/"Become owner") → B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
 - HOD cần kiểm trên console: gói Firebase + PITR/export (DESIGN 6.8); kích thước doc CRP (6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
