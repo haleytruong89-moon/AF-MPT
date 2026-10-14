@@ -91,7 +91,7 @@ Mọi doc con mang `workspaceId` + `projectId` để query xuyên project (ví d
 
 | Pha | Việc | Đụng dữ liệu? | Cổng qua |
 |---|---|---|---|
-| B1 | Rules: chỉ Owner sửa `workspaceOwner*`, `ownershipLog`, `defaultView`; bỏ khớp tên ở `isOwner`; **dialog Transfer phải lưu email** (hiện lưu tên hiển thị: `TransferOwnerDialog` ~12296 `value={m.name}` → `changeOwnership('transfer', newOwner)` 13761) | Không (rules) | Tài khoản thường bị từ chối; Owner vẫn chuyển được |
+| B1 | Rules: chỉ Owner sửa `workspaceOwner*`, `ownershipLog`, `defaultView`; bỏ khớp tên ở `isOwner`; **dialog Transfer chỉ liệt kê người có email** (hiện đã ưu tiên email `picked?.email || pickedName` ~12313, nhưng rơi về tên khi team member không có email) | Không (rules) | Tài khoản thường bị từ chối; Owner vẫn chuyển được |
 | B2 | Shim ném lỗi thay vì trả `null`; `ssetShared`/`persistProject` hiện toast lỗi + giữ trạng thái "chưa lưu"; `getDoc` lỗi (khác "không tồn tại") thì **dừng lưu**, không reset ACL (rủi ro #12) | Không | Tài khoản `member` sửa → thấy lỗi; mất mạng giữa chừng → không mất thành viên |
 | B3 | So `updatedAt` trước khi lưu → cảnh báo "đã có người sửa, tải lại" | Không | 2 tab cùng sửa → tab sau bị cảnh báo |
 | B4 | Panel task kéo rộng/pop-up | Không | HOD thử trên production |
