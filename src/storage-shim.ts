@@ -33,6 +33,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite } from './ownership';
+import { classifyReadError, checkRevision, nextRev } from './persistence';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -43,6 +44,9 @@ const ACTIVITY_REF = (pid: string) => doc(db, 'workspaces', WORKSPACE, 'activity
 
 const LS_PREFIX = 'afmpt:';
 const ACTIVITY_CAP = 500;
+
+// B3: rev of each project as last read/written by this client.
+const knownRev = new Map<string, number>();
 
 /** Per-user localStorage key for the "currently selected project". */
 function currentProjectKey(uid: string): string {
@@ -185,8 +189,9 @@ window.storage = {
         // Strip RBAC-internal fields from the value so the new App.jsx isn't
         // confused by extra members/roles fields. (Member management uses the
         // separate MembersModal which reads them via the data.ts hooks.)
-        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, ...rest } =
+        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, ...rest } =
           data as Record<string, unknown>;
+        knownRev.set(pid, typeof rev === 'number' ? rev : 0);
         // Suppress unused warnings — these are intentional drops:
         void memberIds;
         void roles;
@@ -283,9 +288,21 @@ window.storage = {
           if (existing.exists()) {
             ex = existing.data() as Record<string, unknown>;
           }
-        } catch {
+        } catch (e) {
+          // B2: only "doc does not exist" may fall through to the create path.
+          // Any other read failure (network, quota…) aborts — never rebuild the ACL.
+          if (classifyReadError((e as { code?: string })?.code) === 'fatal') {
+            console.warn('[storage] project pre-read failed; write aborted:', pid, e);
+            return null;
+          }
           ex = null;
         }
+        // B3: refuse to overwrite a newer server version.
+        if (checkRevision(ex?.rev as number | undefined, knownRev.get(pid), ex !== null) === 'conflict') {
+          console.warn('[storage] project changed on server since load; write refused:', pid);
+          return { key, value, shared: true, error: 'conflict' };
+        }
+        const newRev = nextRev(ex?.rev as number | undefined);
         const memberIds = (ex?.memberIds as string[] | undefined) || [user.uid];
         const roles = (ex?.roles as Record<string, string> | undefined) || {
           [user.uid]: 'owner',
@@ -293,8 +310,9 @@ window.storage = {
         const createdBy = (ex?.createdBy as string | undefined) || user.uid;
         const createdAt = ex?.createdAt || serverTimestamp();
         const deletedAt = ex?.deletedAt ?? null;
-        const { id: _id, ...body } = incoming;
+        const { id: _id, rev: _rev, ...body } = incoming;
         void _id;
+        void _rev;
         await setDoc(PROJECT_REF(pid), {
           ...body,
           memberIds,
@@ -302,8 +320,10 @@ window.storage = {
           createdBy,
           createdAt,
           deletedAt,
+          rev: newRev,
           updatedAt: serverTimestamp(),
         });
+        knownRev.set(pid, newRev);
         return { key, value, shared: true };
       }
 
