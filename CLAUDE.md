@@ -100,6 +100,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Code hỏng sau deploy | Vercel → Deployments → *Promote* bản trước; rồi `git revert` commit lỗi trên `main` | HOD |
 | Rules mới chặn sai | Deploy lại bản rules trước (lưu trong git) | HOD |
 | Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
+| Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
 | Chuyển đổi dữ liệu v2 lỗi | Document project cũ giữ nguyên tới M6; đặt lại `schemaVersion: 1` | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
@@ -113,8 +114,9 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
 - Đã xong: B0 — CI GitHub Actions + harness test rules (PR #2); plan B0+B1 `docs/superpowers/plans/2026-10-14-b0-b1-rules-ci-and-owner-lock.md`
-- Đang làm: chờ HOD merge PR #2 (B0) → B1
-- Tiếp theo: B1 khóa `workspaceOwner` (+ Transfer lưu email, ẩn Release/"Become owner") → B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
+- Đã xong: B0 merged (PR #2)
+- Đang làm: B1 — PR #3 `fix/b1-owner-lock` chờ HOD duyệt; sau merge HOD deploy rules (runbook trong PR)
+- Tiếp theo: B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
 - Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
