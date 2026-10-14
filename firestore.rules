@@ -20,7 +20,8 @@ rules_version = '2';
 // that has v1 data, run scripts/setup-rbac.js with admin credentials so every
 // existing project gets memberIds/roles populated.
 //
-// Deploy via Firebase Console → Firestore Database → Rules → Publish.
+// Deploy: firebase deploy --only firestore:rules --project <prod project id>
+// (or paste in Firebase Console → Firestore Database → Rules) — only after CI is green.
 // ─────────────────────────────────────────────────────────────────────────────
 
 service cloud.firestore {
@@ -57,9 +58,39 @@ service cloud.firestore {
       return p.roles.values().hasAny(['owner']);
     }
 
-    // ─────── Workspace meta (just a marker doc; project list is queried directly) ───────
+    // ─────── Workspace meta ───────
+    // B1 (2026-10-14): owner fields are owner-only. Any domain user may still
+    // write the rest of the doc (userPreferences, seeded, updatedAt…) because
+    // saveMeta() sends the whole meta object with merge:true; unchanged keys
+    // are not "affected" so stale-but-identical owner fields pass.
+    // There is no client-side claim or release: ownerless recovery is an
+    // admin-script operation (see CLAUDE.md Rollback).
+    function ownerFields() {
+      return ['workspaceOwner', 'ownershipLog', 'defaultView'];
+    }
+
+    function isWorkspaceOwner() {
+      return resource.data.get('workspaceOwner', null) is string
+        && resource.data.workspaceOwner.lower() == request.auth.token.email.lower();
+    }
+
+    function newOwnerIsValid() {
+      return request.resource.data.get('workspaceOwner', null) is string
+        && request.resource.data.workspaceOwner.lower().matches('.*@smartosc[.]com$');
+    }
+
     match /workspaces/{workspace} {
-      allow read, write: if isSmartOSC() && workspace == 'main';
+      allow read: if isSmartOSC() && workspace == 'main';
+
+      allow create: if isSmartOSC() && workspace == 'main'
+        && !request.resource.data.keys().hasAny(ownerFields());
+
+      allow update: if isSmartOSC() && workspace == 'main' && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
+        || (isWorkspaceOwner() && newOwnerIsValid())
+      );
+
+      allow delete: if false;
     }
 
     // ─────── Projects ───────
