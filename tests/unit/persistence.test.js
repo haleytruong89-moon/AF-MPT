@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -96,5 +96,14 @@ describe('failedRestores (B3 fix: restore must not report success when saves fai
       { name: 'A', status: 'ok' }, { name: 'B', status: 'conflict' }, { name: 'C', status: 'error' },
     ])).toEqual(['B', 'C']);
     expect(failedRestores([])).toEqual([]);
+  });
+});
+
+describe('bannerGroups (follow-up: conflict and error listed separately)', () => {
+  it('splits project names by failure kind', () => {
+    expect(bannerGroups({
+      a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
+    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'] });
+    expect(bannerGroups({})).toEqual({ conflict: [], error: [] });
   });
 });

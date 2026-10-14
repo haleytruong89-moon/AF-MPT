@@ -59,3 +59,10 @@ export const FORCE_WRITE_FLAG = '__forceOverwrite';
 export function failedRestores(results) {
   return (results || []).filter((r) => r.status !== 'ok').map((r) => r.name);
 }
+
+// Banner wording per failure kind (a mixed state must not call an error a conflict).
+export function bannerGroups(saveState) {
+  const out = { conflict: [], error: [] };
+  for (const v of Object.values(saveState || {})) (v.status === 'conflict' ? out.conflict : out.error).push(v.name);
+  return out;
+}

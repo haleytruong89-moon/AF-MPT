@@ -16,7 +16,7 @@ import { useAuth } from './auth';
 import { useUserDirectory } from './data';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 
@@ -1926,19 +1926,19 @@ function FieldLabel({ children }) {
   return <div style={{ fontSize: 11, fontWeight: 500, color: TOK.muted, marginBottom: 4 }}>{children}</div>;
 }
 // B2/B3: persistent banner for failed or refused project saves.
+// Set right before a deliberate reload so the unload guard does not prompt.
+let bypassUnloadGuard = false;
 function SaveBanner({ saveState }) {
-  const entries = Object.entries(saveState || {});
-  if (entries.length === 0) return null;
-  const conflict = entries.some(([, v]) => v.status === 'conflict');
-  const names = entries.map(([, v]) => `“${v.name}”`).join(', ');
+  const { conflict: conflictNames, error: errorNames } = bannerGroups(saveState);
+  if (conflictNames.length + errorNames.length === 0) return null;
+  const q = (list) => list.map((n) => `“${n}”`).join(', ');
   return (
     <div role="alert" style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 120, maxWidth: 'calc(100% - 40px)', background: TOK.blockerBg, color: TOK.blocker, border: '1px solid currentColor', borderRadius: 8, padding: '10px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
       <span>
-        {conflict
-          ? <>Your latest changes to {names} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit.</>
-          : <>Couldn’t save changes to {names}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
+        {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
+        {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
       </span>
-      <button onClick={() => window.location.reload()} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
+      <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
 }
@@ -2047,7 +2047,7 @@ class ErrorBoundary extends React.Component {
 function PopoverMenu({ x, y, items, onClose }) {
   // Esc closes the menu
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -12694,7 +12694,7 @@ export default function App() {
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
     const onBeforeUnload = (e) => {
-      if (!hasUnsavedWork(pendingSaves.current, saveState)) return;
+      if (bypassUnloadGuard || !hasUnsavedWork(pendingSaves.current, saveState)) return;
       e.preventDefault();
       e.returnValue = '';
     };
@@ -13178,7 +13178,10 @@ export default function App() {
       projectLeadShare: 10,
       contributorRegistry: DEFAULT_DEPARTMENTS.map((nm) => ({ name: nm })),
     };
-    await saveProject(p);
+    if (await saveProject(p) !== 'ok') {
+      showToast('Couldn’t create the project — nothing was saved. Check your connection and try again.');
+      return;
+    }
     const m2 = { ...meta, projectIds: [...meta.projectIds, p.id], currentProjectId: p.id };
     setMeta(m2); await saveMeta(m2);
     setProjects((prev) => ({ ...prev, [p.id]: p }));
@@ -13203,7 +13206,10 @@ export default function App() {
         showToast(`A project named "${imported.name}" already exists. Imported as "${finalName}".`);
         imported.name = finalName;
       }
-      await saveProject(imported);
+      if (await saveProject(imported) !== 'ok') {
+        showToast('Couldn’t save the imported project — nothing was added. Check your connection and try again.');
+        return;
+      }
       const m2 = { ...meta, projectIds: [...meta.projectIds, imported.id], currentProjectId: imported.id };
       setMeta(m2); await saveMeta(m2);
       setProjects((prev) => ({ ...prev, [imported.id]: imported }));
@@ -14467,6 +14473,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
               } else if (e.key === 'Enter' && newName.trim()) {
                 e.preventDefault(); addMember();
               } else if (e.key === 'Escape') {
+                e.preventDefault(); // close the suggestions only, not the settings modal
                 setShowDirSuggest(false);
               }
             }}
@@ -14491,6 +14498,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
               } else if (e.key === 'Enter' && newName.trim()) {
                 e.preventDefault(); addMember();
               } else if (e.key === 'Escape') {
+                e.preventDefault(); // close the suggestions only, not the settings modal
                 setShowDirSuggest(false);
               }
             }}
