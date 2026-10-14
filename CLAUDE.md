@@ -49,8 +49,9 @@ npm run dev         # localhost:5173
 npm run build       # tsc --noEmit && vite build
 npm run typecheck
 npm run lint        # hiện 6 errors / 63 warnings — không làm tăng thêm
+npm run test:rules  # Firestore rules trên Emulator (cần Java 21 — máy dev không có, chạy trên CI)
 ```
-Chưa có `npm test`, chưa có CI. Test đầu tiên dự kiến: Firestore rules qua Firebase Emulator (pha P2).
+CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (nếu có) + rules test cho mọi PR và push vào `main`. **CI xanh là cổng bắt buộc trước khi merge và trước khi deploy rules.** Test rules ở `tests/rules/`, project emulator `demo-afmpt`.
 
 ## Conventions
 
@@ -111,8 +112,9 @@ Chưa có `npm test`, chưa có CI. Test đầu tiên dự kiến: Firestore rul
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
-- Đang làm: chờ HOD duyệt PR #1 (docs) → viết plan B1
-- Tiếp theo: **B0** CI GitHub Actions + `firebase.json` + test rules emulator → B1 khóa `workspaceOwner` (+ Transfer lưu email, ẩn Release/"Become owner") → B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
-- HOD cần làm trước B1: sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` (Console). Còn kiểm: kích thước doc CRP (DESIGN 6.9)
+- Đã xong: B0 — CI GitHub Actions + harness test rules (PR #2); plan B0+B1 `docs/superpowers/plans/2026-10-14-b0-b1-rules-ci-and-owner-lock.md`
+- Đang làm: chờ HOD merge PR #2 (B0) → B1
+- Tiếp theo: B1 khóa `workspaceOwner` (+ Transfer lưu email, ẩn Release/"Become owner") → B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
+- Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
