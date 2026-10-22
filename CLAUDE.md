@@ -101,7 +101,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Rules mới chặn sai | Deploy lại bản rules trước (lưu trong git) | HOD |
 | Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
-| Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console | HOD |
+| Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
 | Chuyển đổi dữ liệu v2 lỗi | Document project cũ giữ nguyên tới M6; đặt lại `schemaVersion: 1` | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
