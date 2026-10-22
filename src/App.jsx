@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
 import {
   Plus, Edit2, Trash2, X, Upload, Download, ChevronRight, ChevronDown,
   Save, Map as MapIcon, List as ListIcon, Calendar, FileSpreadsheet,
@@ -11,14 +11,19 @@ import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
 import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
+import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
-import { useUserDirectory } from './data';
+import { useUserDirectory, useWorkspaceDirectory } from './data';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
+
+// P1: directory index (or null) for read-time person canonicalization in dashboards.
+const DirectoryIndexContext = React.createContext(null);
 
 /* ═════════ SEED DATA ═════════ */
 const SEED_CRP = {"id": "proj_crp", "name": "CRP", "createdAt": "2026-04-24T00:00:00.000Z", "programs": [{"id": "p_1", "name": "LLCs", "workstreams": [{"id": "w_1", "name": "HIO", "tasks": [{"id": "t_1", "name": "Resolution for dissolutions & Submit to BRA", "status": "Planned", "pic": "Legal", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": "Quyết định chấp thuận Hồ sơ xin giải thể", "dependencies": null, "checkIns": []}, {"id": "t_2", "name": "Debt payment plan, asset liquidation", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_3", "name": "Close Tax code - Tổng hợp rủi ro & estimate inspection cost", "status": "Planned", "pic": "AF", "start": "2026-03-20", "end": "2026-03-30", "duration": 10, "deliverables": "1. Bảng tổng hợp rủi ro & review report for tax status during previous years", "dependencies": null, "checkIns": []}, {"id": "t_4", "name": "Submit request for tax code closure", "status": "Planned", "pic": "AF", "start": "2026-03-30", "end": "2026-04-14", "duration": 15, "deliverables": "2. Tax audit request for closure", "dependencies": null, "checkIns": []}, {"id": "t_5", "name": "Tax inspection process for tax code closre", "status": "Planned", "pic": "AF", "start": "2026-04-14", "end": "2026-06-13", "duration": 60, "deliverables": "2. Biên bản quyết toán Thuế\n3. Chấp thuận đóng Mã Số Thuế", "dependencies": null, "checkIns": []}, {"id": "t_6", "name": "Settles debts, distribute remainders to owners", "status": "Planned", "pic": "AF", "start": "2026-06-13", "end": "2026-07-13", "duration": 30, "deliverables": "Shares returns to individuals", "dependencies": "Meeting + BoD", "checkIns": []}, {"id": "t_7", "name": "Submit application for dissolustions to BRAs", "status": "Planned", "pic": "Legal", "start": "2026-07-13", "end": "2026-08-12", "duration": 30, "deliverables": "Quyết định chấp thuận Hồ sơ xin giải thể", "dependencies": null, "checkIns": []}]}, {"id": "w_2", "name": "SKT", "tasks": [{"id": "t_8", "name": "Resolution for dissolutions & Submit to BRA", "status": "Planned", "pic": "Legal", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": "Quyết định chấp thuận Hồ sơ xin giải thể", "dependencies": null, "checkIns": []}, {"id": "t_9", "name": "Debt payment plan, asset liquidation", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_10", "name": "Close Tax code - Tổng hợp rủi ro & estimate inspection cost", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": "1. Bảng tổng hợp rủi ro & review report for tax status during previous years", "dependencies": null, "checkIns": []}, {"id": "t_11", "name": "Submit request for tax code closure", "status": "Planned", "pic": "AF", "start": "2026-04-30", "end": "2026-05-15", "duration": 15, "deliverables": "2. Tax audit request for closure", "dependencies": null, "checkIns": []}, {"id": "t_12", "name": "Tax inspection process for tax code closre", "status": "Planned", "pic": "AF", "start": "2026-05-15", "end": "2026-08-13", "duration": 90, "deliverables": "2. Biên bản quyết toán Thuế\n3. Chấp thuận đóng Mã Số Thuế", "dependencies": null, "checkIns": []}, {"id": "t_13", "name": "Settles debts, distribute remainders to owners", "status": "Planned", "pic": "AF", "start": "2026-08-13", "end": "2026-09-12", "duration": 30, "deliverables": "Shares returns to individuals", "dependencies": null, "checkIns": []}, {"id": "t_14", "name": "Submit application for dissolustions to BRAs", "status": "Planned", "pic": "Legal", "start": "2026-09-12", "end": "2026-10-12", "duration": 30, "deliverables": "Quyết định chấp thuận Hồ sơ xin giải thể", "dependencies": null, "checkIns": []}]}]}, {"id": "p_2", "name": "NSC", "workstreams": [{"id": "w_3", "name": "New SingCo", "tasks": [{"id": "t_15", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimate PnL)", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-25", "duration": 10, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_16", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_17", "name": "Overseas investment registration", "status": "Planned", "pic": "Legal", "start": "2026-04-25", "end": "2026-06-09", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_18", "name": "Advisory Report for NewSingco Structure", "status": "Planned", "pic": "AF", "start": "2026-04-25", "end": "2026-05-20", "duration": 25, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_19", "name": "Incorporate Registration", "status": "Planned", "pic": "Legal", "start": "2026-06-09", "end": "2026-07-09", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_20", "name": "Góp vốn thành lập", "status": "Planned", "pic": "AF", "start": "2026-07-09", "end": "2026-07-19", "duration": 10, "deliverables": "Mở tài khoản NH + Góp vốn theo đăng ký tại ERCs", "dependencies": null, "checkIns": []}, {"id": "t_21", "name": "Compliance work - Legal", "status": "Planned", "pic": "Legal", "start": "2026-07-09", "end": "2026-07-24", "duration": 15, "deliverables": "Công bố thông tin + khắc dấu", "dependencies": null, "checkIns": []}, {"id": "t_22", "name": "Compliance work - Taxes & Accounting", "status": "Planned", "pic": "AF", "start": "2026-07-09", "end": "2026-07-24", "duration": 15, "deliverables": "Đăng ký thuế, set up kế toán", "dependencies": null, "checkIns": []}, {"id": "t_23", "name": "Compliance work - Insurance, ....", "status": "Planned", "pic": "HR", "start": "2026-07-09", "end": "2026-07-24", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_24", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-07-09", "end": "2026-07-24", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_25", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-07-09", "end": "2026-07-24", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_26", "name": "Hire key staffs", "status": "Planned", "pic": "HR", "start": "2026-05-25", "end": "2026-07-24", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_27", "name": "Vendor for opeartion- Accounting", "status": "Planned", "pic": "AF", "start": "2026-06-09", "end": "2026-07-24", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_28", "name": "Vendor for opeartion- HR", "status": "Planned", "pic": "HR", "start": "2026-07-09", "end": "2026-08-08", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_29", "name": "Vendor for opeartion- Legal", "status": "Planned", "pic": "HR", "start": "2026-07-09", "end": "2026-08-08", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_30", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-07-24", "end": "2026-09-07", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_31", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-07-24", "end": "2026-09-07", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_32", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-07-24", "end": "2026-10-22", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_33", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-07-24", "end": "2026-10-22", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_34", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-07-24", "end": "2026-10-22", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_35", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-07-24", "end": "2026-10-22", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_36", "name": "Business Performance reporting New Structure - FIN", "status": "Planned", "pic": "FIN", "start": "2026-07-24", "end": "2026-10-22", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_37", "name": "First year PnL & Divident distribution - AF Work", "status": "Planned", "pic": "AF", "start": "2026-10-22", "end": "2026-12-21", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_38", "name": "First year PnL & Divident distribution - Legal Work", "status": "Planned", "pic": "Legal", "start": "2026-12-21", "end": "2027-02-19", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_3", "name": "NVNC", "workstreams": [{"id": "w_4", "name": "New VNCo", "tasks": [{"id": "t_39", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimate PnL)", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-05-15", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_40", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2026-04-15", "end": "2026-05-15", "duration": 30, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_41", "name": "Investment registration", "status": "Planned", "pic": "Legal", "start": "2026-07-19", "end": "2026-08-18", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_42", "name": "Enterprise Registration", "status": "Planned", "pic": "Legal", "start": "2026-08-18", "end": "2026-09-17", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_43", "name": "Góp vốn thành lập", "status": "Planned", "pic": "AF", "start": "2026-09-17", "end": "2026-09-27", "duration": 10, "deliverables": "Mở tài khoản NH + Góp vốn theo đăng ký tại ERCs", "dependencies": null, "checkIns": []}, {"id": "t_44", "name": "Compliance work - Legal", "status": "Planned", "pic": "Legal", "start": "2026-09-17", "end": "2026-10-07", "duration": 20, "deliverables": "Công bố thông tin + khắc dấu", "dependencies": null, "checkIns": []}, {"id": "t_45", "name": "Compliance work - Taxes & Accounting", "status": "Planned", "pic": "AF", "start": "2026-09-17", "end": "2026-10-07", "duration": 20, "deliverables": "Đăng ký thuế, set up kế toán", "dependencies": null, "checkIns": []}, {"id": "t_46", "name": "Compliance work - HR", "status": "Planned", "pic": "HR", "start": "2026-09-17", "end": "2026-10-07", "duration": 20, "deliverables": "Insurances, etc", "dependencies": null, "checkIns": []}, {"id": "t_47", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-09-17", "end": "2026-10-07", "duration": 20, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_48", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-09-17", "end": "2026-10-07", "duration": 20, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_49", "name": "Coms & Move Staffs", "status": "Planned", "pic": "HR", "start": "2026-08-18", "end": "2026-10-17", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_50", "name": "Vendor, asset  movement - Accouting systems", "status": "Planned", "pic": "AF", "start": "2026-09-17", "end": "2026-10-17", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_51", "name": "Vendor, asset  movement - Vendor works", "status": "Planned", "pic": "GA", "start": "2026-09-17", "end": "2026-10-17", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_52", "name": "Management  Contracts (InterCo)", "status": "Planned", "pic": "AF", "start": "2026-07-19", "end": "2026-09-17", "duration": 60, "deliverables": "Ký Hợp đồng với SM Sing/ ANZ", "dependencies": null, "checkIns": []}, {"id": "t_53", "name": "Management  Contracts (New Clients)", "status": "Planned", "pic": "AF", "start": "2026-05-15", "end": "2026-08-13", "duration": 90, "deliverables": "Communicate với key levels (MLs, HODs) v/v chuyển các HĐ đang kí với VN qua kí với new entities & v/v các khách hàng mới sẽ kí với new VNCO", "dependencies": null, "checkIns": []}, {"id": "t_54", "name": "Management billings", "status": "Planned", "pic": "AF", "start": "2026-10-07", "end": "2026-11-21", "duration": 45, "deliverables": "Luồng billing giữa các entities", "dependencies": null, "checkIns": []}, {"id": "t_55", "name": "TPs & documents", "status": "Planned", "pic": "AF", "start": "2026-10-17", "end": "2026-12-01", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_56", "name": "DOA, SOPs ver 2 ( Legal)", "status": "Planned", "pic": "Legal", "start": "2026-10-07", "end": "2026-11-21", "duration": 45, "deliverables": "Quy chế, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_57", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-10-07", "end": "2026-11-21", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_58", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-10-07", "end": "2026-11-21", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_59", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-10-07", "end": "2027-01-05", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_60", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-10-07", "end": "2027-01-05", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_61", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-10-07", "end": "2027-01-05", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_62", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-10-07", "end": "2027-01-05", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_63", "name": "Business Performance reporting New Structure - FIN", "status": "Planned", "pic": "FIN", "start": "2026-10-07", "end": "2027-01-05", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_64", "name": "First year PnL & Divident distribution - AF Work", "status": "Planned", "pic": "AF", "start": "2027-03-26", "end": "2027-06-24", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_65", "name": "First year PnL & Divident distribution - Legal Work", "status": "Planned", "pic": "Legal", "start": "2027-03-26", "end": "2027-06-24", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_4", "name": "SSWAP", "workstreams": [{"id": "w_5", "name": "New Sing Co.", "tasks": [{"id": "t_66", "name": "Obtain M&A Approval", "status": "Planned", "pic": "Legal", "start": "2026-07-24", "end": "2026-08-23", "duration": 30, "deliverables": "Thông báo chấp thuận việc mua cổ phần", "dependencies": null, "checkIns": []}, {"id": "t_67", "name": "SPA a among SingCo & LLCs", "status": "Planned", "pic": "Legal", "start": "2026-07-24", "end": "2026-08-23", "duration": 30, "deliverables": "SPAs", "dependencies": null, "checkIns": []}, {"id": "t_68", "name": "Ký kết HĐ chuyển nhượng vốn và Kê khai, nộp thuế", "status": "Planned", "pic": "AF", "start": "2026-08-24", "end": "2026-09-08", "duration": 15, "deliverables": "1. Hợp đồng chuyển nhượng vốn\n2. Seller Kê khai, nộp thuế liên quan chuyển nhượng vốn", "dependencies": null, "checkIns": []}, {"id": "t_69", "name": "Thực hiện chuyển nhượng vốn và trả tiền cho Sellers", "status": "Planned", "pic": "AF", "start": "2026-09-09", "end": "2026-09-24", "duration": 15, "deliverables": "1.Chuyển vốn vào TK DICA của SM Corp\n2. SM Corp trả tiền bán Cổ phần cho Sellers từ DICA", "dependencies": null, "checkIns": []}, {"id": "t_70", "name": "Cập nhật Sổ đăng ký cổ đông", "status": "Planned", "pic": "Legal", "start": "2026-09-25", "end": "2026-09-30", "duration": 5, "deliverables": "Sổ đăng ký cổ đông", "dependencies": null, "checkIns": []}, {"id": "t_71", "name": "Notify of change innumber of shares hold by foreignshare holder", "status": "Planned", "pic": "Legal", "start": "2026-09-30", "end": "2026-10-05", "duration": 5, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_72", "name": "Dividend pays to NewSingCo", "status": "Planned", "pic": "Legal", "start": "2026-10-05", "end": "2026-10-10", "duration": 5, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_5", "name": "SPVs", "workstreams": [{"id": "w_6", "name": "ManagementCo", "tasks": [{"id": "t_73", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimte PnL)", "status": "Planned", "pic": "AF", "start": "2026-03-23", "end": "2026-04-07", "duration": 15, "deliverables": null, "dependencies": "Meeting + BoD", "checkIns": []}, {"id": "t_74", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2026-03-23", "end": "2026-04-12", "duration": 20, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_75", "name": "Nộp hồ sơ đăng ký thành lập SPVs (get ERC)", "status": "Planned", "pic": "Legal", "start": "2026-04-12", "end": "2026-04-27", "duration": 15, "deliverables": "Đăng ký kinh doanh (ERC)", "dependencies": null, "checkIns": []}, {"id": "t_76", "name": "Góp vốn thành lập", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-05-07", "duration": 10, "deliverables": "Mở tài khoản NH + Góp vốn theo đăng ký tại ERCs", "dependencies": null, "checkIns": []}, {"id": "t_77", "name": "Compliance work - Legal", "status": "Planned", "pic": "Legal", "start": "2026-04-27", "end": "2026-05-07", "duration": 10, "deliverables": "Công bố thông tin + khắc dấu", "dependencies": null, "checkIns": []}, {"id": "t_78", "name": "Compliance work - Taxes & Accounting", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-05-07", "duration": 10, "deliverables": "Đăng ký thuế, set up kế toán", "dependencies": null, "checkIns": []}, {"id": "t_79", "name": "Compliance work - HR", "status": "Planned", "pic": "HR", "start": "2026-04-27", "end": "2026-05-07", "duration": 10, "deliverables": "Insurances, ...", "dependencies": null, "checkIns": []}, {"id": "t_80", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-05-17", "duration": 20, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_81", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-05-17", "duration": 20, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_82", "name": "Coms & Move Staffs", "status": "Planned", "pic": "HR", "start": "2026-04-12", "end": "2026-05-27", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_83", "name": "Vendor, asset  movement - Accouting systems", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-05-27", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_84", "name": "Vendor, asset  movement - Vendor works", "status": "Planned", "pic": "GA", "start": "2026-04-27", "end": "2026-05-27", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_85", "name": "Management  Contracts", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-06-11", "duration": 45, "deliverables": "Ký Hợp đồng với SM Sing/ ANZ", "dependencies": null, "checkIns": []}, {"id": "t_86", "name": "Management billings", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-06-11", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_87", "name": "TPs & documents", "status": "Planned", "pic": "AF", "start": "2026-04-27", "end": "2026-06-11", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_88", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-05-07", "end": "2026-06-21", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_89", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-05-27", "end": "2026-07-11", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_90", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-05-27", "end": "2026-08-25", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_91", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-05-27", "end": "2026-08-25", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_92", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-05-27", "end": "2026-08-25", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_93", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-05-27", "end": "2026-08-25", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_94", "name": "First year PnL & Divident distribution - AF Work", "status": "Planned", "pic": "AF", "start": "2026-08-25", "end": "2026-10-24", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_95", "name": "First year PnL & Divident distribution - Legal Work", "status": "Planned", "pic": "Legal", "start": "2026-10-24", "end": "2026-12-23", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}]}, {"id": "w_7", "name": "SPVs", "tasks": [{"id": "t_96", "name": "Business Performance reporting New Structure - FIN", "status": "Planned", "pic": "FIN", "start": "2026-05-27", "end": "2026-08-25", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}]}, {"id": "w_8", "name": "FIB Co", "tasks": [{"id": "t_97", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimte PnL)", "status": "Planned", "pic": "AF", "start": "2026-03-23", "end": "2026-04-07", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_98", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2026-03-23", "end": "2026-04-22", "duration": 30, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_99", "name": "Nộp hồ sơ đăng ký thành lập SPVs (get ERC)", "status": "Planned", "pic": "Legal", "start": "2026-04-22", "end": "2026-05-22", "duration": 30, "deliverables": "Đăng ký kinh doanh (ERC)", "dependencies": null, "checkIns": []}, {"id": "t_100", "name": "Góp vốn thành lập", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-06-01", "duration": 10, "deliverables": "Mở tài khoản NH + Góp vốn theo đăng ký tại ERCs", "dependencies": null, "checkIns": []}, {"id": "t_101", "name": "Compliance work - Legal", "status": "Planned", "pic": "Legal", "start": "2026-05-22", "end": "2026-06-01", "duration": 10, "deliverables": "Công bố thông tin + khắc dấu", "dependencies": null, "checkIns": []}, {"id": "t_102", "name": "Compliance work - Taxes & Accounting", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-06-01", "duration": 10, "deliverables": "Đăng ký thuế, set up kế toán", "dependencies": null, "checkIns": []}, {"id": "t_103", "name": "Compliance work - Insurance, ....", "status": "Planned", "pic": "HR", "start": "2026-05-22", "end": "2026-06-01", "duration": 10, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_104", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-06-06", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_105", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-06-06", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_106", "name": "Coms & Move Staffs", "status": "Planned", "pic": "HR", "start": "2026-04-22", "end": "2026-06-21", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_107", "name": "Vendor, asset  movement - Accouting systems", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-06-21", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_108", "name": "Vendor, asset  movement - Vendor works", "status": "Planned", "pic": "GA", "start": "2026-05-22", "end": "2026-06-21", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_109", "name": "Management  Contracts", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-07-06", "duration": 45, "deliverables": "Ký Hợp đồng với SM OSC", "dependencies": null, "checkIns": []}, {"id": "t_110", "name": "Management billings", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-07-06", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_111", "name": "TPs & documents", "status": "Planned", "pic": "AF", "start": "2026-05-22", "end": "2026-07-06", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_112", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-06-01", "end": "2026-07-16", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_113", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-06-21", "end": "2026-08-05", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_114", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-06-21", "end": "2026-09-19", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_115", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-06-21", "end": "2026-09-19", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_116", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-06-21", "end": "2026-09-19", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_117", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-06-21", "end": "2026-09-19", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_118", "name": "First year PnL & Divident distribution - AF Work", "status": "Planned", "pic": "AF", "start": "2026-09-19", "end": "2026-11-18", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_119", "name": "First year PnL & Divident distribution - Legal Work", "status": "Planned", "pic": "Legal", "start": "2026-11-18", "end": "2027-01-17", "duration": 60, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_120", "name": "Quyết toán + Đóng cửa VP HCM - AF Part", "status": "Planned", "pic": "AF", "start": "2026-11-18", "end": "2027-02-16", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_6", "name": "FINTECH", "workstreams": [{"id": "w_9", "name": "Fintech Co", "tasks": [{"id": "t_121", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimte PnL)", "status": "Planned", "pic": "AF", "start": "2025-09-15", "end": "2025-09-30", "duration": 15, "deliverables": null, "dependencies": "Meeting + BoD", "checkIns": []}, {"id": "t_122", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2025-10-01", "end": "2025-10-13", "duration": 12, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_123", "name": "Cập nhật cơ cấu sở hữu (nếu có) - Cash", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-27", "duration": 12, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_124", "name": "Cập nhật cơ cấu sở hữu (nếu có) - Documents", "status": "Planned", "pic": "Legal", "start": "2026-04-15", "end": "2026-04-27", "duration": 12, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_125", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_126", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-04-15", "end": "2026-04-30", "duration": 15, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_127", "name": "Compliance work - Taxes", "status": "Planned", "pic": "AF", "start": "2025-10-06", "end": "2025-11-20", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_128", "name": "Compliance work - Insurance, ....", "status": "Planned", "pic": "HR", "start": "2025-10-06", "end": "2025-11-20", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_129", "name": "Coms & Move Staffs", "status": "Planned", "pic": "HR", "start": "2025-10-06", "end": "2025-11-05", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_130", "name": "Vendor, asset  movement - Accouting systems", "status": "Planned", "pic": "AF", "start": "2025-10-06", "end": "2025-11-05", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_131", "name": "Vendor, asset  movement - Vendor works", "status": "Planned", "pic": "GA", "start": "2025-10-06", "end": "2025-11-05", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_132", "name": "Inteco contract", "status": "Planned", "pic": "AF", "start": "2025-10-06", "end": "2025-11-20", "duration": 45, "deliverables": "Ký Hợp đồng với SM Sing/ ANZ", "dependencies": null, "checkIns": []}, {"id": "t_133", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-03-23", "end": "2026-05-07", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_134", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-03-23", "end": "2026-05-07", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_135", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-03-23", "end": "2026-06-21", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_136", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-03-23", "end": "2026-06-21", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_137", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-03-23", "end": "2026-06-21", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_138", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-03-23", "end": "2026-06-21", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_139", "name": "Business Performance reporting New Structure - FIN", "status": "Planned", "pic": "FIN", "start": "2026-03-23", "end": "2026-06-21", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_140", "name": "Quyết toán với Cơ quan Thuế (incl rà soát & lên plan)", "status": "Planned", "pic": "AF", "start": "2026-08-01", "end": "2026-12-29", "duration": 150, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_7", "name": "SDigital", "workstreams": [{"id": "w_10", "name": "SDigital", "tasks": [{"id": "t_141", "name": "Nghiên cứu các khả năng sử dụng Smart Digital", "status": "Planned", "pic": "AF", "start": "2026-03-23", "end": "2026-05-07", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_142", "name": "Chốt Business Plan ( Owner structure,  Nhân sự, business operation model, estimte PnL)", "status": "Planned", "pic": "AF", "start": "2026-05-07", "end": "2026-06-06", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_143", "name": "High-level communication", "status": "Planned", "pic": "Sponsor", "start": "2026-05-07", "end": "2026-06-06", "duration": 30, "deliverables": "BOM, Appointed Legal Rep/ Ownership, Moved HODs", "dependencies": null, "checkIns": []}, {"id": "t_144", "name": "Cập nhật cơ cấu sở hữu (nếu có) - Cash", "status": "Planned", "pic": "AF", "start": "2026-06-06", "end": "2026-07-06", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_145", "name": "Cập nhật cơ cấu sở hữu (nếu có) - Documents", "status": "Planned", "pic": "Legal", "start": "2026-06-06", "end": "2026-07-06", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_146", "name": "Bank mandate set up", "status": "Planned", "pic": "AF", "start": "2026-06-06", "end": "2026-07-06", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_147", "name": "Prepare cash flow", "status": "Planned", "pic": "AF", "start": "2026-06-06", "end": "2026-07-06", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_148", "name": "Compliance work - Taxes", "status": "Planned", "pic": "AF", "start": "2026-07-06", "end": "2026-08-20", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_149", "name": "Compliance work - Insurance, ....", "status": "Planned", "pic": "HR", "start": "2026-07-06", "end": "2026-08-20", "duration": 45, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_150", "name": "Coms & Move Staffs", "status": "Planned", "pic": "HR", "start": "2025-10-06", "end": "2025-11-05", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_151", "name": "Vendor, asset  movement - Accouting systems", "status": "Planned", "pic": "AF", "start": "2026-07-06", "end": "2026-08-05", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_152", "name": "Vendor, asset  movement - Vendor works", "status": "Planned", "pic": "GA", "start": "2026-07-06", "end": "2026-08-05", "duration": 30, "deliverables": "Chuyển tài sản, HĐ vendor gắn với nhân sự sang sở hữu bởi SPVs\nChuyển HĐ thuê VP sang SPVs", "dependencies": null, "checkIns": []}, {"id": "t_153", "name": "Inteco contract", "status": "Planned", "pic": "AF", "start": "2026-07-06", "end": "2026-08-20", "duration": 45, "deliverables": "Ký Hợp đồng với SM Sing/ ANZ", "dependencies": null, "checkIns": []}, {"id": "t_154", "name": "DOA, SOPs ver 2 ( HR)", "status": "Planned", "pic": "HR", "start": "2026-08-20", "end": "2026-10-04", "duration": 45, "deliverables": "Nội quy lao động, Quy chế, Org chart, UQ etc", "dependencies": null, "checkIns": []}, {"id": "t_155", "name": "DOA, SOPs ver 2 ( AF)", "status": "Planned", "pic": "AF", "start": "2026-08-05", "end": "2026-09-19", "duration": 45, "deliverables": "Quy chế TC, DOAs", "dependencies": null, "checkIns": []}, {"id": "t_156", "name": "Data migration & System update - Legal", "status": "Planned", "pic": "Legal", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_157", "name": "Data migration & System update - IT", "status": "Planned", "pic": "IT", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_158", "name": "Data migration & System update - HR", "status": "Planned", "pic": "HR", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_159", "name": "Data migration & System update - AF", "status": "Planned", "pic": "AF", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_160", "name": "Business Performance reporting New Structure - FIN", "status": "Planned", "pic": "FIN", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_161", "name": "Quyết toán + Đóng cửa VP ĐN", "status": "Planned", "pic": "AF", "start": "2026-08-05", "end": "2026-11-03", "duration": 90, "deliverables": null, "dependencies": null, "checkIns": []}]}]}, {"id": "p_8", "name": "Cash Event", "workstreams": [{"id": "w_11", "name": "Founder funding", "tasks": [{"id": "t_162", "name": "Chi relocation package để funding cho 02 UBOs thành lập New SingCo", "status": "Planned", "pic": "AF", "start": "2026-03-08", "end": "2026-04-07", "duration": 30, "deliverables": "5300000000", "dependencies": null, "checkIns": []}]}, {"id": "w_12", "name": "Smart AX", "tasks": [{"id": "t_163", "name": "Mua 5% cổ phần Smart AX từ UBO-S trước tăng vốn", "status": "Planned", "pic": "AF", "start": "2026-03-08", "end": "2026-04-07", "duration": 30, "deliverables": "1500000000", "dependencies": null, "checkIns": []}, {"id": "t_164", "name": "Tăng vốn Smart AX (thông qua founder representative)", "status": "Planned", "pic": "AF", "start": "2026-03-30", "end": "2026-04-29", "duration": 30, "deliverables": "1800000000", "dependencies": null, "checkIns": []}, {"id": "t_165", "name": "Deferred / payable tranche for share acquisition from individuals", "status": "Planned", "pic": "AF", "start": "2026-08-19", "end": "2026-09-18", "duration": 30, "deliverables": "19200000000", "dependencies": null, "checkIns": []}]}, {"id": "w_13", "name": "New SingCo", "tasks": [{"id": "t_166", "name": "New SingCo incorporation / legal / corporate services fees", "status": "Planned", "pic": "AF", "start": "2026-03-16", "end": "2026-04-15", "duration": 30, "deliverables": "397500000", "dependencies": null, "checkIns": []}, {"id": "t_167", "name": "Góp vốn lần 1: đủ để thành lập New SingCo & New VNCo + chi phí vận hành", "status": "Planned", "pic": "AF", "start": "2026-03-30", "end": "2026-04-29", "duration": 30, "deliverables": "5300000000", "dependencies": null, "checkIns": []}, {"id": "t_168", "name": "Initial bank, operating and compliance cash for New SingCo", "status": "Planned", "pic": "AF", "start": "2026-03-30", "end": "2026-04-29", "duration": 30, "deliverables": "1325000000", "dependencies": null, "checkIns": []}, {"id": "t_169", "name": "Mua 20% cổ phần Smart AX từ 02 UBO / founder seller (sau tăng vốn)", "status": "Planned", "pic": "AF", "start": "2026-08-30", "end": "2026-09-29", "duration": 30, "deliverables": "13250000000", "dependencies": null, "checkIns": []}]}, {"id": "w_14", "name": "Management Co", "tasks": [{"id": "t_170", "name": "Management Co legal and incorporation cost", "status": "Planned", "pic": "AF", "start": "2026-03-31", "end": "2026-04-30", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_171", "name": "Capital contribution to Management Co", "status": "Planned", "pic": "AF", "start": "2026-03-31", "end": "2026-04-30", "duration": 30, "deliverables": "1000000000", "dependencies": null, "checkIns": []}, {"id": "t_172", "name": "Initial working capital for Management Co", "status": "Planned", "pic": "AF", "start": "2026-04-30", "end": "2026-05-30", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}]}, {"id": "w_15", "name": "Back-up route", "tasks": [{"id": "t_173", "name": "Merge-route legal / tax / advisory cost if PA2 is activated", "status": "Planned", "pic": "AF", "start": "2026-04-01", "end": "2026-05-01", "duration": 30, "deliverables": "1000000000", "dependencies": null, "checkIns": []}]}, {"id": "w_16", "name": "LLC dissolution", "tasks": [{"id": "t_174", "name": "Legal / audit / filing cost for dissolution work", "status": "Planned", "pic": "AF", "start": "2026-04-14", "end": "2026-05-14", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_175", "name": "LLC A pays Mr Bao (Vendor)", "status": "Planned", "pic": "AF", "start": "2026-05-30", "end": "2026-06-29", "duration": 30, "deliverables": "300000000", "dependencies": null, "checkIns": []}, {"id": "t_176", "name": "LLC A tax closure / inspection / settlement cost", "status": "Planned", "pic": "AF", "start": "2026-05-30", "end": "2026-06-29", "duration": 30, "deliverables": "300000000", "dependencies": null, "checkIns": []}, {"id": "t_177", "name": "Deferred / payable tranche settled after second dividend", "status": "Planned", "pic": "AF", "start": "2027-04-01", "end": "2027-05-01", "duration": 30, "deliverables": "2129832593", "dependencies": null, "checkIns": []}]}, {"id": "w_17", "name": "New VNCo", "tasks": [{"id": "t_178", "name": "New VNCo legal, licence and incorporation cost", "status": "Planned", "pic": "AF", "start": "2026-04-30", "end": "2026-05-30", "duration": 30, "deliverables": "132500000", "dependencies": null, "checkIns": []}, {"id": "t_179", "name": "Capital contribution to New VNCo", "status": "Planned", "pic": "AF", "start": "2026-04-30", "end": "2026-05-30", "duration": 30, "deliverables": "2650000000", "dependencies": null, "checkIns": []}, {"id": "t_180", "name": "LLC B tax closure / inspection / settlement cost", "status": "Planned", "pic": "AF", "start": "2026-05-30", "end": "2026-06-29", "duration": 30, "deliverables": "1000000000", "dependencies": null, "checkIns": []}]}, {"id": "w_18", "name": "FIB Co", "tasks": [{"id": "t_181", "name": "Initial operating runway for New VNCo", "status": "Planned", "pic": "AF", "start": "2026-05-30", "end": "2026-06-29", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}, {"id": "t_182", "name": "FIB Co legal and incorporation cost", "status": "Planned", "pic": "AF", "start": "2026-05-31", "end": "2026-06-30", "duration": 30, "deliverables": "1000000000", "dependencies": null, "checkIns": []}, {"id": "t_183", "name": "Capital contribution to FIB Co", "status": "Planned", "pic": "AF", "start": "2026-05-31", "end": "2026-06-30", "duration": 30, "deliverables": null, "dependencies": null, "checkIns": []}]}, {"id": "w_19", "name": "Share acquisition", "tasks": [{"id": "t_184", "name": "Initial working capital for FIB Co", "status": "Planned", "pic": "AF", "start": "2026-07-30", "end": "2026-08-29", "duration": 30, "deliverables": "10600000000", "dependencies": null, "checkIns": []}, {"id": "t_185", "name": "Cash portion of New SingCo acquisition of shares from individuals", "status": "Planned", "pic": "AF", "start": "2026-08-04", "end": "2026-09-03", "duration": 30, "deliverables": "47700000000", "dependencies": null, "checkIns": []}, {"id": "t_186", "name": "Tăng vốn New SingCo để có đủ tiền mua lại cổ phần JSC", "status": "Planned", "pic": "AF", "start": "2026-08-30", "end": "2026-09-29", "duration": 30, "deliverables": "47700000000", "dependencies": null, "checkIns": []}, {"id": "t_187", "name": "Chia cổ tức 2025 cho New SingCo để funding cho việc mua lại cổ phần", "status": "Planned", "pic": "AF", "start": "2026-09-01", "end": "2026-10-01", "duration": 30, "deliverables": "47700000000", "dependencies": null, "checkIns": []}, {"id": "t_188", "name": "Chia cổ tức lần 2 cho New SingCo để funding phần thanh toán tiếp theo cho UBOs", "status": "Planned", "pic": "AF", "start": "2027-04-01", "end": "2027-05-01", "duration": 30, "deliverables": "47700000000", "dependencies": null, "checkIns": []}]}]}]};
@@ -318,15 +323,18 @@ function trendOf(curr, prev, { inverted = false } = {}) {
 }
 
 // Per-PIC activity snapshot for the Activity Dashboard. Pure function.
-function computeActivityIndex(projectsMap, options = {}) {
+function computeActivityIndex(projectsMap, options = {}, dirIndex = null) {
   const now = options.now || new Date();
   const actionFrom = options.actionFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.actionWeeks);
   const taskFrom = options.taskFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.taskWeeks);
 
   const out = new Map();
-  const ensure = (pic) => {
-    if (!out.has(pic)) out.set(pic, {
-      pic,
+  // P1: keyed by canonical person id, `pic` = display name. With no dirIndex,
+  // id === pic === the raw string (legacy grouping).
+  const ensure = (raw) => {
+    const id = personKey(dirIndex, raw);
+    if (!out.has(id)) out.set(id, {
+      pic: personLabel(dirIndex, raw), id,
       delivery: { onTime: 0, late: 0, total: 0, rate: null, weightedRate: null, hardOnTime: 0, hardTotal: 0, softOnTime: 0, softTotal: 0 },
       cadence:  { activeTasks: 0, staleTasks: 0, avgDaysSinceUpdate: null },
       blocker:  { resolved: 0, unresolved: 0, avgResolveDays: null },
@@ -337,7 +345,7 @@ function computeActivityIndex(projectsMap, options = {}) {
       activeTasks: [],
       recentFlags: [],
     });
-    return out.get(pic);
+    return out.get(id);
   };
 
   const cadenceDaysByPic = new Map();
@@ -391,10 +399,10 @@ function computeActivityIndex(projectsMap, options = {}) {
               m.delivery.softTotal++;
               if (isComplete) m.delivery.softOnTime++;
             }
-            if (!weightedDeliveryByPic.has(task.pic)) {
-              weightedDeliveryByPic.set(task.pic, { weightedOnTime: 0, weightedTotal: 0 });
+            if (!weightedDeliveryByPic.has(m.id)) {
+              weightedDeliveryByPic.set(m.id, { weightedOnTime: 0, weightedTotal: 0 });
             }
-            const wd = weightedDeliveryByPic.get(task.pic);
+            const wd = weightedDeliveryByPic.get(m.id);
             wd.weightedTotal += wsMultiplier;
             if (isComplete) wd.weightedOnTime += wsMultiplier;
 
@@ -438,8 +446,8 @@ function computeActivityIndex(projectsMap, options = {}) {
             }
             if (latestActivity) {
               const days = Math.max(0, daysBetween(latestActivity, now));
-              if (!cadenceDaysByPic.has(task.pic)) cadenceDaysByPic.set(task.pic, []);
-              cadenceDaysByPic.get(task.pic).push(days);
+              if (!cadenceDaysByPic.has(m.id)) cadenceDaysByPic.set(m.id, []);
+              cadenceDaysByPic.get(m.id).push(days);
               if (days >= ACTIVITY_THRESHOLDS.cadence.amber) {
                 m.cadence.staleTasks++;
                 if (days >= ACTIVITY_THRESHOLDS.cadence.green * 2) {
@@ -454,12 +462,12 @@ function computeActivityIndex(projectsMap, options = {}) {
           }
 
           for (const u of task.updates || []) {
-            if (u.author && u.author !== task.pic && inDateRange(u.timestamp, taskFrom, now)) {
+            if (u.author && personKey(dirIndex, u.author) !== m.id && inDateRange(u.timestamp, taskFrom, now)) {
               const updater = ensure(u.author);
               updater.engagement.crossTaskUpdates++;
               updater.engagement.total++;
             }
-            if (u.isBlocker && u.resolvedAt && u.resolvedBy && u.resolvedBy !== task.pic
+            if (u.isBlocker && u.resolvedAt && u.resolvedBy && personKey(dirIndex, u.resolvedBy) !== m.id
                 && inDateRange(u.resolvedAt, taskFrom, now)) {
               const helper = ensure(u.resolvedBy);
               helper.engagement.blockersResolvedForOthers++;
@@ -471,8 +479,8 @@ function computeActivityIndex(projectsMap, options = {}) {
             if (u.resolvedAt) {
               m.blocker.resolved++;
               const days = daysBetween(u.timestamp, u.resolvedAt);
-              if (!resolveDaysByPic.has(task.pic)) resolveDaysByPic.set(task.pic, []);
-              resolveDaysByPic.get(task.pic).push(days);
+              if (!resolveDaysByPic.has(m.id)) resolveDaysByPic.set(m.id, []);
+              resolveDaysByPic.get(m.id).push(days);
             } else {
               m.blocker.unresolved++;
               const ageDays = daysBetween(u.timestamp, now);
@@ -503,7 +511,7 @@ function computeActivityIndex(projectsMap, options = {}) {
     if (m.delivery.total > 0) {
       m.delivery.rate = Math.round(100 * m.delivery.onTime / m.delivery.total);
     }
-    const wd = weightedDeliveryByPic.get(m.pic);
+    const wd = weightedDeliveryByPic.get(m.id);
     if (wd && wd.weightedTotal > 0) {
       const taskComponent = wd.weightedOnTime / wd.weightedTotal;
       const actionComponent = m.delivery.total > 0 ? m.delivery.onTime / m.delivery.total : taskComponent;
@@ -517,11 +525,11 @@ function computeActivityIndex(projectsMap, options = {}) {
     } else {
       m.delivery.weightedRate = m.delivery.rate;
     }
-    const cd = cadenceDaysByPic.get(m.pic);
+    const cd = cadenceDaysByPic.get(m.id);
     if (cd && cd.length > 0) {
       m.cadence.avgDaysSinceUpdate = Math.round(cd.reduce((a, b) => a + b, 0) / cd.length);
     }
-    const rd = resolveDaysByPic.get(m.pic);
+    const rd = resolveDaysByPic.get(m.id);
     if (rd && rd.length > 0) {
       m.blocker.avgResolveDays = Math.round(10 * rd.reduce((a, b) => a + b, 0) / rd.length) / 10;
     }
@@ -573,7 +581,7 @@ function computeActivityIndex(projectsMap, options = {}) {
 }
 
 // Wraps computeActivityIndex with previous-period comparison; attaches `trend` per PIC.
-function computeActivityIndexWithTrend(projectsMap, options = {}) {
+function computeActivityIndexWithTrend(projectsMap, options = {}, dirIndex = null) {
   const now = options.now || new Date();
   const actionWeeks = options.actionWeeks || DEFAULT_DASHBOARD_WINDOW.actionWeeks;
   const taskWeeks = options.taskWeeks || DEFAULT_DASHBOARD_WINDOW.taskWeeks;
@@ -582,17 +590,17 @@ function computeActivityIndexWithTrend(projectsMap, options = {}) {
     actionFrom: weeksAgo(actionWeeks),
     taskFrom: weeksAgo(taskWeeks),
     now,
-  });
+  }, dirIndex);
 
   const prevNow = weeksAgo(actionWeeks);
   const previous = computeActivityIndex(projectsMap, {
     actionFrom: weeksAgo(actionWeeks * 2),
     taskFrom: weeksAgo(taskWeeks * 2),
     now: prevNow,
-  });
+  }, dirIndex);
 
   for (const m of current.values()) {
-    const prev = previous.get(m.pic);
+    const prev = previous.get(m.id);
     m.trend = {
       composite: trendOf(m.composite.score, prev?.composite?.score),
       delivery: trendOf(m.delivery.weightedRate, prev?.delivery?.weightedRate),
@@ -734,7 +742,7 @@ function computeDefaultCreditShares(primaryPic, contributors) {
 // among programs/workstreams/tasks via getEffectiveWeights.
 // `breakdown` includes every (task × pic) row plus a Project Lead pseudo-entry
 // (`isProjectLead: true`) — filter that out when summing per-program totals.
-function computeProjectCredits(project) {
+function computeProjectCredits(project, dirIndex = null) {
   const totalCp = (typeof project.creditPoints === 'number' && project.creditPoints >= 0)
     ? project.creditPoints
     : DEFAULT_CREDIT_POINTS;
@@ -751,15 +759,19 @@ function computeProjectCredits(project) {
     const r = rollup(project);
     const projectCompletionPct = (r.weighted / Math.max(r.total, 1)) * 100;
     const leadActual = leadCp * (projectCompletionPct / 100);
-    if (!perPic.has(leadName)) perPic.set(leadName, { earned: 0, projected: 0 });
-    const cur = perPic.get(leadName);
+    // P1: perPic is keyed by canonical person id; `name` is the display name.
+    // With no dirIndex both are the raw lead name (legacy).
+    const leadId = personKey(dirIndex, leadName);
+    const leadLabel = personLabel(dirIndex, leadName);
+    if (!perPic.has(leadId)) perPic.set(leadId, { earned: 0, projected: 0, name: leadLabel });
+    const cur = perPic.get(leadId);
     cur.earned += leadActual;
     cur.projected += leadCp;
     breakdown.push({
       programId: null, programName: '— Project Lead —',
       workstreamId: null, workstreamName: '',
       taskId: null, taskName: `${leadName} (project lead, ${leadSharePct}%)`,
-      picName: leadName, sharePct: 100, taskCp: leadCp,
+      picName: leadLabel, picId: leadId, sharePct: 100, taskCp: leadCp,
       projected: leadCp, actual: leadActual, credited: r.weighted >= r.total,
       taskStatus: null, isProjectLead: true,
     });
@@ -784,8 +796,12 @@ function computeProjectCredits(project) {
         const taskCp = wsCp * (taskWeights[tIdx] / 100);
         const credited = isTaskCredited(t);
         const shares = getEffectiveCreditShares(t);
+        // P1: with dirIndex, shares of one person's aliases are summed under one canonical id.
+        const people = dirIndex
+          ? groupByPerson(Object.keys(shares), dirIndex).map((g) => [g.id, g.name, g.values.reduce((s, v) => s + shares[v], 0)])
+          : Object.entries(shares).map(([picName, sharePct]) => [picName, picName, sharePct]);
 
-        for (const [picName, sharePct] of Object.entries(shares)) {
+        for (const [picId, picName, sharePct] of people) {
           const earned = taskCp * (sharePct / 100);
           const projected = earned;
           const actual = credited ? earned : 0;
@@ -794,12 +810,12 @@ function computeProjectCredits(project) {
             programId: pg.id, programName: pg.name,
             workstreamId: ws.id, workstreamName: ws.name,
             taskId: t.id, taskName: t.name,
-            picName, sharePct, taskCp, projected, actual, credited,
+            picName, picId, sharePct, taskCp, projected, actual, credited,
             taskStatus: t.status, isProjectLead: false,
           });
 
-          if (!perPic.has(picName)) perPic.set(picName, { earned: 0, projected: 0 });
-          const cur = perPic.get(picName);
+          if (!perPic.has(picId)) perPic.set(picId, { earned: 0, projected: 0, name: picName });
+          const cur = perPic.get(picId);
           cur.earned += actual;
           cur.projected += projected;
         }
@@ -814,7 +830,7 @@ function computeProjectCredits(project) {
 // Pure read; no mutation. Called from MyWorkView via useMemo, and from
 // TeamOverviewView per-member (Phase 3). lastSeenAt drives unread-mentions
 // partitioning; pass null to treat all mentions as unread.
-function computeMyWork(author, projects, isOwner, lastSeenAt) {
+function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, authorEmail = null) {
   const startOfToday = today();
   const todayEnd = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000 - 1);
   const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -834,6 +850,10 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
   if (!author) return out;
 
   const authorLc = author.toLowerCase();
+  // P1: with dirIndex, any alias of the same person matches; without it, exact string (legacy).
+  // authorEmail (signed-in user only, never for View as) wins when the directory knows it.
+  const meId = meKey(dirIndex, author, authorEmail);
+  const isMe = (raw) => (dirIndex ? !!raw && personKey(dirIndex, raw) === meId : raw === author);
 
   for (const proj of Object.values(projects || {})) {
     for (const pg of (proj.programs || [])) {
@@ -842,7 +862,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
           if (t.status === 'Dropped' || t.status === 'Completed') continue;
           const enriched = { task: t, project: proj, program: pg, workstream: ws };
 
-          if (t.pic === author) {
+          if (isMe(t.pic)) {
             const overdue = isOverdue(t);
             const endDate = parseDate(t.end);
             const dueToday = !overdue && endDate && endDate <= todayEnd;
@@ -859,7 +879,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
             }
           }
 
-          if (Array.isArray(t.contributors) && t.contributors.includes(author) && t.pic !== author) {
+          if (Array.isArray(t.contributors) && t.contributors.some(isMe) && !isMe(t.pic)) {
             out.tasksContributing.push({ ...enriched, primaryPic: t.pic });
           }
 
@@ -912,7 +932,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
       // v30.B — Sub-tasks assigned to author (regardless of action.pic).
       // Bucketed by parent action's dueDate; Done subtasks filtered out.
       for (const sub of (a.subtasks || [])) {
-        if (sub.pic !== author) continue;
+        if (!isMe(sub.pic)) continue;
         if (sub.status === 'Done') continue;
         const pDueDate = a.dueDate ? parseDate(a.dueDate) : null;
         const subEntry = { kind: 'subtask', subtask: sub, parentAction: a, project: proj };
@@ -930,7 +950,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
         }
       }
 
-      if (a.pic !== author) continue;
+      if (!isMe(a.pic)) continue;
       if (a.status === 'Done' || a.status === 'Cancelled' || a.status === 'Dropped') continue;
       const dueDate = a.dueDate ? parseDate(a.dueDate) : null;
       const enriched = { kind: 'action', action: a, project: proj };
@@ -953,7 +973,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
     for (const pg of (proj.programs || [])) {
       for (const item of (pg.raid || [])) {
         for (const mitigation of (item.mitigationActions || [])) {
-          if (mitigation.pic !== author) continue;
+          if (!isMe(mitigation.pic)) continue;
           if (mitigation.status === 'Done') continue;
           const due = mitigation.due ? parseDate(mitigation.due) : null;
           const enriched = {
@@ -980,13 +1000,13 @@ function computeMyWork(author, projects, isOwner, lastSeenAt) {
     }
 
     for (const d of (proj.decisions || [])) {
-      if (!Array.isArray(d.decidedBy) || !d.decidedBy.includes(author)) continue;
+      if (!Array.isArray(d.decidedBy) || !d.decidedBy.some(isMe)) continue;
       if (d.followUpStatus === 'Done') continue;
       out.decisions.push({ decision: d, project: proj });
     }
 
-    const credits = computeProjectCredits(proj);
-    const myCredit = credits.perPic.get(author);
+    const credits = computeProjectCredits(proj, dirIndex);
+    const myCredit = credits.perPic.get(meId);
     if (myCredit && (myCredit.earned > 0 || myCredit.projected > 0)) {
       out.credit.earned += myCredit.earned;
       out.credit.projected += myCredit.projected;
@@ -1128,18 +1148,18 @@ function applyMitigationUpdate(project, parentProgram, parentItem, mitigationId,
 // Aggregate credits across all projects, optionally filtered by year.
 // Projects without a `creditYear` are always included (no filter applied to them).
 // Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
-function computeWorkspaceCredits(projects, year = null) {
+function computeWorkspaceCredits(projects, year = null, dirIndex = null) {
   const perPic = new Map();
   const perProject = new Map();
   let totalCp = 0;
 
   for (const proj of Object.values(projects || {})) {
     if (year != null && proj.creditYear != null && proj.creditYear !== year) continue;
-    const result = computeProjectCredits(proj);
+    const result = computeProjectCredits(proj, dirIndex);
     totalCp += result.totalCp;
     perProject.set(proj.id, { project: proj, ...result });
     for (const [pic, val] of result.perPic.entries()) {
-      if (!perPic.has(pic)) perPic.set(pic, { earned: 0, projected: 0 });
+      if (!perPic.has(pic)) perPic.set(pic, { earned: 0, projected: 0, name: val.name });
       const cur = perPic.get(pic);
       cur.earned += val.earned;
       cur.projected += val.projected;
@@ -1248,10 +1268,16 @@ function MentionedText({ text, teamMembers }) {
 // return the member's name (e.g. 'hattt4@smartosc.com' → 'Hà Trương Thị Thu').
 // Otherwise return the input verbatim (trimmed). Returns '' for empty input.
 // Pure, idempotent, no throw.
-function resolvePicValue(input, teamMembersList) {
+// P1: with a directory index, a known person resolves to the directory name;
+// unknown values (groups, free text) keep the legacy behaviour below.
+function resolvePicValue(input, teamMembersList, dirIndex = null) {
   if (input == null) return input;
   const trimmed = String(input).trim();
   if (!trimmed) return trimmed;
+  if (dirIndex) {
+    const cp = canonicalPerson(dirIndex, trimmed);
+    if (cp.known) return cp.name;
+  }
   if (trimmed.includes('@')) {
     const lc = trimmed.toLowerCase();
     const match = (teamMembersList || []).find((m) => (m?.email || '').toLowerCase() === lc);
@@ -1378,7 +1404,47 @@ function suggestMergeTarget(orphanName, teamMembers) {
   return null;
 }
 
-function deriveTeamMembers(projects, currentAuthor, currentUserEmail, directory) {
+function deriveTeamMembers(projects, currentAuthor, currentUserEmail, directory, dirIndex = null) {
+  // P1: with the directory index, the roster is the active directory people plus
+  // observed names that resolve to no one and are not a project group
+  // (contributorRegistry). Observed emails/aliases of known people are dropped.
+  if (dirIndex) {
+    const groups = new Set();
+    for (const p of Object.values(projects || {})) {
+      for (const r of p.contributorRegistry || []) if (r?.name) groups.add(canonicalPerson(null, r.name).id);
+    }
+    const roster = pickerPeople(dirIndex).map((p) => ({ name: p.name || p.email, email: p.email }));
+    const seen = new Set();
+    const observe = (name, email) => {
+      const n = String(name ?? '').trim();
+      const e = String(email ?? '').trim();
+      if (!n && !e) return;
+      if ((e && canonicalPerson(dirIndex, e).known) || (n && canonicalPerson(dirIndex, n).known)) return;
+      const c = canonicalPerson(dirIndex, n || e);
+      if (groups.has(c.id) || seen.has(c.id)) return;
+      seen.add(c.id);
+      roster.push({ name: c.name, email: e || null });
+    };
+    if (currentAuthor) observe(currentAuthor, currentUserEmail);
+    const byUid = new Map((Array.isArray(directory) ? directory : []).map((u) => [u.uid, u]));
+    for (const p of Object.values(projects || {})) {
+      for (const uid of (p.memberIds || [])) {
+        const entry = byUid.get(uid);
+        if (entry) observe(entry.name, entry.email);
+      }
+      for (const pg of p.programs || []) {
+        for (const ws of pg.workstreams || []) {
+          for (const t of ws.tasks || []) {
+            if (t.pic) observe(t.pic);
+            for (const ci of t.checkIns || []) if (ci.author) observe(ci.author);
+            for (const u of t.updates || []) if (u.author) observe(u.author);
+          }
+        }
+      }
+      for (const m of p.teamMembers || []) observe(m.name, m.email);
+    }
+    return roster.sort((a, b) => a.name.localeCompare(b.name));
+  }
   // Build email → canonical name map from authoritative sources first
   // (directory > project.teamMembers with email > observed). Any later add()
   // call that supplies the same email will reuse the canonical name.
@@ -1534,7 +1600,14 @@ function normDate(v) {
   const d = new Date(v); return isNaN(d) ? null : toISODate(d);
 }
 
-async function parseExcelFile(file) {
+async function parseExcelFile(file, dirIndex = null) {
+  // P1: a PIC cell naming a known person is stored as the directory name;
+  // anything else (and everything when there is no index) is kept raw.
+  const importPic = (v) => {
+    if (!dirIndex || v == null || String(v).trim() === '') return v;
+    const cp = canonicalPerson(dirIndex, v);
+    return cp.known ? cp.name : v;
+  };
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -1566,7 +1639,7 @@ async function parseExcelFile(file) {
       id: uid('t'),
       name: String(tName).trim(),
       status: normStatus(pickCol(r, COL.status)),
-      pic: pickCol(r, COL.pic),
+      pic: importPic(pickCol(r, COL.pic)),
       contributors: [],
       creditSharesMode: 'auto',
       start: normDate(pickCol(r, COL.start)),
@@ -2512,6 +2585,7 @@ function ReferencesSection({ task, onUpdate, author }) {
 //   3) legacy `suggestions` (Used in tasks badge)
 // Chip styling reflects "known" vs "unknown" (not in members or registry).
 function ContributorEditor({ contributors, onChange, suggestions, primaryPic, project, teamMembersList }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const list = Array.isArray(contributors) ? contributors : [];
@@ -2546,7 +2620,9 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
   }, [combinedSuggestions, draft, list, primaryPic]);
 
   const addContributor = (name) => {
-    const trimmed = (name || '').trim();
+    // P1: with the directory, a known person is stored under the directory name.
+    const raw = (name || '').trim();
+    const trimmed = dirIndex ? resolvePicValue(raw, teamMembersList, dirIndex) : raw;
     if (!trimmed) return;
     if (trimmed === primaryPic) return;
     if (list.includes(trimmed)) return;
@@ -2561,7 +2637,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
 
   const isKnown = (name) => {
     if (registryNames.has(name)) return true;
-    if ((teamMembersList || []).some((m) => m.name === name)) return true;
+    if (findMember(teamMembersList, name, dirIndex)) return true;
     return false;
   };
 
@@ -2571,7 +2647,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
         {list.map((c) => {
           const known = isKnown(c);
-          const member = (teamMembersList || []).find((m) => m.name === c);
+          const member = findMember(teamMembersList, c, dirIndex);
           return (
             <span key={c} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -2675,6 +2751,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
 // Single-select autocomplete from teamMembers ONLY (not registry — PIC needs
 // email for notifications). Free-text allowed but warned.
 function PicEditor({ value, onChange, teamMembersList, project, label, placeholder }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -2695,14 +2772,14 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
       .slice(0, 8);
   }, [combined, draft]);
 
-  const isKnown = !!(value && combined.some((s) => s.name === value));
-  const member = combined.find((m) => m.name === value);
+  const isKnown = !!(value && findMember(combined, value, dirIndex));
+  const member = findMember(combined, value, dirIndex);
 
   const pick = (name) => {
     // Strip leading @ if user typed @-mention syntax, then resolve
     // email → canonical name if the typed value matches a member's email.
     const cleaned = (name || '').trim().replace(/^@+/, '');
-    const resolved = resolvePicValue(cleaned, combined);
+    const resolved = resolvePicValue(cleaned, combined, dirIndex);
     onChange(resolved || null);
     setDraft('');
     setEditing(false);
@@ -3142,6 +3219,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
 function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const loc = useMemo(() => findTaskInProject(project, taskId), [project, taskId]);
   // ── All hooks declared before any early return (Rules of Hooks)
   // Panel tab state
@@ -3620,7 +3698,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         {/* Credit Projection panel (v24) */}
         {(typeof project.creditPoints === 'number' || project.projectLead) && task.status !== 'Dropped' && (() => {
-          const projectCredits = computeProjectCredits(project);
+          const projectCredits = computeProjectCredits(project, dirIndex);
           const taskRows = projectCredits.breakdown.filter((b) => b.taskId === task.id);
           if (taskRows.length === 0) return null;
           const taskCp = taskRows[0].taskCp || 0;
@@ -3870,6 +3948,7 @@ function projectTaskOptions(project) {
 // Chip + autocomplete dropdown. Source: teamMembers ONLY.
 // Existing values not in teamMembers are shown as legacy ⚠ chips for cleanup.
 function DecidedByPicker({ value, onChange, teamMembers }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const list = Array.isArray(value) ? value : [];
@@ -3886,7 +3965,7 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
   const add = (name) => {
     const trimmed = (name || '').trim().replace(/^@+/, '');
     if (!trimmed) return;
-    const resolved = resolvePicValue(trimmed, teamMembers);
+    const resolved = resolvePicValue(trimmed, teamMembers, dirIndex);
     if (list.includes(resolved)) return;
     onChange([...list, resolved]);
     setDraft('');
@@ -3911,8 +3990,8 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
         {list.map((n) => {
-          const known = memberNames.has(n);
-          const member = (teamMembers || []).find((m) => m.name === n);
+          const known = memberNames.has(n) || !!findMember(teamMembers, n, dirIndex);
+          const member = findMember(teamMembers, n, dirIndex);
           return (
             <span key={n} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -4638,6 +4717,7 @@ function SubtaskEditor({ subtasks, picSuggestions, author, onChange }) {
 // Inner row — title input commits on blur/Enter to avoid spamming
 // subtask_rename activity entries during typing.
 function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, onToggleStatus, onRemove }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [titleDraft, setTitleDraft] = useState(subtask.title || '');
   useEffect(() => { setTitleDraft(subtask.title || ''); }, [subtask.title]);
   const commitTitle = () => {
@@ -4673,7 +4753,7 @@ function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, o
       />
       <select
         value={subtask.pic || ''}
-        onChange={(e) => onUpdate({ pic: e.target.value })}
+        onChange={(e) => onUpdate({ pic: dirIndex ? resolvePicValue(e.target.value, null, dirIndex) : e.target.value })}
         style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 110 }}>
         <option value="">(unassigned)</option>
         {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
@@ -4828,6 +4908,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 }
 
 function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [mode, setMode] = useState('grouped'); // grouped | flat
@@ -5010,14 +5091,14 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   // Also auto-downloads the per-PIC Excel template so the file is ready to attach in Gmail
   // (browser security prevents pre-attaching to Gmail via URL — manual attach still required).
   const emailPic = (picName, list) => {
-    const member = teamMembers.find((m) => m.name === picName);
+    const member = findMember(teamMembers, picName, dirIndex);
     if (!member?.email) {
       dialogs.alert({ title: 'No email', message: `No email on file for ${picName}. Add it via Project settings → Team members.` });
       return;
     }
     const subject = `[${project.name}] Action items — ${fmtDate(new Date())}`;
     const html = buildPicEmailHtml(picName, list, project, author);
-    const meEmail = teamMembers.find((m) => m.name === author)?.email;
+    const meEmail = findMember(teamMembers, author, dirIndex)?.email;
     const gmailUrl = buildGmailUrl({ to: member.email, subject, cc: meEmail });
     // Auto-download per-PIC Excel — user attaches manually in Gmail
     const blob = actionsToOpenProjectExcel(project, list);
@@ -5173,7 +5254,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         {filtered.length > 0 && mode === 'grouped' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {groupedByPic.map(([pic, items]) => {
-              const member = teamMembers.find((m) => m.name === pic);
+              const member = findMember(teamMembers, pic, dirIndex);
               const hasEmail = member?.email;
               return (
                 <div key={pic} style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, overflow: 'hidden' }}>
@@ -5218,7 +5299,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
             {Array.from(emailPicsDialog.groups.entries()).map(([picName, items]) => {
-              const member = teamMembers.find((m) => m.name === picName);
+              const member = findMember(teamMembers, picName, dirIndex);
               const hasEmail = !!member?.email;
               return (
                 <div key={picName} style={{
@@ -6725,6 +6806,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
 function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   // Filter programs by scope
   const visiblePrograms = useMemo(() => {
     if (!scopeProgramId) return project.programs || [];
@@ -6887,7 +6969,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
 
   // Pre-compute credit allocation for inline cp display in WeightBadges + banner
   const creditInfo = useMemo(() => {
-    const result = computeProjectCredits(project);
+    const result = computeProjectCredits(project, dirIndex);
     const programCp = new Map();
     const workstreamCp = new Map();
     const taskCp = new Map();
@@ -6917,7 +6999,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
       .sort((a, b) => b.projected - a.projected)
       .slice(0, 3);
     return { result, programCp, workstreamCp, taskCp: taskCpAgg, programEarned, workspaceEarned, topPics };
-  }, [project]);
+  }, [project, dirIndex]);
 
   const onDragStartTask = (e, task, pg, ws) => {
     setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id });
@@ -7543,7 +7625,7 @@ function ActivityChart({ picList }) {
         const col = bucketColor(v, ACTIVITY_THRESHOLDS.delivery);
         const fill = COLOR_MAP[col].fg;
         return (
-          <g key={m.pic}>
+          <g key={m.id}>
             <text x={padL - 6} y={y + 14} textAnchor="end" fontSize={11} fontFamily={FONT_STACK} fill={TOK.ink}>{m.pic}</text>
             <rect x={padL} y={y + 4} width={barMax} height={rowH - 8} fill={TOK.bg} rx={3} />
             <rect x={padL} y={y + 4} width={w} height={rowH - 8} fill={fill} rx={3} />
@@ -7666,7 +7748,9 @@ function PICDetailModal({ metrics, onClose }) {
 }
 
 function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [selectedPic, setSelectedPic] = useState(null);
+  useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
   const [showDifficulty, setShowDifficulty] = useState(false);
   // Window + sort controls. Owner-editable; non-owners see them disabled and
   // viewable for transparency. Local state — does not persist across reloads;
@@ -7677,10 +7761,10 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
   const [sortBy, setSortBy] = useState('priority');
 
   const indexMap = useMemo(
-    () => computeActivityIndexWithTrend(projects, { actionWeeks, taskWeeks }),
-    [projects, actionWeeks, taskWeeks]
+    () => computeActivityIndexWithTrend(projects, { actionWeeks, taskWeeks }, dirIndex),
+    [projects, actionWeeks, taskWeeks, dirIndex]
   );
-  const picCredits = useMemo(() => computeWorkspaceCredits(projects).perPic, [projects]);
+  const picCredits = useMemo(() => computeWorkspaceCredits(projects, null, dirIndex).perPic, [projects, dirIndex]);
   const priorities = useMemo(() => rankCoachingPriorities(indexMap, 3), [indexMap]);
 
   const picList = useMemo(() => {
@@ -7787,7 +7871,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
                 reasons.push('trending down ↓');
               }
               return (
-                <li key={p.pic}>
+                <li key={p.metrics.id}>
                   <strong>{p.pic}</strong>
                   {p.metrics.composite.score != null && <span style={{ fontWeight: 400, opacity: 0.8 }}> (composite {p.metrics.composite.score})</span>}
                   {reasons.length > 0 && <> — {reasons.join(', ')}</>}
@@ -7819,7 +7903,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
               </thead>
               <tbody>
                 {picList.map((m) => (
-                  <PICRow key={m.pic} metrics={m} credits={picCredits.get(m.pic)} onClick={() => setSelectedPic(m.pic)} />
+                  <PICRow key={m.id} metrics={m} credits={picCredits.get(m.id)} onClick={() => setSelectedPic(m.id)} />
                 ))}
               </tbody>
             </table>
@@ -8626,6 +8710,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
 // priority + status. Expanded reveals inline-editable title, PIC, due,
 // priority, plus comment thread with @mention support.
 function ActionRowInline({ action, project, related, author, teamMembers, picSuggestions, onChange, onAddComment, onOpenDetails, onMarkDone, onSubtasksChange, showToast }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(action.title || '');
   const [commentDraft, setCommentDraft] = useState('');
@@ -8694,7 +8779,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={action.pic || ''}
-              onChange={(e) => onChange({ pic: e.target.value })}
+              onChange={(e) => onChange({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -8817,6 +8902,7 @@ function MitigationRowInline({
   onNavigateRaid,    // (projectId, programId) => void
   showToast,
 }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const { mitigation, parentItem, parentProgram, project } = entry;
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(mitigation.name || '');
@@ -8907,7 +8993,7 @@ function MitigationRowInline({
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={mitigation.pic || ''}
-              onChange={(e) => writePatch({ pic: e.target.value })}
+              onChange={(e) => writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -8989,7 +9075,10 @@ function MyWorkSubTabs({ value, onChange, tabs }) {
 
 // v30 Phase 3 — Walk every task/check-in/update + action comment to find
 // the latest entry authored by member. Returns { ts, t, description } or null.
-function getLastActivityForMember(member, projects) {
+function getLastActivityForMember(member, projects, dirIndex = null) {
+  // P1: with dirIndex, any alias of the member matches; without it, the exact name (legacy).
+  const meId = dirIndex ? personKey(dirIndex, member.email || member.name) : null;
+  const isMember = (raw) => (dirIndex ? !!raw && personKey(dirIndex, raw) === meId : raw === member.name);
   let latest = null;
   const consider = (ts, description) => {
     if (!ts) return;
@@ -9002,17 +9091,17 @@ function getLastActivityForMember(member, projects) {
       for (const ws of (pg.workstreams || [])) {
         for (const tk of (ws.tasks || [])) {
           for (const upd of (tk.updates || [])) {
-            if (upd.author === member.name) consider(upd.timestamp, `Posted update on "${tk.name}"`);
+            if (isMember(upd.author)) consider(upd.timestamp, `Posted update on "${tk.name}"`);
           }
           for (const ci of (tk.checkIns || [])) {
-            if (ci.author === member.name) consider(ci.timestamp, `Posted check-in on "${tk.name}"`);
+            if (isMember(ci.author)) consider(ci.timestamp, `Posted check-in on "${tk.name}"`);
           }
         }
       }
     }
     for (const a of (proj.actionItems || [])) {
       for (const upd of (a.updates || [])) {
-        if (upd.author === member.name) consider(upd.timestamp, `Commented on action "${a.title}"`);
+        if (isMember(upd.author)) consider(upd.timestamp, `Commented on action "${a.title}"`);
       }
     }
   }
@@ -9021,9 +9110,9 @@ function getLastActivityForMember(member, projects) {
 
 // v30 Phase 3 — Per-member workload aggregation. Reuses computeMyWork
 // (isOwner=false so deadline_approval items don't leak into member counts).
-function computeTeamOverview(projects, members) {
+function computeTeamOverview(projects, members, dirIndex = null) {
   return (members || []).map((m) => {
-    const myWork = computeMyWork(m.name, projects, false, null);
+    const myWork = computeMyWork(m.name, projects, false, null, dirIndex);
     const tasksOwned = myWork.tasksOwned.today.length + myWork.tasksOwned.week.length + myWork.tasksOwned.later.length;
     const actionItemsOpen = myWork.actionItems.today.length + myWork.actionItems.week.length + myWork.actionItems.later.length;
     const tasksOverdue = myWork.needsAttention.filter((it) =>
@@ -9036,7 +9125,7 @@ function computeTeamOverview(projects, members) {
       tasksContributing: myWork.tasksContributing.length,
       actionItemsOpen,
       credit: myWork.credit,
-      lastActivity: getLastActivityForMember(m, projects),
+      lastActivity: getLastActivityForMember(m, projects, dirIndex),
     };
   });
 }
@@ -9089,11 +9178,12 @@ function MemberOverviewRow({ data, onViewAs, currentAuthor }) {
 
 // v30 Phase 3 — Owner-only Team Overview view.
 function TeamOverviewView({ projects, teamMembers, currentAuthor, onImpersonate }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [sortBy, setSortBy] = useState('overdue'); // overdue | name | tasks | credit | activity
 
   const teamData = useMemo(
-    () => computeTeamOverview(projects, teamMembers),
-    [projects, teamMembers]
+    () => computeTeamOverview(projects, teamMembers, dirIndex),
+    [projects, teamMembers, dirIndex]
   );
 
   const sorted = useMemo(() => {
@@ -9280,6 +9370,7 @@ function RiskLevelBadge({ likelihood, impact }) {
 // (useful for departments like AF/Legal/HR that may not have emails).
 // teamMembers: [{ name, email? }]; extraSuggestions: [string] for departments.
 function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [query, setQuery] = useState(value || '');
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -9290,13 +9381,13 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
     const q = (query || '').trim().toLowerCase();
     const all = [
       ...(teamMembers || []).map((m) => ({ name: m?.name, email: m?.email })).filter((m) => m.name),
-      ...((extraSuggestions || []).filter((n) => n && !(teamMembers || []).some((m) => m?.name === n)).map((n) => ({ name: n, email: null }))),
+      ...((extraSuggestions || []).filter((n) => n && !findMember(teamMembers, n, dirIndex)).map((n) => ({ name: n, email: null }))),
     ];
     if (!q) return all.slice(0, 8);
     return all.filter((m) =>
       m.name.toLowerCase().includes(q) || (m.email && m.email.toLowerCase().includes(q))
     ).slice(0, 8);
-  }, [query, teamMembers, extraSuggestions]);
+  }, [query, teamMembers, extraSuggestions, dirIndex]);
 
   const commit = (name) => {
     setQuery(name);
@@ -9326,7 +9417,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
           const raw = (query || '').trim();
           if (!raw) { onChange(''); return; }
           // 1. Email-typed and a member has that email → canonicalize.
-          const resolved = resolvePicValue(raw, teamMembers);
+          const resolved = resolvePicValue(raw, teamMembers, dirIndex);
           if (resolved !== raw) { setQuery(resolved); onChange(resolved); return; }
           // 2. Smart-pick: if exactly one teamMember name substring-matches
           //    the raw input (case-insensitive), auto-pick that member.
@@ -9363,7 +9454,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
           ))}
         </div>
       )}
-      {value && !(teamMembers || []).some((m) => m?.name === value) && (
+      {value && !findMember(teamMembers, value, dirIndex) && (
         <button
           type="button"
           onClick={(e) => {
@@ -11024,19 +11115,20 @@ function ByProjectView({
 }
 
 function MyWorkView({
-  projects, author, isOwner, userPrefs, teamMembers,
+  projects, author, authorEmail = null, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
   onTaskUpdate, onActionUpdate, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
   onNavigateRaid,
 }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
   const myWork = useMemo(
-    () => computeMyWork(author, projects, isOwner, lastSeenAt),
-    [projects, author, isOwner, lastSeenAt]
+    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
+    [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
   );
   const myRaid = useMemo(
     () => computeMyRaid(author, projects, isOwner),
@@ -11653,6 +11745,7 @@ function MyWorkView({
 
 function CreditReportView({ projects, isOwner }) {
   // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
+  const dirIndex = useContext(DirectoryIndexContext);
   const thisYear = new Date().getFullYear();
   const allYears = useMemo(() => {
     const years = new Set();
@@ -11667,12 +11760,13 @@ function CreditReportView({ projects, isOwner }) {
   const [selectedYear, setSelectedYear] = useState(allYears[0] || thisYear);
   const [sortBy, setSortBy] = useState('projected');
   const [selectedPic, setSelectedPic] = useState(null);
+  useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
 
-  const report = useMemo(() => computeWorkspaceCredits(projects, selectedYear), [projects, selectedYear]);
+  const report = useMemo(() => computeWorkspaceCredits(projects, selectedYear, dirIndex), [projects, selectedYear, dirIndex]);
 
   const picRows = useMemo(() => {
-    const rows = Array.from(report.perPic.entries()).map(([name, val]) => ({
-      name,
+    const rows = Array.from(report.perPic.entries()).map(([id, val]) => ({
+      id, name: val.name,
       earned: val.earned,
       projected: val.projected,
       pct: report.totalCp > 0 ? (val.projected / report.totalCp) * 100 : 0,
@@ -11689,7 +11783,7 @@ function CreditReportView({ projects, isOwner }) {
     if (!selectedPic) return null;
     const byProject = new Map();
     for (const [projId, projData] of report.perProject.entries()) {
-      const myEntries = projData.breakdown.filter((b) => b.picName === selectedPic);
+      const myEntries = projData.breakdown.filter((b) => b.picId === selectedPic);
       if (myEntries.length === 0) continue;
       const proj = projData.project;
       const projTotalProjected = myEntries.reduce((s, e) => s + e.projected, 0);
@@ -11848,17 +11942,17 @@ function CreditReportView({ projects, isOwner }) {
                 <div></div>
               </div>
               {picRows.map((r) => (
-                <div key={r.name}
-                  onClick={() => setSelectedPic(selectedPic === r.name ? null : r.name)}
+                <div key={r.id}
+                  onClick={() => setSelectedPic(selectedPic === r.id ? null : r.id)}
                   style={{
                     display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr 1fr 0.5fr', gap: 10,
                     padding: '12px 14px', borderBottom: '1px solid ' + TOK.line,
                     cursor: 'pointer', alignItems: 'center',
-                    background: selectedPic === r.name ? '#E6F1FB' : 'transparent',
+                    background: selectedPic === r.id ? '#E6F1FB' : 'transparent',
                     transition: 'background .12s',
                   }}
-                  onMouseEnter={(e) => { if (selectedPic !== r.name) e.currentTarget.style.background = TOK.bg; }}
-                  onMouseLeave={(e) => { if (selectedPic !== r.name) e.currentTarget.style.background = 'transparent'; }}
+                  onMouseEnter={(e) => { if (selectedPic !== r.id) e.currentTarget.style.background = TOK.bg; }}
+                  onMouseLeave={(e) => { if (selectedPic !== r.id) e.currentTarget.style.background = 'transparent'; }}
                 >
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
                   <div style={{ textAlign: 'right', fontSize: 13, color: '#356512', fontWeight: 500 }}>
@@ -11877,7 +11971,7 @@ function CreditReportView({ projects, isOwner }) {
                     <span style={{ fontSize: 11, color: TOK.muted, marginLeft: 6 }}>{Math.round(r.pctEarned)}%</span>
                   </div>
                   <div style={{ textAlign: 'right', fontSize: 11, color: TOK.subtle }}>
-                    {selectedPic === r.name ? '▼' : '▶'}
+                    {selectedPic === r.id ? '▼' : '▶'}
                   </div>
                 </div>
               ))}
@@ -11888,10 +11982,10 @@ function CreditReportView({ projects, isOwner }) {
               <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, padding: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
                   <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>
-                    {selectedPic} — Breakdown
+                    {picRows.find((r) => r.id === selectedPic)?.name ?? selectedPic} — Breakdown
                   </h3>
                   <span style={{ fontSize: 12, color: TOK.muted }}>
-                    ({Math.round((picRows.find((r) => r.name === selectedPic)?.earned || 0) * 10) / 10} earned · {Math.round((picRows.find((r) => r.name === selectedPic)?.projected || 0) * 10) / 10} projected)
+                    ({Math.round((picRows.find((r) => r.id === selectedPic)?.earned || 0) * 10) / 10} earned · {Math.round((picRows.find((r) => r.id === selectedPic)?.projected || 0) * 10) / 10} projected)
                   </span>
                   <span style={{ flex: 1 }} />
                   <Btn size="sm" onClick={() => setSelectedPic(null)}>Close</Btn>
@@ -12442,6 +12536,9 @@ export default function App() {
   useSearchHotkey(() => setShowSearch(true));
   const { user: authUser, logOut } = useAuth();
   const directory = useUserDirectory();
+  const { entries: dirEntries, reload: reloadDirectory } = useWorkspaceDirectory(authUser);
+  const [showDirectory, setShowDirectory] = useState(false);
+  const dirIndex = useMemo(() => (dirEntries.length ? buildDirectoryIndex(dirEntries) : null), [dirEntries]);
   const fileInputRef = useRef(null);
   const walkthroughRef = useRef(null);
   const saveTimers = useRef({});
@@ -12452,8 +12549,8 @@ export default function App() {
 
   // Roster of @mention-able teammates: derived from PICs + check-in/update authors + project teamMembers list + RBAC members (from user directory)
   const teamMembers = useMemo(
-    () => deriveTeamMembers(projects, author, authorEmail, directory),
-    [projects, author, authorEmail, directory]
+    () => deriveTeamMembers(projects, author, authorEmail, directory, dirIndex),
+    [projects, author, authorEmail, directory, dirIndex]
   );
 
   // Load on mount
@@ -12555,12 +12652,12 @@ export default function App() {
   // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
-    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt);
+    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail);
     const r = computeMyRaid(author, projects, isOwner);
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
-  }, [projects, author, isOwner, userPrefs]);
+  }, [projects, author, isOwner, userPrefs, dirIndex, verifiedEmail]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
   const raidPendingBadge = useMemo(() => {
@@ -13200,7 +13297,7 @@ export default function App() {
   const handleFileImport = async (file) => {
     if (!file) return;
     try {
-      const imported = await parseExcelFile(file);
+      const imported = await parseExcelFile(file, dirIndex);
       // Append (2) etc if duplicate name
       const names = new Set(Object.values(projects).map((p) => p.name));
       let finalName = imported.name, i = 2;
@@ -13357,7 +13454,7 @@ export default function App() {
   const r = project ? rollup(project) : null;
 
   return (
-    <>
+    <DirectoryIndexContext.Provider value={dirIndex}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
@@ -13537,6 +13634,7 @@ export default function App() {
                 <MyWorkView
                   projects={projects}
                   author={effectiveAuthor}
+                  authorEmail={impersonatingAs ? null : verifiedEmail}
                   isOwner={isOwner && !impersonatingAs}
                   userPrefs={userPrefs}
                   teamMembers={teamMembers}
@@ -13732,6 +13830,15 @@ export default function App() {
             showToast={showToast}
           />
         )}
+        {showDirectory && isOwner && verifiedEmail && (
+          <DirectoryModal
+            entries={dirEntries}
+            ownerEmail={verifiedEmail}
+            onChanged={reloadDirectory}
+            onClose={() => setShowDirectory(false)}
+            showToast={showToast}
+          />
+        )}
         {showProjectSettings && project && (
           <ProjectSettingsModal
             project={project}
@@ -13787,6 +13894,7 @@ export default function App() {
                           setUserMenuOpen(false);
                           setShowTransferOwner(true);
                         }}>Transfer</Btn>
+                        <Btn size="sm" onClick={() => { setUserMenuOpen(false); setShowDirectory(true); }}>People directory…</Btn>
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: TOK.subtle }}>Owner-only changes</div>
@@ -13878,7 +13986,7 @@ export default function App() {
           />
         )}
       </div>
-    </>
+    </DirectoryIndexContext.Provider>
   );
 }
 

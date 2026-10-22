@@ -101,6 +101,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Rules mới chặn sai | Deploy lại bản rules trước (lưu trong git) | HOD |
 | Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
+| Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
 | Chuyển đổi dữ liệu v2 lỗi | Document project cũ giữ nguyên tới M6; đặt lại `schemaVersion: 1` | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
@@ -118,7 +119,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong: B0 merged (PR #2)
 - Đã xong (22/10): đợt B merged + deploy. PR #3 B1 owner lock; #4 B2/B3 save banner + `rev` stale-write guard + ghi tuần tự theo project; #5 B4 task panel resize/expand, Drop thay xóa, Undo, owner-only Restore/Delete project, contrast AA, Esc modal; #7 follow-ups; #8 tay kéo panel nhìn thấy được. Plan: `docs/superpowers/plans/2026-10-14-b2-b4-save-safety-and-task-panel.md`
 - Nợ kỹ thuật từ review đợt B: (1) kiểm `rev` chưa nguyên tử → đổi sang `runTransaction` trước khi onboard cả phòng; (2) helper thành viên trong `data.ts` tính `memberIds`/`roles` từ snapshot → dùng `arrayUnion`/`arrayRemove`/`roles.<uid>`; (3) Esc đóng Modal kể cả form đang sửa dở
-- Tiếp theo: review PR #6 (P1 dry-run ánh xạ tên → email, chỉ đọc backup); rồi P1 (danh bạ uid + bảng ánh xạ, cần HOD duyệt dữ liệu)
+- P1: code trên draft PR #11 (`feat/p1-directory`), chờ dữ liệu HOD (Backup JSON, roster) + duyệt bản xem trước; dry-run từ PR #6 (`npm run p1:dryrun`)
 - Ghi nhớ: project doc có trường `rev` (B3). Mọi đường ghi project phải đi qua `storage-shim.ts`; MembersModal chỉ `updateDoc` field thay đổi. Restore JSON bỏ qua stale guard nhưng không đụng trường owner
 - Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2

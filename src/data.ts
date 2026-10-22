@@ -1,13 +1,14 @@
 // Firestore data layer + React hooks. See src/types.ts for the domain shapes
 // and firestore.rules for the access rules these calls must satisfy.
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   doc,
   collection,
   query,
   where,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -89,6 +90,160 @@ export function useUserDirectory(): UserDirEntry[] {
     return unsub;
   }, []);
   return users;
+}
+
+/* ════════════ WORKSPACE DIRECTORY (members + invites) ════════════ */
+export interface DirectoryEntry {
+  path: string; // full doc path
+  uid: string | null; // null for invites
+  email: string;
+  displayName: string;
+  aliases: string[];
+  department: string;
+  status: 'active' | 'deactivated';
+}
+
+const toDirectoryEntry = (
+  path: string,
+  uid: string | null,
+  data: Record<string, unknown>
+): DirectoryEntry => ({
+  path,
+  uid,
+  email: String(data.email || '').toLowerCase(),
+  displayName: String(data.displayName || ''),
+  aliases: Array.isArray(data.aliases) ? (data.aliases as unknown[]).map(String) : [],
+  department: String(data.department || ''),
+  status: data.status === 'deactivated' ? 'deactivated' : 'active',
+});
+
+export function useWorkspaceDirectory(
+  authUser: { uid: string; email?: string | null } | null
+): {
+  entries: DirectoryEntry[];
+  ready: boolean;
+  error: string | null;
+  reload: () => void;
+} {
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const claimTried = useRef(false);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const uid = authUser?.uid || null;
+  const emailLower = (authUser?.email || '').toLowerCase();
+
+  useEffect(() => {
+    if (!uid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [mSnap, iSnap] = await Promise.all([
+          getDocs(collection(db, 'workspaces', WORKSPACE, 'members')),
+          getDocs(collection(db, 'workspaces', WORKSPACE, 'invites')),
+        ]);
+        const members: DirectoryEntry[] = [];
+        mSnap.forEach((d) => members.push(toDirectoryEntry(d.ref.path, d.id, d.data())));
+        const memberEmails = new Set(members.map((m) => m.email));
+        const invites: DirectoryEntry[] = [];
+        iSnap.forEach((d) => {
+          const e = toDirectoryEntry(d.ref.path, null, d.data());
+          if (!memberEmails.has(e.email)) invites.push(e);
+        });
+
+        const hasMember = members.some((m) => m.uid === uid);
+        const invite = iSnap.docs.find((d) => d.id === emailLower);
+        if (
+          !claimTried.current &&
+          !hasMember &&
+          emailLower &&
+          invite &&
+          invite.data().status === 'active'
+        ) {
+          claimTried.current = true;
+          const inv = invite.data();
+          try {
+            await setDoc(doc(db, 'workspaces', WORKSPACE, 'members', uid), {
+              email: inv.email,
+              displayName: inv.displayName,
+              aliases: inv.aliases,
+              department: inv.department,
+              status: 'active',
+              updatedAt: serverTimestamp(),
+              updatedBy: emailLower,
+            });
+            if (!cancelled) reload();
+          } catch (e) {
+            console.warn('Invite claim failed:', e);
+          }
+        }
+        if (!cancelled) {
+          setEntries([...members, ...invites]);
+          setError(null);
+          setReady(true);
+        }
+      } catch (e) {
+        console.warn('Directory load failed:', e);
+        if (!cancelled) {
+          setEntries([]);
+          setError(e instanceof Error ? e.message : String(e));
+          setReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, emailLower, nonce, reload]);
+
+  return { entries, ready, error, reload };
+}
+
+/* Owner-only directory writes (rules enforce Workspace Owner). Nothing is deleted. */
+const invitePath = (emailLower: string) => ['workspaces', WORKSPACE, 'invites', emailLower] as const;
+
+export async function upsertInvite(
+  entry: { email: string; displayName: string; department: string; aliases: string[] },
+  ownerEmail: string
+): Promise<void> {
+  const email = entry.email.trim().toLowerCase();
+  await setDoc(doc(db, ...invitePath(email)), {
+    email,
+    displayName: entry.displayName,
+    aliases: entry.aliases,
+    department: entry.department,
+    status: 'active',
+    updatedAt: serverTimestamp(),
+    updatedBy: ownerEmail.toLowerCase(),
+  });
+}
+
+export async function updateDirectoryEntry(
+  path: string,
+  fields: { displayName?: string; department?: string; aliases?: string[] },
+  ownerEmail: string
+): Promise<void> {
+  await updateDoc(doc(db, path), {
+    ...fields,
+    updatedAt: serverTimestamp(),
+    updatedBy: ownerEmail.toLowerCase(),
+  });
+}
+
+export async function setDirectoryStatus(
+  entry: DirectoryEntry,
+  status: 'active' | 'deactivated',
+  ownerEmail: string
+): Promise<void> {
+  const stamp = { status, updatedAt: serverTimestamp(), updatedBy: ownerEmail.toLowerCase() };
+  await updateDoc(doc(db, entry.path), stamp);
+  if (entry.uid) {
+    // Keep a stale invite from letting a deactivated person re-claim.
+    const invRef = doc(db, ...invitePath(entry.email));
+    const inv = await getDoc(invRef);
+    if (inv.exists()) await updateDoc(invRef, stamp);
+  }
 }
 
 /* ════════════ WORKSPACE META ════════════ */

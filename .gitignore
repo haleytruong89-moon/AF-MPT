@@ -37,3 +37,9 @@ TODAYS_FEATURES_SPEC.md
 # P1 identity dry-run inputs/outputs (contain real people data) — never commit
 workspace_backup_*.json
 p1-identity-mapping*.xlsx
+
+# P1 directory build inputs/outputs (real people data) - never commit
+p1-roster*.xlsx
+p1-directory-preview*.xlsx
+p1-directory-applied*.xlsx
+p1-directory-manifest-*.json

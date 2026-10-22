@@ -93,6 +93,56 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ─────── People directory: members / invites ───────
+    // P1 (2026-10-22), Q4: Owner-managed. members/{uid} = signed-in people,
+    // invites/{email} = not yet signed in (doc id = lower-cased email).
+    // Any domain user may read. Only the Workspace Owner may write, except one
+    // self-claim: a signed-in user may create their own members/{uid} as an
+    // exact copy of their invite (status 'active', audit fields = caller/now).
+    function callerEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Same check as isWorkspaceOwner() via get(); keep in sync; ownerUids[] replaces both in P2.
+    function isDirectoryOwner() {
+      let ws = get(/databases/$(database)/documents/workspaces/main).data;
+      return ws.get('workspaceOwner', null) is string
+        && ws.workspaceOwner.lower() == callerEmail();
+    }
+
+    function invitePath() {
+      return /databases/$(database)/documents/workspaces/main/invites/$(callerEmail());
+    }
+
+    function isValidSelfClaim(uid) {
+      return uid == request.auth.uid
+        && exists(invitePath())
+        && claimMatchesInvite(request.resource.data, get(invitePath()).data);
+    }
+
+    function claimMatchesInvite(d, inv) {
+      return d.keys().hasOnly(['email', 'displayName', 'aliases', 'department', 'status', 'updatedAt', 'updatedBy'])
+        && d.get('email', null) == inv.get('email', null)
+        && d.get('displayName', null) == inv.get('displayName', null)
+        && d.get('aliases', null) == inv.get('aliases', null)
+        && d.get('department', null) == inv.get('department', null)
+        && inv.get('status', null) == 'active'
+        && d.get('status', null) == 'active'
+        && d.get('updatedBy', null) == callerEmail()
+        && d.get('updatedAt', null) == request.time;
+    }
+
+    match /workspaces/main/members/{uid} {
+      allow read: if isSmartOSC();
+      allow create: if isSmartOSC() && (isDirectoryOwner() || isValidSelfClaim(uid));
+      allow update, delete: if isSmartOSC() && isDirectoryOwner();
+    }
+
+    match /workspaces/main/invites/{email} {
+      allow read: if isSmartOSC();
+      allow write: if isSmartOSC() && isDirectoryOwner();
+    }
+
     // ─────── Projects ───────
     // Per-doc read rule: only members. Firestore enforces this on get() and
     // on list() — but list queries must constrain themselves so Firestore can
