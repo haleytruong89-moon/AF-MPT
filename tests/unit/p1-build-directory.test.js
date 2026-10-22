@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planDirectory } from '../../scripts/p1-build-directory.mjs';
+import { planDirectory, applyPlan, rollbackManifest, toJsonable } from '../../scripts/p1-build-directory.mjs';
 
 const roster = [
   { Email: 'Thu.HT@smartosc.com', 'Display name': 'Hà Trương Thị Thu', Department: 'AF' },
@@ -55,5 +55,64 @@ describe('planDirectory', () => {
   it('rejects duplicate roster rows', () => {
     const p = planDirectory([...roster, { Email: 'AN@smartosc.com', 'Display name': 'An 2' }], [], uids);
     expect(p.errors).toContain('an@smartosc.com: duplicate roster row');
+  });
+});
+
+class FakeTs { constructor(s, n) { this.seconds = s; this.nanoseconds = n; } }
+function fakeDb(initial = {}, log = []) {
+  const store = new Map(Object.entries(initial));
+  return {
+    store,
+    doc: (path) => ({
+      get: async () => ({ exists: store.has(path), data: () => store.get(path) }),
+      set: async (d) => { log.push('set ' + path); store.set(path, d); },
+      delete: async () => { log.push('delete ' + path); store.delete(path); },
+    }),
+  };
+}
+const FV = { serverTimestamp: () => 'SERVER_TS' };
+
+describe('applyPlan / rollbackManifest', () => {
+  const plan = planDirectory(roster, [], uids);
+  it('writes the manifest before the first set', async () => {
+    const log = [];
+    const db = fakeDb({}, log);
+    await applyPlan(db, plan, { FieldValue: FV, Timestamp: FakeTs, writeManifest: () => log.push('manifest') });
+    expect(log[0]).toBe('manifest');
+    expect(log.slice(1).every((l) => l.startsWith('set '))).toBe(true);
+    expect(db.store.get('workspaces/main/members/uid-thu').updatedAt).toBe('SERVER_TS');
+  });
+  it('writes nothing when the plan has errors', async () => {
+    const log = [];
+    const bad = { ...plan, errors: ['x'] };
+    await expect(applyPlan(fakeDb({}, log), bad, { FieldValue: FV, Timestamp: FakeTs, writeManifest: () => log.push('manifest') })).rejects.toThrow();
+    expect(log).toEqual([]);
+  });
+  it('rollback restores previous data, deletes new docs, keeps Timestamps, and is idempotent', async () => {
+    const memberPath = 'workspaces/main/members/uid-thu';
+    const invitePath = 'workspaces/main/invites/an@smartosc.com';
+    const db = fakeDb({ [memberPath]: { displayName: 'Old', updatedAt: new FakeTs(5, 7) } });
+    let saved;
+    await applyPlan(db, plan, { FieldValue: FV, Timestamp: FakeTs, writeManifest: (m) => { saved = JSON.stringify(m); } });
+    expect(db.store.has(invitePath)).toBe(true);
+    const manifest = JSON.parse(saved);
+    for (let i = 0; i < 2; i++) {
+      await rollbackManifest(db, manifest, { Timestamp: FakeTs });
+      const back = db.store.get(memberPath);
+      expect(back.displayName).toBe('Old');
+      expect(back.updatedAt).toBeInstanceOf(FakeTs);
+      expect([back.updatedAt.seconds, back.updatedAt.nanoseconds]).toEqual([5, 7]);
+      expect(db.store.has(invitePath)).toBe(false);
+    }
+  });
+  it('toJsonable tags nested Timestamps', () => {
+    expect(toJsonable({ a: [{ t: new FakeTs(1, 2) }] }, FakeTs)).toEqual({ a: [{ t: { __ts: [1, 2] } }] });
+  });
+});
+
+describe('roster validation', () => {
+  it('flags a row with a name but no email', () => {
+    const p = planDirectory([{ Email: '', 'Display name': 'Ghost' }], [], new Map());
+    expect(p.errors).toContain('Ghost: missing email');
   });
 });
