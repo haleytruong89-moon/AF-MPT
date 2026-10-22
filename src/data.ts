@@ -271,6 +271,13 @@ export async function hardDeleteProject(pid: string): Promise<void> {
 }
 
 /* ─── Membership management ─── */
+// B3 fix: membership helpers write ONLY the fields they change (updateDoc), never
+// the whole project from a possibly-stale snapshot — that could roll back
+// programs/tasks saved by the App and move `rev` backwards.
+async function patchProject(pid: string, fields: Record<string, unknown>): Promise<void> {
+  await updateDoc(PROJECT_REF(pid), { ...fields, updatedAt: serverTimestamp() });
+}
+
 export async function addProjectMember(
   project: Project,
   userDirEntry: { uid: string },
@@ -279,13 +286,13 @@ export async function addProjectMember(
   if (!project?.id || !userDirEntry?.uid) throw new Error('addProjectMember: bad args');
   const memberIds = Array.from(new Set([...(project.memberIds || []), userDirEntry.uid]));
   const roles = { ...(project.roles || {}), [userDirEntry.uid]: role };
-  await saveProject({ ...project, memberIds, roles });
+  await patchProject(project.id, { memberIds, roles });
 }
 
 export async function setMemberRole(project: Project, uid: string, role: Role): Promise<void> {
   if (!project?.id || !uid) throw new Error('setMemberRole: bad args');
   const roles = { ...(project.roles || {}), [uid]: role };
-  await saveProject({ ...project, roles });
+  await patchProject(project.id, { roles });
 }
 
 export async function removeProjectMember(project: Project, uid: string): Promise<void> {
@@ -293,7 +300,7 @@ export async function removeProjectMember(project: Project, uid: string): Promis
   const memberIds = (project.memberIds || []).filter((x) => x !== uid);
   const roles = { ...(project.roles || {}) };
   delete roles[uid];
-  await saveProject({ ...project, memberIds, roles });
+  await patchProject(project.id, { memberIds, roles });
 }
 
 export async function setRelatedParties(
@@ -301,7 +308,7 @@ export async function setRelatedParties(
   relatedParties: Project['relatedParties']
 ): Promise<void> {
   if (!project?.id) throw new Error('setRelatedParties: bad args');
-  await saveProject({ ...project, relatedParties: relatedParties || [] });
+  await patchProject(project.id, { relatedParties: relatedParties || [] });
 }
 
 /* ════════════ ACTIVITY LOG ════════════ */
