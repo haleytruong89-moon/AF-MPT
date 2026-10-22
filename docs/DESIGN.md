@@ -49,7 +49,7 @@ Không có trường người phụ trách ở program/workstream. Task: `pic` (
 | 8 | M | Restore JSON ghi đè từ client; domain hard-code trong rules | P2 |
 | 9 | M | Monolith, không test, không type-check | Test rules ở P2; không refactor lớn |
 | 10 | M | Hai đường ghi (shim + `data.ts`) | P2: dồn về 1 đường |
-| 11 | L/M | Định danh bằng tên | **P1** |
+| 11 | L/M | Định danh bằng tên | **P1** (gộp lúc đọc qua danh bạ; P2 đổi sang uid) |
 | 12 | **M/H dữ liệu** *(mới, 14/10)* | `getDoc` lỗi tạm thời khi lưu (mạng chập chờn) → shim coi như doc chưa có → ghi `memberIds=[uid]`, `roles={uid:'owner'}` (`storage-shim.ts` 276–301). Nếu người lưu là owner, rules cho qua → **mất hết thành viên khác của project, không báo** | **B2** (gộp: lỗi đọc thì dừng lưu, không đoán) |
 | 13 | L *(mới)* | Restore JSON ghi lại activity log: shim thay `author` dòng đầu bằng email người restore → log sai người | P2 |
 
