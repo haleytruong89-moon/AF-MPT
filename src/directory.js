@@ -35,7 +35,7 @@ export function buildDirectoryIndex(entries) {
 export function canonicalPerson(index, raw) {
   const s = String(raw || '');
   const p = index && (index.byKey.get(s.trim().toLowerCase()) || index.byKey.get(foldName(s)));
-  if (p) return { id: p.id, name: p.name, known: true };
+  if (p) return { id: p.id, name: p.name || p.email, known: true };
   return { id: 'n:' + foldName(s), name: s.trim(), known: false };
 }
 
@@ -46,6 +46,16 @@ export function personKey(index, raw) {
 }
 export function personLabel(index, raw) {
   return index ? canonicalPerson(index, raw).name : raw;
+}
+
+// Find the member record ({ name, email }) for a raw person string. With no
+// index: exact name match (legacy). With an index: the same person, matched on
+// the member's email or name against any alias of `raw`.
+export function findMember(members, raw, index) {
+  if (!index) return (members || []).find((m) => m?.name === raw);
+  if (!raw) return undefined;
+  const id = personKey(index, raw);
+  return (members || []).find((m) => m && ((m.email && personKey(index, m.email) === id) || (m.name && personKey(index, m.name) === id)));
 }
 
 // Group raw person strings by person, in first-seen order of the group id.

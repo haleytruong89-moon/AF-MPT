@@ -14,7 +14,7 @@ import { MembersModal } from './components/MembersModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel } from './directory';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
@@ -2570,6 +2570,7 @@ function ReferencesSection({ task, onUpdate, author }) {
 //   3) legacy `suggestions` (Used in tasks badge)
 // Chip styling reflects "known" vs "unknown" (not in members or registry).
 function ContributorEditor({ contributors, onChange, suggestions, primaryPic, project, teamMembersList }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const list = Array.isArray(contributors) ? contributors : [];
@@ -2619,7 +2620,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
 
   const isKnown = (name) => {
     if (registryNames.has(name)) return true;
-    if ((teamMembersList || []).some((m) => m.name === name)) return true;
+    if (findMember(teamMembersList, name, dirIndex)) return true;
     return false;
   };
 
@@ -2629,7 +2630,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
         {list.map((c) => {
           const known = isKnown(c);
-          const member = (teamMembersList || []).find((m) => m.name === c);
+          const member = findMember(teamMembersList, c, dirIndex);
           return (
             <span key={c} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -2733,6 +2734,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
 // Single-select autocomplete from teamMembers ONLY (not registry — PIC needs
 // email for notifications). Free-text allowed but warned.
 function PicEditor({ value, onChange, teamMembersList, project, label, placeholder }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -2753,8 +2755,8 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
       .slice(0, 8);
   }, [combined, draft]);
 
-  const isKnown = !!(value && combined.some((s) => s.name === value));
-  const member = combined.find((m) => m.name === value);
+  const isKnown = !!(value && findMember(combined, value, dirIndex));
+  const member = findMember(combined, value, dirIndex);
 
   const pick = (name) => {
     // Strip leading @ if user typed @-mention syntax, then resolve
@@ -3929,6 +3931,7 @@ function projectTaskOptions(project) {
 // Chip + autocomplete dropdown. Source: teamMembers ONLY.
 // Existing values not in teamMembers are shown as legacy ⚠ chips for cleanup.
 function DecidedByPicker({ value, onChange, teamMembers }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const list = Array.isArray(value) ? value : [];
@@ -3970,8 +3973,8 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 28 }}>
         {list.map((n) => {
-          const known = memberNames.has(n);
-          const member = (teamMembers || []).find((m) => m.name === n);
+          const known = memberNames.has(n) || !!findMember(teamMembers, n, dirIndex);
+          const member = findMember(teamMembers, n, dirIndex);
           return (
             <span key={n} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -4887,6 +4890,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 }
 
 function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [mode, setMode] = useState('grouped'); // grouped | flat
@@ -5069,14 +5073,14 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   // Also auto-downloads the per-PIC Excel template so the file is ready to attach in Gmail
   // (browser security prevents pre-attaching to Gmail via URL — manual attach still required).
   const emailPic = (picName, list) => {
-    const member = teamMembers.find((m) => m.name === picName);
+    const member = findMember(teamMembers, picName, dirIndex);
     if (!member?.email) {
       dialogs.alert({ title: 'No email', message: `No email on file for ${picName}. Add it via Project settings → Team members.` });
       return;
     }
     const subject = `[${project.name}] Action items — ${fmtDate(new Date())}`;
     const html = buildPicEmailHtml(picName, list, project, author);
-    const meEmail = teamMembers.find((m) => m.name === author)?.email;
+    const meEmail = findMember(teamMembers, author, dirIndex)?.email;
     const gmailUrl = buildGmailUrl({ to: member.email, subject, cc: meEmail });
     // Auto-download per-PIC Excel — user attaches manually in Gmail
     const blob = actionsToOpenProjectExcel(project, list);
@@ -5232,7 +5236,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         {filtered.length > 0 && mode === 'grouped' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {groupedByPic.map(([pic, items]) => {
-              const member = teamMembers.find((m) => m.name === pic);
+              const member = findMember(teamMembers, pic, dirIndex);
               const hasEmail = member?.email;
               return (
                 <div key={pic} style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, overflow: 'hidden' }}>
@@ -5277,7 +5281,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
             {Array.from(emailPicsDialog.groups.entries()).map(([picName, items]) => {
-              const member = teamMembers.find((m) => m.name === picName);
+              const member = findMember(teamMembers, picName, dirIndex);
               const hasEmail = !!member?.email;
               return (
                 <div key={picName} style={{
@@ -7728,6 +7732,7 @@ function PICDetailModal({ metrics, onClose }) {
 function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const [selectedPic, setSelectedPic] = useState(null);
+  useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
   const [showDifficulty, setShowDifficulty] = useState(false);
   // Window + sort controls. Owner-editable; non-owners see them disabled and
   // viewable for transparency. Local state — does not persist across reloads;
@@ -9345,6 +9350,7 @@ function RiskLevelBadge({ likelihood, impact }) {
 // (useful for departments like AF/Legal/HR that may not have emails).
 // teamMembers: [{ name, email? }]; extraSuggestions: [string] for departments.
 function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [query, setQuery] = useState(value || '');
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -9355,13 +9361,13 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
     const q = (query || '').trim().toLowerCase();
     const all = [
       ...(teamMembers || []).map((m) => ({ name: m?.name, email: m?.email })).filter((m) => m.name),
-      ...((extraSuggestions || []).filter((n) => n && !(teamMembers || []).some((m) => m?.name === n)).map((n) => ({ name: n, email: null }))),
+      ...((extraSuggestions || []).filter((n) => n && !findMember(teamMembers, n, dirIndex)).map((n) => ({ name: n, email: null }))),
     ];
     if (!q) return all.slice(0, 8);
     return all.filter((m) =>
       m.name.toLowerCase().includes(q) || (m.email && m.email.toLowerCase().includes(q))
     ).slice(0, 8);
-  }, [query, teamMembers, extraSuggestions]);
+  }, [query, teamMembers, extraSuggestions, dirIndex]);
 
   const commit = (name) => {
     setQuery(name);
@@ -9428,7 +9434,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
           ))}
         </div>
       )}
-      {value && !(teamMembers || []).some((m) => m?.name === value) && (
+      {value && !findMember(teamMembers, value, dirIndex) && (
         <button
           type="button"
           onClick={(e) => {
@@ -11096,12 +11102,13 @@ function MyWorkView({
   onMarkSeen, showToast,
   onNavigateRaid,
 }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
   const myWork = useMemo(
-    () => computeMyWork(author, projects, isOwner, lastSeenAt),
-    [projects, author, isOwner, lastSeenAt]
+    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex),
+    [projects, author, isOwner, lastSeenAt, dirIndex]
   );
   const myRaid = useMemo(
     () => computeMyRaid(author, projects, isOwner),
@@ -11733,6 +11740,7 @@ function CreditReportView({ projects, isOwner }) {
   const [selectedYear, setSelectedYear] = useState(allYears[0] || thisYear);
   const [sortBy, setSortBy] = useState('projected');
   const [selectedPic, setSelectedPic] = useState(null);
+  useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
 
   const report = useMemo(() => computeWorkspaceCredits(projects, selectedYear, dirIndex), [projects, selectedYear, dirIndex]);
 
@@ -12623,12 +12631,12 @@ export default function App() {
   // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
-    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt);
+    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex);
     const r = computeMyRaid(author, projects, isOwner);
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
-  }, [projects, author, isOwner, userPrefs]);
+  }, [projects, author, isOwner, userPrefs, dirIndex]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
   const raidPendingBadge = useMemo(() => {

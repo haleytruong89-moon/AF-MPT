@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey } from '../../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember } from '../../src/directory.js';
 
 describe('directory index', () => {
   const idx = buildDirectoryIndex([
@@ -57,5 +57,30 @@ describe('groupByPerson', () => {
       { id: 'lan', name: 'lan', count: 1, values: ['lan'] },
     ]);
     expect(personKey(null, 'Lan ')).toBe('Lan ');
+  });
+});
+
+describe('findMember and empty display names', () => {
+  const idx = buildDirectoryIndex([
+    { email: 'hattt4@smartosc.com', displayName: 'Hà Trương Thị Thu' },
+    { email: 'noname@smartosc.com', displayName: '' },
+  ]);
+  const members = [
+    { name: 'Hà Trương Thị Thu', email: 'hattt4@smartosc.com' },
+    { name: 'Legal', email: null },
+  ];
+  it('shows the email for a known person with an empty display name', () => {
+    expect(canonicalPerson(idx, 'noname@smartosc.com')).toEqual({ id: 'noname@smartosc.com', name: 'noname@smartosc.com', known: true });
+  });
+  it('finds a member by any alias of the same person when an index is given', () => {
+    expect(findMember(members, 'Ha Truong Thi Thu', idx)?.email).toBe('hattt4@smartosc.com');
+    expect(findMember(members, 'hattt4', idx)?.email).toBe('hattt4@smartosc.com');
+    expect(findMember(members, 'legal', idx)?.name).toBe('Legal');
+    expect(findMember(members, 'Someone Else', idx)).toBeUndefined();
+  });
+  it('keeps exact-name matching with no index', () => {
+    expect(findMember(members, 'Hà Trương Thị Thu', null)?.email).toBe('hattt4@smartosc.com');
+    expect(findMember(members, 'hattt4@smartosc.com', null)).toBeUndefined();
+    expect(findMember(members, 'legal', null)).toBeUndefined();
   });
 });
