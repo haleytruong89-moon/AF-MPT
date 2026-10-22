@@ -119,7 +119,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong: B0 merged (PR #2)
 - Đã xong (22/10): đợt B merged + deploy. PR #3 B1 owner lock; #4 B2/B3 save banner + `rev` stale-write guard + ghi tuần tự theo project; #5 B4 task panel resize/expand, Drop thay xóa, Undo, owner-only Restore/Delete project, contrast AA, Esc modal; #7 follow-ups; #8 tay kéo panel nhìn thấy được. Plan: `docs/superpowers/plans/2026-10-14-b2-b4-save-safety-and-task-panel.md`
 - Nợ kỹ thuật từ review đợt B: (1) kiểm `rev` chưa nguyên tử → đổi sang `runTransaction` trước khi onboard cả phòng; (2) helper thành viên trong `data.ts` tính `memberIds`/`roles` từ snapshot → dùng `arrayUnion`/`arrayRemove`/`roles.<uid>`; (3) Esc đóng Modal kể cả form đang sửa dở
-- P1: code trên draft PR #11 (`feat/p1-directory`), chờ dữ liệu HOD (Backup JSON, roster) + duyệt bản xem trước
+- P1: code trên draft PR #11 (`feat/p1-directory`), chờ dữ liệu HOD (Backup JSON, roster) + duyệt bản xem trước; dry-run từ PR #6 (`npm run p1:dryrun`)
 - Ghi nhớ: project doc có trường `rev` (B3). Mọi đường ghi project phải đi qua `storage-shim.ts`; MembersModal chỉ `updateDoc` field thay đổi. Restore JSON bỏ qua stale guard nhưng không đụng trường owner
 - Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
