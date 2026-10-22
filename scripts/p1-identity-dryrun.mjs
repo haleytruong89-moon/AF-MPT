@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // P1 dry-run — READ-ONLY. Reads an AF-MPT "Backup JSON" file (downloaded from
 // the app) and writes an Excel file listing every person string found in the
 // data with a proposed canonical email. HOD fills the "HOD: …" columns; nothing

@@ -72,3 +72,30 @@ describe('proposeMapping', () => {
     expect(r[0].confidence).toBe('none');
   });
 });
+
+describe('proposeMapping — email seen with several different names', () => {
+  // After a Restore, the shim stamps the restorer's email on entries[0] but keeps
+  // the original authorName, so one email can carry someone else's name (risk #13).
+  const p = { id: 'p2', name: 'MA', teamMembers: [], programs: [{ id: 'pg', workstreams: [{ id: 'ws', tasks: [
+    { id: 't1', pic: 'Lan Nguyen' }, { id: 't2', pic: 'Hà Trương Thị Thu' },
+  ] }] }] };
+  const act = { p2: [
+    { author: 'hattt4@smartosc.com', authorName: 'Hà Trương Thị Thu' },
+    { author: 'hattt4@smartosc.com', authorName: 'Lan Nguyen' },
+    { author: 'hattt4@smartosc.com', authorName: 'Ha Truong Thi Thu' },
+  ] };
+  it('caps confidence at medium and asks HOD to verify', () => {
+    const rows = proposeMapping({ p2: p }, act);
+    const lan = rows.find((r) => r.raw === 'Lan Nguyen');
+    expect(lan.email).toBe('hattt4@smartosc.com');
+    expect(lan.confidence).toBe('medium');
+    expect(lan.note).toMatch(/several names/);
+  });
+  it('treats diacritic variants of one name as the same name', () => {
+    const known = buildKnownPeople({}, { x: [
+      { author: 'a@smartosc.com', authorName: 'Hà Trương Thị Thu' },
+      { author: 'a@smartosc.com', authorName: 'Ha Truong Thi Thu' },
+    ] });
+    expect(known.get('a@smartosc.com').multipleNames).toBe(false);
+  });
+});

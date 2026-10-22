@@ -84,7 +84,12 @@ export function buildKnownPeople(projects, activity) {
   for (const p of Object.values(projects || {})) for (const m of p?.teamMembers || []) if (m?.email) add(m.email, m.name);
   for (const entries of Object.values(activity || {})) for (const a of entries || []) if (isEmail(a?.author)) add(a.author, a.authorName);
   const out = new Map();
-  for (const [k, v] of known) out.set(k, { email: v.email, names: [...v.names].sort() });
+  // multipleNames: the email carries names that differ even without diacritics.
+  // A Restore can pair the restorer's email with someone else's name (risk #13).
+  for (const [k, v] of known) {
+    const names = [...v.names].sort();
+    out.set(k, { email: v.email, names, multipleNames: new Set(names.map(foldName)).size > 1 });
+  }
   return out;
 }
 
@@ -132,6 +137,10 @@ export function proposeMapping(projects, activity) {
         || pick(token, 'low', 'first-name match only — verify')
         || { type: 'unknown', email: '', name: '', confidence: 'none',
              note: [exact, local, fold, token].some((l) => l.length > 1) ? 'ambiguous — several people match' : 'no match — enter email or mark as group' };
+    }
+    if (row.email && known.get(row.email)?.multipleNames) {
+      if (row.confidence === 'high') row.confidence = 'medium';
+      row.note = [row.note, `email seen with several names (${known.get(row.email).names.join(', ')}) — verify`].filter(Boolean).join('; ');
     }
     rows.push({ ...base, ...row });
   }
