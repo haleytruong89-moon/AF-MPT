@@ -80,3 +80,43 @@ export function groupByPerson(values, index) {
 export function pickerPeople(index) {
   return (index?.people || []).filter((p) => p.active).sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'));
 }
+
+// ── Owner directory screen helpers (pure) ──
+export function parseAliases(text) {
+  const seen = new Set();
+  const out = [];
+  for (const part of String(text || '').split(',')) {
+    const a = part.trim();
+    const k = a.toLowerCase();
+    if (!a || seen.has(k)) continue;
+    seen.add(k);
+    out.push(a);
+  }
+  return out;
+}
+
+// Returns an error message, or null when `email` can be added as a new person.
+export function validateNewPerson(email, entries) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@smartosc\.com$/.test(e)) return 'Email must be a valid @smartosc.com address';
+  if ((entries || []).some((x) => String(x.email || '').toLowerCase() === e)) return 'This email is already in the directory';
+  return null;
+}
+
+// Replace `edited` (matched by email) in entries, rebuild the index, and return
+// the first conflict involving it as { alias, other }, or null.
+export function aliasConflictFor(entries, edited) {
+  const email = String(edited.email || '').toLowerCase();
+  const next = (entries || []).map((e) => (String(e.email || '').toLowerCase() === email ? edited : e));
+  const { conflicts } = buildDirectoryIndex(next);
+  const hit = conflicts.find((c) => c.emails.includes(email));
+  if (!hit) return null;
+  return { alias: hit.alias, other: hit.emails.find((x) => x !== email) };
+}
+
+export function filterDirectory(entries, q) {
+  const needle = foldName(q);
+  if (!needle) return entries || [];
+  return (entries || []).filter((e) =>
+    [e.displayName, e.email, e.department, ...(e.aliases || [])].some((s) => foldName(s).includes(needle)));
+}

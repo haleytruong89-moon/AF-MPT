@@ -200,6 +200,52 @@ export function useWorkspaceDirectory(
   return { entries, ready, error, reload };
 }
 
+/* Owner-only directory writes (rules enforce Workspace Owner). Nothing is deleted. */
+const invitePath = (emailLower: string) => ['workspaces', WORKSPACE, 'invites', emailLower] as const;
+
+export async function upsertInvite(
+  entry: { email: string; displayName: string; department: string; aliases: string[] },
+  ownerEmail: string
+): Promise<void> {
+  const email = entry.email.trim().toLowerCase();
+  await setDoc(doc(db, ...invitePath(email)), {
+    email,
+    displayName: entry.displayName,
+    aliases: entry.aliases,
+    department: entry.department,
+    status: 'active',
+    updatedAt: serverTimestamp(),
+    updatedBy: ownerEmail.toLowerCase(),
+  });
+}
+
+export async function updateDirectoryEntry(
+  path: string,
+  fields: { displayName?: string; department?: string; aliases?: string[] },
+  ownerEmail: string
+): Promise<void> {
+  await updateDoc(doc(db, path), {
+    ...fields,
+    updatedAt: serverTimestamp(),
+    updatedBy: ownerEmail.toLowerCase(),
+  });
+}
+
+export async function setDirectoryStatus(
+  entry: DirectoryEntry,
+  status: 'active' | 'deactivated',
+  ownerEmail: string
+): Promise<void> {
+  const stamp = { status, updatedAt: serverTimestamp(), updatedBy: ownerEmail.toLowerCase() };
+  await updateDoc(doc(db, entry.path), stamp);
+  if (entry.uid) {
+    // Keep a stale invite from letting a deactivated person re-claim.
+    const invRef = doc(db, ...invitePath(entry.email));
+    const inv = await getDoc(invRef);
+    if (inv.exists()) await updateDoc(invRef, stamp);
+  }
+}
+
 /* ════════════ WORKSPACE META ════════════ */
 export interface WorkspaceBootstrapState {
   ready: boolean;

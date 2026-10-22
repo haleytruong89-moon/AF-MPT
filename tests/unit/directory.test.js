@@ -96,3 +96,35 @@ describe('canonicalName', () => {
     expect(canonicalName(null, ' hattt4 ')).toBe('hattt4');
   });
 });
+
+import { parseAliases, validateNewPerson, aliasConflictFor, filterDirectory } from '../../src/directory.js';
+
+describe('directory admin helpers', () => {
+  const entries = [
+    { path: 'workspaces/main/members/u1', uid: 'u1', email: 'a@smartosc.com', displayName: 'Anh Nguyễn', aliases: ['Anh N'], department: 'AF', status: 'active' },
+    { path: 'workspaces/main/invites/b@smartosc.com', uid: null, email: 'b@smartosc.com', displayName: 'Bình Lê', aliases: [], department: 'Tax', status: 'active' },
+  ];
+  it('parseAliases trims, drops empties, dedupes case-insensitively', () => {
+    expect(parseAliases(' Foo, bar ,, FOO ,Bar,baz ')).toEqual(['Foo', 'bar', 'baz']);
+    expect(parseAliases('')).toEqual([]);
+  });
+  it('validateNewPerson checks domain and duplicates', () => {
+    expect(validateNewPerson('x@gmail.com', entries)).toMatch(/@smartosc\.com/);
+    expect(validateNewPerson('A@SmartOSC.com', entries)).toMatch(/already/);
+    expect(validateNewPerson('b@smartosc.com', entries)).toMatch(/already/);
+    expect(validateNewPerson(' New@SmartOSC.com ', entries)).toBeNull();
+    expect(validateNewPerson('@smartosc.com', entries)).not.toBeNull();
+  });
+  it('aliasConflictFor reports a clash with another person', () => {
+    const edited = { ...entries[0], aliases: ['Bình Lê'] };
+    const c = aliasConflictFor(entries, edited);
+    expect(c).toEqual({ alias: 'binh le', other: 'b@smartosc.com' });
+    expect(aliasConflictFor(entries, { ...entries[0], aliases: ['Fresh'] })).toBeNull();
+  });
+  it('filterDirectory matches name/email/department/alias ignoring diacritics', () => {
+    expect(filterDirectory(entries, 'nguyen').map((e) => e.email)).toEqual(['a@smartosc.com']);
+    expect(filterDirectory(entries, 'tax').map((e) => e.email)).toEqual(['b@smartosc.com']);
+    expect(filterDirectory(entries, 'anh n').length).toBe(1);
+    expect(filterDirectory(entries, '').length).toBe(2);
+  });
+});

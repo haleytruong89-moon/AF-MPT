@@ -11,6 +11,7 @@ import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
 import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
+import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
@@ -12534,7 +12535,8 @@ export default function App() {
   useSearchHotkey(() => setShowSearch(true));
   const { user: authUser, logOut } = useAuth();
   const directory = useUserDirectory();
-  const { entries: dirEntries } = useWorkspaceDirectory(authUser);
+  const { entries: dirEntries, reload: reloadDirectory } = useWorkspaceDirectory(authUser);
+  const [showDirectory, setShowDirectory] = useState(false);
   const dirIndex = useMemo(() => (dirEntries.length ? buildDirectoryIndex(dirEntries) : null), [dirEntries]);
   const fileInputRef = useRef(null);
   const walkthroughRef = useRef(null);
@@ -13826,6 +13828,15 @@ export default function App() {
             showToast={showToast}
           />
         )}
+        {showDirectory && isOwner && verifiedEmail && (
+          <DirectoryModal
+            entries={dirEntries}
+            ownerEmail={verifiedEmail}
+            onChanged={reloadDirectory}
+            onClose={() => setShowDirectory(false)}
+            showToast={showToast}
+          />
+        )}
         {showProjectSettings && project && (
           <ProjectSettingsModal
             project={project}
@@ -13881,6 +13892,7 @@ export default function App() {
                           setUserMenuOpen(false);
                           setShowTransferOwner(true);
                         }}>Transfer</Btn>
+                        <Btn size="sm" onClick={() => { setUserMenuOpen(false); setShowDirectory(true); }}>People directory…</Btn>
                       </div>
                     ) : (
                       <div style={{ fontSize: 11, color: TOK.subtle }}>Owner-only changes</div>
