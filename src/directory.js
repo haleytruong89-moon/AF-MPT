@@ -39,6 +39,12 @@ export function canonicalPerson(index, raw) {
   return { id: 'n:' + foldName(s), name: s.trim(), known: false };
 }
 
+// The name to store for a person string: directory display name when known,
+// else the trimmed input.
+export function canonicalName(index, raw) {
+  return canonicalPerson(index, raw).name;
+}
+
 // Grouping key / display label for a raw person string. With no index both are
 // the raw string itself (legacy behaviour: exact, case-sensitive grouping).
 export function personKey(index, raw) {

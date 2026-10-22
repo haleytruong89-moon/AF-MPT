@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember } from '../../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember, canonicalName } from '../../src/directory.js';
 
 describe('directory index', () => {
   const idx = buildDirectoryIndex([
@@ -82,5 +82,17 @@ describe('findMember and empty display names', () => {
     expect(findMember(members, 'Hà Trương Thị Thu', null)?.email).toBe('hattt4@smartosc.com');
     expect(findMember(members, 'hattt4@smartosc.com', null)).toBeUndefined();
     expect(findMember(members, 'legal', null)).toBeUndefined();
+  });
+});
+
+describe('canonicalName', () => {
+  const idx = buildDirectoryIndex([{ email: 'hattt4@smartosc.com', displayName: 'Hà Trương Thị Thu' }]);
+  it('returns the directory display name for any alias of a known person', () => {
+    expect(canonicalName(idx, 'hattt4')).toBe('Hà Trương Thị Thu');
+    expect(canonicalName(idx, 'HATTT4@smartosc.com')).toBe('Hà Trương Thị Thu');
+  });
+  it('returns the trimmed input for unknown values and with no index', () => {
+    expect(canonicalName(idx, ' Legal ')).toBe('Legal');
+    expect(canonicalName(null, ' hattt4 ')).toBe('hattt4');
   });
 });

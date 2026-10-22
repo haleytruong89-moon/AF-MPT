@@ -1266,10 +1266,16 @@ function MentionedText({ text, teamMembers }) {
 // return the member's name (e.g. 'hattt4@smartosc.com' → 'Hà Trương Thị Thu').
 // Otherwise return the input verbatim (trimmed). Returns '' for empty input.
 // Pure, idempotent, no throw.
-function resolvePicValue(input, teamMembersList) {
+// P1: with a directory index, a known person resolves to the directory name;
+// unknown values (groups, free text) keep the legacy behaviour below.
+function resolvePicValue(input, teamMembersList, dirIndex = null) {
   if (input == null) return input;
   const trimmed = String(input).trim();
   if (!trimmed) return trimmed;
+  if (dirIndex) {
+    const cp = canonicalPerson(dirIndex, trimmed);
+    if (cp.known) return cp.name;
+  }
   if (trimmed.includes('@')) {
     const lc = trimmed.toLowerCase();
     const match = (teamMembersList || []).find((m) => (m?.email || '').toLowerCase() === lc);
@@ -1592,7 +1598,14 @@ function normDate(v) {
   const d = new Date(v); return isNaN(d) ? null : toISODate(d);
 }
 
-async function parseExcelFile(file) {
+async function parseExcelFile(file, dirIndex = null) {
+  // P1: a PIC cell naming a known person is stored as the directory name;
+  // anything else (and everything when there is no index) is kept raw.
+  const importPic = (v) => {
+    if (!dirIndex || v == null || String(v).trim() === '') return v;
+    const cp = canonicalPerson(dirIndex, v);
+    return cp.known ? cp.name : v;
+  };
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: 'array', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -1624,7 +1637,7 @@ async function parseExcelFile(file) {
       id: uid('t'),
       name: String(tName).trim(),
       status: normStatus(pickCol(r, COL.status)),
-      pic: pickCol(r, COL.pic),
+      pic: importPic(pickCol(r, COL.pic)),
       contributors: [],
       creditSharesMode: 'auto',
       start: normDate(pickCol(r, COL.start)),
@@ -2605,7 +2618,9 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
   }, [combinedSuggestions, draft, list, primaryPic]);
 
   const addContributor = (name) => {
-    const trimmed = (name || '').trim();
+    // P1: with the directory, a known person is stored under the directory name.
+    const raw = (name || '').trim();
+    const trimmed = dirIndex ? resolvePicValue(raw, teamMembersList, dirIndex) : raw;
     if (!trimmed) return;
     if (trimmed === primaryPic) return;
     if (list.includes(trimmed)) return;
@@ -2762,7 +2777,7 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
     // Strip leading @ if user typed @-mention syntax, then resolve
     // email → canonical name if the typed value matches a member's email.
     const cleaned = (name || '').trim().replace(/^@+/, '');
-    const resolved = resolvePicValue(cleaned, combined);
+    const resolved = resolvePicValue(cleaned, combined, dirIndex);
     onChange(resolved || null);
     setDraft('');
     setEditing(false);
@@ -3948,7 +3963,7 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
   const add = (name) => {
     const trimmed = (name || '').trim().replace(/^@+/, '');
     if (!trimmed) return;
-    const resolved = resolvePicValue(trimmed, teamMembers);
+    const resolved = resolvePicValue(trimmed, teamMembers, dirIndex);
     if (list.includes(resolved)) return;
     onChange([...list, resolved]);
     setDraft('');
@@ -4700,6 +4715,7 @@ function SubtaskEditor({ subtasks, picSuggestions, author, onChange }) {
 // Inner row — title input commits on blur/Enter to avoid spamming
 // subtask_rename activity entries during typing.
 function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, onToggleStatus, onRemove }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [titleDraft, setTitleDraft] = useState(subtask.title || '');
   useEffect(() => { setTitleDraft(subtask.title || ''); }, [subtask.title]);
   const commitTitle = () => {
@@ -4735,7 +4751,7 @@ function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, o
       />
       <select
         value={subtask.pic || ''}
-        onChange={(e) => onUpdate({ pic: e.target.value })}
+        onChange={(e) => onUpdate({ pic: dirIndex ? resolvePicValue(e.target.value, null, dirIndex) : e.target.value })}
         style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 110 }}>
         <option value="">(unassigned)</option>
         {(picSuggestions || []).map((n) => <option key={n} value={n}>{n}</option>)}
@@ -8692,6 +8708,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
 // priority + status. Expanded reveals inline-editable title, PIC, due,
 // priority, plus comment thread with @mention support.
 function ActionRowInline({ action, project, related, author, teamMembers, picSuggestions, onChange, onAddComment, onOpenDetails, onMarkDone, onSubtasksChange, showToast }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(action.title || '');
   const [commentDraft, setCommentDraft] = useState('');
@@ -8760,7 +8777,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={action.pic || ''}
-              onChange={(e) => onChange({ pic: e.target.value })}
+              onChange={(e) => onChange({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -8883,6 +8900,7 @@ function MitigationRowInline({
   onNavigateRaid,    // (projectId, programId) => void
   showToast,
 }) {
+  const dirIndex = useContext(DirectoryIndexContext);
   const { mitigation, parentItem, parentProgram, project } = entry;
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(mitigation.name || '');
@@ -8973,7 +8991,7 @@ function MitigationRowInline({
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={mitigation.pic || ''}
-              onChange={(e) => writePatch({ pic: e.target.value })}
+              onChange={(e) => writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -9397,7 +9415,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
           const raw = (query || '').trim();
           if (!raw) { onChange(''); return; }
           // 1. Email-typed and a member has that email → canonicalize.
-          const resolved = resolvePicValue(raw, teamMembers);
+          const resolved = resolvePicValue(raw, teamMembers, dirIndex);
           if (resolved !== raw) { setQuery(resolved); onChange(resolved); return; }
           // 2. Smart-pick: if exactly one teamMember name substring-matches
           //    the raw input (case-insensitive), auto-pick that member.
@@ -13276,7 +13294,7 @@ export default function App() {
   const handleFileImport = async (file) => {
     if (!file) return;
     try {
-      const imported = await parseExcelFile(file);
+      const imported = await parseExcelFile(file, dirIndex);
       // Append (2) etc if duplicate name
       const names = new Set(Object.values(projects).map((p) => p.name));
       let finalName = imported.name, i = 2;
