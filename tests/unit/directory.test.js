@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople } from '../../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey } from '../../src/directory.js';
 
 describe('directory index', () => {
   const idx = buildDirectoryIndex([
@@ -36,5 +36,26 @@ describe('directory index', () => {
       { email: 'z@smartosc.com', displayName: 'Zung' }, { email: 'a@smartosc.com', displayName: 'An' },
     ]);
     expect(pickerPeople(i).map((p) => p.name)).toEqual(['An', 'Zung']);
+  });
+});
+
+describe('groupByPerson', () => {
+  const idx = buildDirectoryIndex([{ email: 'hattt4@smartosc.com', displayName: 'Hà Trương Thị Thu' }]);
+  it('merges an email and an unaccented name of the same person into one group', () => {
+    expect(groupByPerson(['hattt4@smartosc.com', 'Ha Truong Thi Thu'], idx)).toEqual([
+      { id: 'hattt4@smartosc.com', name: 'Hà Trương Thị Thu', count: 2, values: ['hattt4@smartosc.com', 'Ha Truong Thi Thu'] },
+    ]);
+  });
+  it('keeps first-seen order and passes groups through as unknown', () => {
+    expect(groupByPerson(['Legal', 'hattt4', 'legal'], idx).map((g) => [g.id, g.count])).toEqual([
+      ['n:legal', 2], ['hattt4@smartosc.com', 1],
+    ]);
+  });
+  it('groups by the exact raw string when there is no index (legacy behaviour)', () => {
+    expect(groupByPerson(['Lan', 'lan', 'Lan'], null)).toEqual([
+      { id: 'Lan', name: 'Lan', count: 2, values: ['Lan', 'Lan'] },
+      { id: 'lan', name: 'lan', count: 1, values: ['lan'] },
+    ]);
+    expect(personKey(null, 'Lan ')).toBe('Lan ');
   });
 });

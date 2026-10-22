@@ -39,6 +39,28 @@ export function canonicalPerson(index, raw) {
   return { id: 'n:' + foldName(s), name: s.trim(), known: false };
 }
 
+// Grouping key / display label for a raw person string. With no index both are
+// the raw string itself (legacy behaviour: exact, case-sensitive grouping).
+export function personKey(index, raw) {
+  return index ? canonicalPerson(index, raw).id : raw;
+}
+export function personLabel(index, raw) {
+  return index ? canonicalPerson(index, raw).name : raw;
+}
+
+// Group raw person strings by person, in first-seen order of the group id.
+export function groupByPerson(values, index) {
+  const groups = new Map();
+  for (const raw of values || []) {
+    const id = personKey(index, raw);
+    if (!groups.has(id)) groups.set(id, { id, name: personLabel(index, raw), count: 0, values: [] });
+    const g = groups.get(id);
+    g.count++;
+    g.values.push(raw);
+  }
+  return [...groups.values()];
+}
+
 export function pickerPeople(index) {
   return (index?.people || []).filter((p) => p.active).sort((a, b) => String(a.name).localeCompare(String(b.name), 'vi'));
 }
