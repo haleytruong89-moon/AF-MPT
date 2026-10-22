@@ -13,7 +13,8 @@ import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
-import { useUserDirectory } from './data';
+import { useUserDirectory, useWorkspaceDirectory } from './data';
+import { buildDirectoryIndex } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
@@ -12442,6 +12443,8 @@ export default function App() {
   useSearchHotkey(() => setShowSearch(true));
   const { user: authUser, logOut } = useAuth();
   const directory = useUserDirectory();
+  const { entries: dirEntries } = useWorkspaceDirectory(authUser);
+  const dirIndex = useMemo(() => (dirEntries.length ? buildDirectoryIndex(dirEntries) : null), [dirEntries]);
   const fileInputRef = useRef(null);
   const walkthroughRef = useRef(null);
   const saveTimers = useRef({});
