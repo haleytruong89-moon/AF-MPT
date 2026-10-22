@@ -33,3 +33,7 @@ TODAYS_FEATURES_SPEC.md
 # Superpowers brainstorming/visual companion artifacts
 .superpowers/
 .vercel
+
+# P1 identity dry-run inputs/outputs (contain real people data) — never commit
+workspace_backup_*.json
+p1-identity-mapping*.xlsx
