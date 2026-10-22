@@ -50,6 +50,17 @@ export function canonicalName(index, raw) {
 export function personKey(index, raw) {
   return index ? canonicalPerson(index, raw).id : raw;
 }
+// The key that identifies the viewer in My Work. The signed-in email wins when
+// the directory knows it (the Google display name may differ from the roster
+// name that pickers now write); otherwise the author string, as before. Pass no
+// email when viewing as someone else.
+export function meKey(index, author, authorEmail) {
+  if (index && authorEmail) {
+    const p = canonicalPerson(index, authorEmail);
+    if (p.known) return p.id;
+  }
+  return personKey(index, author);
+}
 export function personLabel(index, raw) {
   return index ? canonicalPerson(index, raw).name : raw;
 }
@@ -107,7 +118,10 @@ export function validateNewPerson(email, entries) {
 // the first conflict involving it as { alias, other }, or null.
 export function aliasConflictFor(entries, edited) {
   const email = String(edited.email || '').toLowerCase();
-  const next = (entries || []).map((e) => (String(e.email || '').toLowerCase() === email ? edited : e));
+  const list = entries || [];
+  const exists = list.some((e) => String(e.email || '').toLowerCase() === email);
+  // A new person (Add person) matches no entry: append it so it is checked too.
+  const next = exists ? list.map((e) => (String(e.email || '').toLowerCase() === email ? edited : e)) : [...list, edited];
   const { conflicts } = buildDirectoryIndex(next);
   const hit = conflicts.find((c) => c.emails.includes(email));
   if (!hit) return null;

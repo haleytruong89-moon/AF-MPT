@@ -15,7 +15,7 @@ import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember } from './directory';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
@@ -830,7 +830,7 @@ function computeProjectCredits(project, dirIndex = null) {
 // Pure read; no mutation. Called from MyWorkView via useMemo, and from
 // TeamOverviewView per-member (Phase 3). lastSeenAt drives unread-mentions
 // partitioning; pass null to treat all mentions as unread.
-function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null) {
+function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, authorEmail = null) {
   const startOfToday = today();
   const todayEnd = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000 - 1);
   const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -851,7 +851,8 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null) {
 
   const authorLc = author.toLowerCase();
   // P1: with dirIndex, any alias of the same person matches; without it, exact string (legacy).
-  const meId = personKey(dirIndex, author);
+  // authorEmail (signed-in user only, never for View as) wins when the directory knows it.
+  const meId = meKey(dirIndex, author, authorEmail);
   const isMe = (raw) => (dirIndex ? !!raw && personKey(dirIndex, raw) === meId : raw === author);
 
   for (const proj of Object.values(projects || {})) {
@@ -11114,7 +11115,7 @@ function ByProjectView({
 }
 
 function MyWorkView({
-  projects, author, isOwner, userPrefs, teamMembers,
+  projects, author, authorEmail = null, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
   onTaskUpdate, onActionUpdate, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
@@ -11126,8 +11127,8 @@ function MyWorkView({
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
   const myWork = useMemo(
-    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex),
-    [projects, author, isOwner, lastSeenAt, dirIndex]
+    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
+    [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
   );
   const myRaid = useMemo(
     () => computeMyRaid(author, projects, isOwner),
@@ -12651,12 +12652,12 @@ export default function App() {
   // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
-    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex);
+    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail);
     const r = computeMyRaid(author, projects, isOwner);
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
-  }, [projects, author, isOwner, userPrefs, dirIndex]);
+  }, [projects, author, isOwner, userPrefs, dirIndex, verifiedEmail]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
   const raidPendingBadge = useMemo(() => {
@@ -13633,6 +13634,7 @@ export default function App() {
                 <MyWorkView
                   projects={projects}
                   author={effectiveAuthor}
+                  authorEmail={impersonatingAs ? null : verifiedEmail}
                   isOwner={isOwner && !impersonatingAs}
                   userPrefs={userPrefs}
                   teamMembers={teamMembers}

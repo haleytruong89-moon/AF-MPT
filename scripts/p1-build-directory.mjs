@@ -13,12 +13,14 @@ import { fileURLToPath } from 'node:url';
 import * as XLSX from 'xlsx';
 XLSX.set_fs(fs); // required for XLSX.writeFile in ESM
 import { foldName } from '../src/identity.js';
-import { buildDirectoryIndex } from '../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson } from '../src/directory.js';
 
 const WS = 'workspaces/main';
 const str = (v) => String(v ?? '').trim();
 
-export function planDirectory(rosterRows, mappingRows, uidByEmail) {
+// userNamesByEmail (optional): Google display names from the users docs; each is
+// added as an alias of that email so the signed-in name still resolves.
+export function planDirectory(rosterRows, mappingRows, uidByEmail, userNamesByEmail) {
   const errors = [];
   const unmapped = [];
   const people = new Map(); // email -> { displayName, department, aliases }
@@ -32,21 +34,35 @@ export function planDirectory(rosterRows, mappingRows, uidByEmail) {
     if (people.has(email)) { errors.push(`${email}: duplicate roster row`); continue; }
     people.set(email, { displayName: str(r['Display name']), department: str(r.Department), aliases: [] });
   }
+  const addAlias = (p, value) => {
+    const key = foldName(value);
+    if (!key || key === foldName(p.displayName)) return;
+    if (!p.aliases.some((a) => foldName(a) === key)) p.aliases.push(value);
+  };
+  const groups = [];
   for (const m of mappingRows || []) {
     const value = str(m['Value in data']);
     if (!value) continue;
-    if (str(m['HOD: is group (Y)']).toUpperCase() === 'Y') continue;
+    if (str(m['HOD: is group (Y)']).toUpperCase() === 'Y') { groups.push(value); continue; }
     const email = str(m['HOD: final email']).toLowerCase();
     if (!email) { unmapped.push(value); continue; }
     const p = people.get(email);
     if (!p) { errors.push(`${value} → ${email}: email not in roster`); continue; }
-    const key = foldName(value);
-    if (key === foldName(p.displayName)) continue;
-    if (!p.aliases.some((a) => foldName(a) === key)) p.aliases.push(value);
+    addAlias(p, value);
+  }
+  for (const [rawEmail, name] of userNamesByEmail || []) {
+    const p = people.get(String(rawEmail || '').toLowerCase());
+    if (p && str(name)) addAlias(p, str(name));
   }
   const entries = [...people].map(([email, p]) => ({ email, displayName: p.displayName, aliases: p.aliases }));
-  for (const c of buildDirectoryIndex(entries).conflicts) {
+  const index = buildDirectoryIndex(entries);
+  for (const c of index.conflicts) {
     errors.push(`alias conflict "${c.alias}": ${c.emails.join(', ')}`);
+  }
+  // A group value that resolves to a person would be merged into that person.
+  for (const value of groups) {
+    const hit = canonicalPerson(index, value);
+    if (hit.known) errors.push(`${value}: group name matches person ${hit.id}`);
   }
   const members = [];
   const invites = [];
@@ -167,11 +183,13 @@ async function main() {
   const roster = readSheet(rosterPath, 'Roster');
   const mapping = readSheet(mappingPath, 'Mapping');
   const uidByEmail = new Map();
+  const userNamesByEmail = new Map();
   (await db.collection(`${WS}/users`).get()).forEach((d) => {
     const u = d.data();
     if (u.email && u.uid) uidByEmail.set(String(u.email).toLowerCase(), u.uid);
+    if (u.email && u.name) userNamesByEmail.set(String(u.email).toLowerCase(), String(u.name));
   });
-  const plan = planDirectory(roster, mapping, uidByEmail);
+  const plan = planDirectory(roster, mapping, uidByEmail, userNamesByEmail);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   // Apply never overwrites the preview HOD approved.
   const outPath = o.apply ? `p1-directory-applied-${stamp}.xlsx` : o.out;

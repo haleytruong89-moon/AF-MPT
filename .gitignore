@@ -41,4 +41,5 @@ p1-identity-mapping*.xlsx
 # P1 directory build inputs/outputs (real people data) - never commit
 p1-roster*.xlsx
 p1-directory-preview*.xlsx
+p1-directory-applied*.xlsx
 p1-directory-manifest-*.json

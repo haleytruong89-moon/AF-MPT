@@ -116,3 +116,25 @@ describe('roster validation', () => {
     expect(p.errors).toContain('Ghost: missing email');
   });
 });
+
+describe('planDirectory final-review fixes', () => {
+  it('adds users-doc names as aliases of that email (deduped, display name excluded)', () => {
+    const names = new Map([
+      ['thu.ht@smartosc.com', 'Thu Ha Truong'],
+      ['an@smartosc.com', 'Nguyễn An'],
+      ['ghost@smartosc.com', 'Ghost'],
+    ]);
+    const p = planDirectory(roster, [M('thu ha truong', 'thu.ht@smartosc.com')], uids, names);
+    expect(p.errors).toEqual([]);
+    expect(p.members[0].data.aliases).toEqual(['thu ha truong']);
+    expect(p.invites[0].data.aliases).toEqual([]);
+    const q = planDirectory(roster, [], uids, names);
+    expect(q.members[0].data.aliases).toEqual(['Thu Ha Truong']);
+  });
+  it('errors when a group row resolves to a person', () => {
+    const p = planDirectory([{ Email: 'tax@smartosc.com', 'Display name': 'Tax Team' }], [M('Tax', '', 'Y')], new Map());
+    expect(p.errors).toContain('Tax: group name matches person tax@smartosc.com');
+    const ok = planDirectory(roster, [M('Legal', '', 'Y')], uids);
+    expect(ok.errors).toEqual([]);
+  });
+});

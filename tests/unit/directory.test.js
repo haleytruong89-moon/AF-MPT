@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember, canonicalName } from '../../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember, canonicalName, meKey } from '../../src/directory.js';
 
 describe('directory index', () => {
   const idx = buildDirectoryIndex([
@@ -126,5 +126,26 @@ describe('directory admin helpers', () => {
     expect(filterDirectory(entries, 'tax').map((e) => e.email)).toEqual(['b@smartosc.com']);
     expect(filterDirectory(entries, 'anh n').length).toBe(1);
     expect(filterDirectory(entries, '').length).toBe(2);
+  });
+});
+
+describe('final-review fixes', () => {
+  const entries = [{ email: 'a@smartosc.com', displayName: 'Minh Lê', aliases: [] }];
+  it('aliasConflictFor checks a NEW person (Add person) against existing entries', () => {
+    expect(aliasConflictFor(entries, { email: 'b@smartosc.com', displayName: 'Minh Le', aliases: [] }))
+      .toEqual({ alias: 'minh le', other: 'a@smartosc.com' });
+    expect(aliasConflictFor(entries, { email: 'b@smartosc.com', displayName: 'Other', aliases: [] })).toBeNull();
+  });
+  it('meKey prefers the signed-in email when it resolves to a known person', () => {
+    const idx = buildDirectoryIndex([{ email: 'thu@smartosc.com', displayName: 'Hà Trương Thị Thu' }]);
+    // Google display name differs from the roster name.
+    expect(meKey(idx, 'Thu HT (AF)', 'Thu@SmartOSC.com')).toBe('thu@smartosc.com');
+    // No email (e.g. View as): falls back to the name.
+    expect(meKey(idx, 'Ha Truong Thi Thu', null)).toBe('thu@smartosc.com');
+    expect(meKey(idx, 'Someone', null)).toBe('n:someone');
+    // Email unknown to the directory: falls back to the name.
+    expect(meKey(idx, 'Someone', 'x@smartosc.com')).toBe('n:someone');
+    // No index: legacy raw author.
+    expect(meKey(null, 'Lan', 'lan@smartosc.com')).toBe('Lan');
   });
 });
