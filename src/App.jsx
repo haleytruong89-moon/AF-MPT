@@ -3386,10 +3386,13 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   return (
     <div style={expanded
       ? { position: 'absolute', inset: 24, zIndex: 45 /* below Modal (50) so dialogs opened from the panel stay on top */, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 12, boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', fontFamily: FONT_STACK }
-      : { width: panelWidth, position: 'relative', background: TOK.surface, borderLeft: '1px solid ' + TOK.line, display: 'flex', flexDirection: 'column', height: '100%', fontFamily: FONT_STACK }}>
+      : { width: panelWidth, flexShrink: 0, position: 'relative', background: TOK.surface, borderLeft: '1px solid ' + TOK.line, display: 'flex', flexDirection: 'column', height: '100%', fontFamily: FONT_STACK }}>
       {!expanded && (
+        // Wide hit area on the panel's left edge with a visible grip, so the handle can be found.
         <div onMouseDown={startResize} title="Drag to resize" aria-label="Resize task panel"
-          style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, cursor: 'col-resize', zIndex: 2 }} />
+          style={{ position: 'absolute', left: -5, top: 0, bottom: 0, width: 12, cursor: 'col-resize', zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 4, height: 40, borderRadius: 2, background: TOK.lineStrong }} />
+        </div>
       )}
       <div style={{ padding: '12px 16px', borderBottom: '1px solid ' + TOK.line, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>
