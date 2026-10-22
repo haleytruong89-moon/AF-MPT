@@ -115,8 +115,9 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
 - Đã xong: B0 — CI GitHub Actions + harness test rules (PR #2); plan B0+B1 `docs/superpowers/plans/2026-10-14-b0-b1-rules-ci-and-owner-lock.md`
 - Đã xong: B0 merged (PR #2)
-- Đang làm: B1 — PR #3 `fix/b1-owner-lock` chờ HOD duyệt; sau merge HOD deploy rules (runbook trong PR)
-- Tiếp theo: B2 báo lỗi khi lưu thất bại (+ chặn reset ACL) → B3 cảnh báo lưu đè → B4 panel task kéo rộng + ẩn nút nguy hiểm với non-Owner + Dropped thay xóa cứng + token màu AA
+- Đã code xong (14/10, chờ HOD merge theo thứ tự): PR #3 B1 owner lock → PR #4 B2/B3 save banner + `rev` stale-write guard + ghi tuần tự theo project → PR #5 B4 task panel resize/expand, Drop thay xóa, Undo, owner-only Restore/Delete project, contrast AA, Esc modal. Plan: `docs/superpowers/plans/2026-10-14-b2-b4-save-safety-and-task-panel.md`
+- Tiếp theo: HOD merge #3 → deploy rules → merge #4 → #5; rồi P1 (danh bạ uid + bảng ánh xạ tên → email, cần HOD duyệt dữ liệu)
+- Ghi nhớ: project doc có trường `rev` (B3). Mọi đường ghi project phải đi qua `storage-shim.ts`; MembersModal chỉ `updateDoc` field thay đổi. Restore JSON bỏ qua stale guard nhưng không đụng trường owner
 - Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
 - Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
