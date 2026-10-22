@@ -16,7 +16,7 @@ const invite = () => ({
   displayName: 'New Person',
   aliases: ['New', 'N. Person'],
   department: 'AF',
-  status: 'invited',
+  status: 'active',
   updatedAt: '2026-10-22T00:00:00Z',
   updatedBy: OWNER.email,
 });
@@ -123,5 +123,43 @@ describe('P1: members/invites directory', () => {
     const db = await asUser(GMAIL.uid, GMAIL.email);
     await assertFails(getDoc(doc(db, `${MEMBERS}/${STAFF.uid}`)));
     await assertFails(getDocs(collection(db, MEMBERS)));
+  });
+
+  it('DIR-13 claim of a deactivated invite fails', async () => {
+    await seedDoc(`${INVITES}/${NEW.email}`, { ...invite(), status: 'deactivated' });
+    const db = await asUser(NEW.uid, NEW.email);
+    await assertFails(setDoc(doc(db, `${MEMBERS}/${NEW.uid}`), claim()));
+  });
+
+  it('DIR-14 claim with spoofed updatedBy fails', async () => {
+    const db = await asUser(NEW.uid, NEW.email);
+    await assertFails(setDoc(doc(db, `${MEMBERS}/${NEW.uid}`), claim({ updatedBy: OWNER.email })));
+  });
+
+  it('DIR-15 staff cannot delete someone else\'s member or invite', async () => {
+    await seedDoc(`${MEMBERS}/u_other`, entry('other@smartosc.com'));
+    const db = await asUser(STAFF.uid, STAFF.email);
+    await assertFails(deleteDoc(doc(db, `${MEMBERS}/u_other`)));
+    await assertFails(deleteDoc(doc(db, `${INVITES}/${NEW.email}`)));
+  });
+
+  it('DIR-16 claimer cannot update own entry after a successful claim', async () => {
+    const db = await asUser(NEW.uid, NEW.email);
+    const ref = doc(db, `${MEMBERS}/${NEW.uid}`);
+    await assertSucceeds(setDoc(ref, claim()));
+    await assertFails(updateDoc(ref, { department: 'HR' }));
+  });
+
+  it('DIR-17 owner match is case-insensitive', async () => {
+    await seedDoc(META, { seeded: true, workspaceOwner: 'HATTT4@smartosc.com' });
+    const db = await asUser(OWNER.uid, OWNER.email);
+    await assertSucceeds(setDoc(doc(db, `${MEMBERS}/u_x`), entry('x@smartosc.com')));
+  });
+
+  it('DIR-18 owner write fails when workspaceOwner is missing', async () => {
+    await seedDoc(META, { seeded: true });
+    const db = await asUser(OWNER.uid, OWNER.email);
+    await assertFails(setDoc(doc(db, `${MEMBERS}/u_x`), entry('x@smartosc.com')));
+    await assertFails(setDoc(doc(db, `${INVITES}/x@smartosc.com`), entry('x@smartosc.com')));
   });
 });

@@ -103,6 +103,7 @@ service cloud.firestore {
       return request.auth.token.email.lower();
     }
 
+    // Same check as isWorkspaceOwner() via get(); keep in sync; ownerUids[] replaces both in P2.
     function isDirectoryOwner() {
       let ws = get(/databases/$(database)/documents/workspaces/main).data;
       return ws.get('workspaceOwner', null) is string
@@ -125,6 +126,7 @@ service cloud.firestore {
         && d.get('displayName', null) == inv.get('displayName', null)
         && d.get('aliases', null) == inv.get('aliases', null)
         && d.get('department', null) == inv.get('department', null)
+        && inv.get('status', null) == 'active'
         && d.get('status', null) == 'active'
         && d.get('updatedBy', null) == callerEmail()
         && d.get('updatedAt', null) == request.time;
