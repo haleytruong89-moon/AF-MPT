@@ -6,7 +6,7 @@ import { splitProject } from '../../src/migrateV2.js';
 import { buildDirectoryIndex } from '../../src/directory.js';
 import { assembleFromSnapshots } from '../../src/readV2.js';
 import { planV2Save } from '../../src/planV2Save.js';
-import { executeV2Save } from '../../src/execV2Save.js';
+import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
 
 // P2.3 Task 4: the shim's v2 write path end to end against the rules.
 // Plans come from planV2Save (fixture tree edited like App.jsx does); the executor
@@ -53,8 +53,15 @@ const v1Tree = () => ({
       },
       { id: 'w2', name: 'WS 2', tasks: [] },
     ],
+  }, {
+    // No PM / Sub-PM (I3: RAID claim fallback).
+    id: 'prg2',
+    name: 'Program 2',
+    raid: [{ id: 'r2', type: 'Issue', title: 'Issue 2', status: 'Open', history: [] }],
+    workstreams: [],
   }],
-  actionItems: [],
+  // A loose action (workstreamId null = Owner-only, I2).
+  actionItems: [{ id: 'aLoose', title: 'Loose', status: 'Pending', updates: [] }],
   decisions: [],
 });
 
@@ -217,5 +224,71 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(t1.version).toBe(3);
     expect(t1.updates.map((u) => u.text)).toEqual(['two', 'one']);
     expect(t1.updates.every((u) => u.authorUid === PM.uid)).toBe(true);
+  });
+
+  // ── Final-review fixes ──
+  // One `loaded` cache across two saves, refreshed with applyWritten like the shim;
+  // the App tree is never reloaded, so it lacks the planner's authorUid stamps.
+  async function twoSaves(u, first, second) {
+    const state = await load(await asUser(u.uid, u.email));
+    const a = await save(u, first, { loadedState: state });
+    applyWritten(state.loaded, a.r.written, a.r.metaWritten ? a.plan.metaPatch : null);
+    const b = await save(u, second, { loadedState: state });
+    return { a, b };
+  }
+
+  it('EXEC-C1 Assignee: add update, then change status in the same session -> ok, stamp kept', async () => {
+    const { a, b } = await twoSaves(ASG,
+      (t) => { taskIn(t, 't1').updates.unshift(upd(ASG, 'first')); },
+      (t) => { taskIn(t, 't1').status = 'Planned'; });
+    expect(a.r.status).toBe('ok');
+    expect(b.r.status).toBe('ok');
+    const t1 = await serverDoc(`${PV}/tasks/t1`);
+    expect(t1).toMatchObject({ status: 'Planned', version: 3, updatedBy: ASG.uid });
+    expect(t1.updates).toHaveLength(1);
+    expect(t1.updates[0]).toMatchObject({ text: 'first', authorUid: ASG.uid });
+  });
+
+  it('EXEC-C1 Owner: add update, then edit the task -> stamp kept', async () => {
+    const { a, b } = await twoSaves(OWNER,
+      (t) => { taskIn(t, 't2').updates.unshift(upd(OWNER, 'o')); },
+      (t) => { taskIn(t, 't2').name = 'Owner rename'; });
+    expect(a.r.status).toBe('ok');
+    expect(b.r.status).toBe('ok');
+    const t2 = await serverDoc(`${PV}/tasks/t2`);
+    expect(t2).toMatchObject({ name: 'Owner rename', version: 3 });
+    expect(t2.updates[0]).toMatchObject({ text: 'o', authorUid: OWNER.uid });
+  });
+
+  it('EXEC-I2 PM creates an action in a project with a loose action: only the new doc is written', async () => {
+    const { r, plan } = await save(PM, (t) => {
+      t.actionItems.unshift({ id: 'aNew', title: 'New', pic: ASG.email, relatedTaskId: 't1', status: 'Pending', updates: [] });
+    });
+    expect(plan.batches.flat().map((o) => [o.kind, o.op, o.id])).toEqual([['actions', 'create', 'aNew']]);
+    expect(r.status).toBe('ok');
+    expect(await serverDoc(`${PV}/actions/aNew`)).toMatchObject({ order: -1, workstreamId: 'w1', updatedBy: PM.uid });
+    expect(await serverDoc(`${PV}/actions/aLoose`)).toMatchObject({ order: 0, version: 1 });
+    const { tree } = await load(await asUser(PM.uid, PM.email));
+    expect(tree.actionItems.map((a) => a.id)).toEqual(['aNew', 'aLoose']);
+  });
+
+  it('EXEC-I3 PM / Sub-PM of program 1 edit RAID of program 2 (no role there) -> ok', async () => {
+    const pm = await save(PM, (t) => { t.programs[1].raid[0].title = 'PM edit'; });
+    expect(pm.plan.batches[0][0]).toMatchObject({ kind: 'raid', id: 'prg2', data: { viaProgramId: 'prg1' } });
+    expect(pm.r.status).toBe('ok');
+    const lead = await save(LEAD, (t) => { t.programs[1].raid[0].title = 'Lead edit'; });
+    expect(lead.plan.batches[0][0].data).toMatchObject({ viaWorkstreamId: 'w1' });
+    expect(lead.r.status).toBe('ok');
+    expect(await serverDoc(`${PV}/raid/prg2`)).toMatchObject({ version: 3, updatedBy: LEAD.uid });
+  });
+
+  it('EXEC-AE Assignee adds a reference and requests a deadline change -> ok; end change denied', async () => {
+    const { a, b } = await twoSaves(ASG,
+      (t) => { taskIn(t, 't1').references = [{ id: 'ref_1', url: 'https://x', title: 'Doc' }]; },
+      (t) => { taskIn(t, 't1').deadlineRequest = { newDate: '2026-12-15', reason: 'r', requestedBy: 'asg' }; });
+    expect(a.r.status).toBe('ok');
+    expect(b.r.status).toBe('ok');
+    const end = await save(ASG, (t) => { taskIn(t, 't1').end = '2026-12-15'; });
+    expect(end.r.status).toBe('denied');
   });
 });

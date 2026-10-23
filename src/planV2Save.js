@@ -12,13 +12,22 @@
 //     version / updatedBy / updatedAt (the executor writes version = expectVersion + 1).
 //   - metaPatch: changed project-doc fields (DELETE_FIELD = remove the field);
 //     programMeta, when changed, is given whole.
-//   - refused: 'task-delete' (tasks are never deleted, CLAUDE.md) or 'history-wipe'
-//     (a non-empty updates list would become empty; guards the ActionForm bug).
+//   - refused: 'task-delete' (tasks are never deleted, CLAUDE.md), 'history-wipe'
+//     (a non-empty updates list would become empty; guards the ActionForm bug) or
+//     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
+//     value changed or was set on a new doc, so its uid cannot be resolved).
 //     A refused plan has no batches and no metaPatch.
 //
 // Ruling R: every new entry of task updates / checkIns, action updates, RAID
-// items[].history and mitigations[].comments gets authorUid = uid (if missing), on
-// updated docs only (created docs are written as-is).
+// items[].history and mitigationActions[].comments gets authorUid = uid (if missing),
+// on updated docs only (created docs are written as-is).
+// Ruling AD (C1): the App tree never receives those stamps, so an existing entry
+// (matched by id; id-less by suffix alignment, or exact content on a shrink) gets
+// the stored authorUid back before diffing.
+// Ruling AD (I2): actions / decisions keep their stored `order` while the relative
+// order of existing docs is unchanged (the App prepends new ones); new docs get
+// orders around them (before the first: min - 1, min - 2...; between: fractions;
+// after: max + 1...).
 // A RAID doc whose items is [] is never created (App ensureProjectRaid placeholder).
 // Ruling X: a task / action list that gains k > 1 entries is written in k steps
 // (rules allow one new entry per write); step 1 sits in batch 1 with every other op.
@@ -87,32 +96,91 @@ const matchOld = (oldList, e, i) => {
   return isObj(o) && o.id == null ? o : undefined;
 };
 
-function stampRaidItems(oldItems, items, uid) {
-  if (!Array.isArray(items)) return items;
-  return items.map((item, i) => {
-    if (!isObj(item)) return item;
-    const old = matchOld(oldItems, item, i) || {};
-    const out = { ...item };
-    if (hasOwn(item, 'history')) out.history = stampList(old.history, item.history, uid);
-    if (Array.isArray(item.mitigations)) {
-      out.mitigations = item.mitigations.map((m, mi) => {
-        if (!isObj(m) || !hasOwn(m, 'comments')) return m;
-        const om = matchOld(old.mitigations, m, mi) || {};
-        return { ...m, comments: stampList(om.comments, m.comments, uid) };
-      });
+// Ruling AD (C1): give each existing entry of newList that lacks authorUid the
+// stored one. Id entries match by id; id-less entries by suffix alignment
+// (old[i - k], the App prepends) when the list grew or kept its size, and only on
+// an exact content match when it shrank (no guess about which entry was removed).
+const withoutAuthor = (e) => {
+  const { authorUid: _a, ...rest } = e;
+  void _a;
+  return rest;
+};
+function carryList(oldList, newList) {
+  if (!Array.isArray(newList) || !Array.isArray(oldList) || !oldList.length) return newList;
+  const k = newList.length - oldList.length;
+  return newList.map((e, i) => {
+    if (!isObj(e) || hasOwn(e, 'authorUid')) return e;
+    let o;
+    if (e.id != null) o = oldList.find((x) => isObj(x) && x.id === e.id);
+    else {
+      const c = oldList[i - k];
+      if (isObj(c) && c.id == null && (k >= 0 || deepEqual(withoutAuthor(c), e))) o = c;
     }
-    return out;
+    return isObj(o) && hasOwn(o, 'authorUid') ? { ...e, authorUid: o.authorUid } : e;
   });
 }
 
-function stampDoc(kind, oldData, data, uid) {
+// Apply fn(oldList, newList) to every entry list a doc carries: task updates /
+// checkIns, action updates, RAID items[].history and
+// items[].mitigationActions[].comments (the App's field, App.jsx MitigationActionRow).
+function mapEntryLists(kind, oldData, data, fn) {
   const out = { ...data };
   for (const k of STEP_LISTS[kind] || []) {
-    if (hasOwn(data, k)) out[k] = stampList(oldData?.[k], data[k], uid);
+    if (hasOwn(data, k)) out[k] = fn(oldData?.[k], data[k]);
   }
-  if (kind === 'raid' && hasOwn(data, 'items')) out.items = stampRaidItems(oldData?.items, data.items, uid);
+  if (kind === 'raid' && Array.isArray(data.items)) {
+    out.items = data.items.map((item, i) => {
+      if (!isObj(item)) return item;
+      const old = matchOld(oldData?.items, item, i) || {};
+      const o = { ...item };
+      if (hasOwn(item, 'history')) o.history = fn(old.history, item.history);
+      if (Array.isArray(item.mitigationActions)) {
+        o.mitigationActions = item.mitigationActions.map((m, mi) => {
+          if (!isObj(m) || !hasOwn(m, 'comments')) return m;
+          const om = matchOld(old.mitigationActions, m, mi) || {};
+          return { ...m, comments: fn(om.comments, m.comments) };
+        });
+      }
+      return o;
+    });
+  }
   return out;
 }
+
+const stampDoc = (kind, oldData, data, uid) => mapEntryLists(kind, oldData, data, (o, n) => stampList(o, n, uid));
+const carryDoc = (kind, oldData, data) => mapEntryLists(kind, oldData, data, carryList);
+
+// Ruling AD (I2): next = [{ id, data }] in tree order. When the stored docs that
+// remain keep their relative order (strictly increasing stored `order`), reuse it
+// and slot new docs around them; otherwise keep the split's index renumbering.
+function keepOrder(stored, next) {
+  const orderOf = (id) => stored.get(id)?.data?.order;
+  const ords = next.filter((d) => stored.has(d.id)).map((d) => orderOf(d.id));
+  if (!ords.length || !ords.every((o) => typeof o === 'number' && Number.isFinite(o))) return next;
+  if (!ords.every((o, i) => i === 0 || ords[i - 1] < o)) return next;
+  const out = next.map((d) => ({ id: d.id, data: { ...d.data } }));
+  let prev = null; // stored order of the last existing doc seen
+  let run = []; // new docs since then
+  const flush = (nextOrd) => {
+    run.forEach((d, j) => {
+      if (prev == null) d.data.order = nextOrd - run.length + j;
+      else if (nextOrd == null) d.data.order = prev + 1 + j;
+      else d.data.order = prev + ((nextOrd - prev) * (j + 1)) / (run.length + 1);
+    });
+    run = [];
+  };
+  for (const d of out) {
+    if (!stored.has(d.id)) { run.push(d); continue; }
+    flush(orderOf(d.id));
+    d.data.order = orderOf(d.id);
+    prev = d.data.order;
+  }
+  flush(null);
+  return out;
+}
+
+const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
+const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 // Keep stored v2 fields the v1 tree cannot express (roles, stored resolutions).
 function overlay(kind, stored, data) {
@@ -146,7 +214,9 @@ function roleClaims(loaded, uid) {
     raid(programId) {
       if (isPM(programId)) return { viaProgramId: programId };
       const w = led.find((x) => x.data.programId === programId);
-      return w ? { viaWorkstreamId: w.id } : {};
+      // Ruling AD (I3): no role on this program -> any PM / Sub-PM claim in the
+      // project (claimWriterOk accepts it; Q1: RAID is written by any PM / Sub-PM).
+      return w ? { viaWorkstreamId: w.id } : this.decision();
     },
     decision() {
       const p = programs.find(isPM);
@@ -197,6 +267,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const none = (refused) => ({ batches: [], metaPatch: null, refused });
   const next = splitProject({ ...nextTree, id: pid ?? nextTree.id }, { wid, dirIndex, uidByEmail });
   const docs = loaded.docs || {};
+  for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
   const claims = roleClaims(loaded, uid);
 
   // Docs the read path could not attach are not in the tree: never delete them.
@@ -227,8 +298,15 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         push(0, { kind, op: 'delete', id, expectVersion: versionOf(entry) });
         continue;
       }
-      const data = overlay(kind, old, strip(nextById.get(id)));
+      const data = carryDoc(kind, old, overlay(kind, old, strip(nextById.get(id))));
       if (deepEqual(data, old)) continue;
+      // Ruling AH: without the directory a changed person cannot be resolved; never
+      // write null uids for it.
+      if (!dirIndex && (kind === 'tasks' || kind === 'actions')
+        && ((!deepEqual(old.pic, data.pic) && hasPerson(data.pic))
+          || (kind === 'tasks' && !deepEqual(old.contributors, data.contributors) && hasPerson(data.contributors)))) {
+        return none('directory-unavailable');
+      }
       if ((kind === 'tasks' || kind === 'actions') && Array.isArray(old.updates) && old.updates.length
         && !(Array.isArray(data.updates) && data.updates.length)) {
         return none('history-wipe');
@@ -247,6 +325,9 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       if (kind === 'raid' && Array.isArray(data.items) && data.items.length === 0) {
         skippedRaid.add(id);
         continue;
+      }
+      if (!dirIndex && (kind === 'tasks' || kind === 'actions') && (hasPerson(data.pic) || hasPerson(data.contributors))) {
+        return none('directory-unavailable');
       }
       // Created docs are not stamped: rules do not check creates, and copied
       // history keeps its original authors.

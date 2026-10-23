@@ -182,16 +182,17 @@ describe('planV2Save', () => {
     }
   });
 
-  it('RAID: new history entries and mitigation comments get authorUid', () => {
+  it('RAID: new history entries get authorUid (mitigation comments: see I4)', () => {
     const loaded = makeLoaded();
     loaded.docs.raid.get('pg1').data.items[0].history = [{ at: 1, text: 'h1' }];
     const tree = treeOf(loaded);
     const item = tree.programs[0].raid[0];
     item.history = [{ at: 2, text: 'h2' }, { at: 1, text: 'h1' }];
+    // `mitigations` is not the App's field (I4): left untouched.
     item.mitigations[0].comments = [{ id: 'c1', text: 'hi' }];
     const op = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM' })))[0];
     expect(op.data.items[0].history).toEqual([{ at: 2, text: 'h2', authorUid: 'uidPM' }, { at: 1, text: 'h1' }]);
-    expect(op.data.items[0].mitigations[0].comments).toEqual([{ id: 'c1', text: 'hi', authorUid: 'uidPM' }]);
+    expect(op.data.items[0].mitigations[0].comments).toEqual([{ id: 'c1', text: 'hi' }]);
   });
 
   it('decision edit: PM anywhere -> viaProgramId, else first led ws', () => {
@@ -334,6 +335,134 @@ describe('planV2Save', () => {
     loaded.docs.tasks.get('t2').data.doneAt = ts;
     const tree = treeOf(loaded); // JSON round trip, like the shim read path
     expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
+  // ── Final-review fixes (Ruling AD / AH) ──
+  it('C1: matched entries keep the stored authorUid the tree never received (no spurious op)', () => {
+    const loaded = makeLoaded();
+    const t2 = loaded.docs.tasks.get('t2').data;
+    t2.updates = [{ id: 'u2', text: 'mine', authorUid: 'uid1' }, { id: 'u1', text: 'old', authorUid: 'uidX' }];
+    t2.checkIns = [{ note: 'b', authorUid: 'uid1' }, { note: 'a', authorUid: 'uidX' }];
+    const tree = treeOf(loaded);
+    // The App tree never got the planner's stamps.
+    for (const k of ['updates', 'checkIns']) ws1(tree).tasks[1][k] = ws1(tree).tasks[1][k].map(({ authorUid: _a, ...e }) => e);
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+    ws1(tree).tasks[1].status = 'Planned';
+    ws1(tree).tasks[1].checkIns.unshift({ note: 'c' });
+    const op = allOps(planV2Save(loaded, tree, ctx()))[0];
+    expect(op.data.updates).toEqual(t2.updates);
+    expect(op.data.checkIns).toEqual([{ note: 'c', authorUid: 'uid1' }, ...t2.checkIns]);
+  });
+
+  it('C1: action updates and RAID history / mitigation comments keep stored authorUid', () => {
+    const loaded = makeLoaded();
+    loaded.docs.actions.get('a1').data.updates = [{ id: 'x1', text: 'p', authorUid: 'uidX' }];
+    const item = loaded.docs.raid.get('pg1').data.items[0];
+    item.history = [{ id: 'h1', note: 'n', authorUid: 'uidX' }];
+    item.mitigationActions = [{ id: 'ma1', name: 'M', comments: [{ id: 'c1', text: 'c', authorUid: 'uidX' }] }];
+    const tree = treeOf(loaded);
+    delete tree.actionItems[0].updates[0].authorUid;
+    const ti = tree.programs[0].raid[0];
+    delete ti.history[0].authorUid;
+    delete ti.mitigationActions[0].comments[0].authorUid;
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual({ batches: [], metaPatch: null, refused: null });
+    tree.actionItems[0].title = 'Edited';
+    ti.title = 'Edited';
+    const ops = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })));
+    expect(ops.find((o) => o.kind === 'actions').data.updates).toEqual([{ id: 'x1', text: 'p', authorUid: 'uidX' }]);
+    const raid = ops.find((o) => o.kind === 'raid').data.items[0];
+    expect(raid.history).toEqual([{ id: 'h1', note: 'n', authorUid: 'uidX' }]);
+    expect(raid.mitigationActions[0].comments).toEqual([{ id: 'c1', text: 'c', authorUid: 'uidX' }]);
+  });
+
+  it('C1: id-less shrink carries authorUid only on an exact content match', () => {
+    const loaded = makeLoaded();
+    loaded.docs.tasks.get('t2').data.updates = [{ text: 'a', authorUid: 'uidA' }, { text: 'b', authorUid: 'uidB' }];
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].updates = [{ text: 'b' }];
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op.data.updates).toEqual([{ text: 'b', authorUid: 'uidB' }]);
+    ws1(tree).tasks[1].updates = [{ text: 'b edited' }];
+    const op2 = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op2.data.updates).toEqual([{ text: 'b edited' }]);
+  });
+
+  it('I2: a prepended action keeps every stored order; the new doc gets min - 1', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.actionItems.unshift({ id: 'aNew', title: 'New', pic: 'Bob', status: 'Open' });
+    const ops = allOps(planV2Save(loaded, tree, ctx()));
+    expect(ops.map((o) => [o.kind, o.op, o.id])).toEqual([['actions', 'create', 'aNew']]);
+    expect(ops[0].data.order).toBe(-1);
+    // Deleting the first action leaves the others untouched.
+    const tree2 = treeOf(loaded);
+    tree2.actionItems.splice(0, 1);
+    expect(allOps(planV2Save(loaded, tree2, ctx()))).toEqual([{ kind: 'actions', op: 'delete', id: 'a1', expectVersion: 3 }]);
+  });
+
+  it('I2: new decisions / actions between and after existing ones sort where the tree put them', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.set('d2', { version: 3, data: { ...loaded.docs.decisions.get('d1').data, id: 'd2', order: 5 } });
+    const tree = treeOf(loaded);
+    expect(tree.decisions.map((d) => d.id)).toEqual(['d1', 'd2']);
+    tree.decisions = [{ id: 'n0' }, { id: 'n1' }, tree.decisions[0], { id: 'n2' }, tree.decisions[1], { id: 'n3' }];
+    const ops = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })));
+    expect(ops.every((o) => o.op === 'create')).toBe(true);
+    const created = ops.map((o) => ({ id: o.id, data: o.data }));
+    const all = [...created, { id: 'd1', data: { order: 0 } }, { id: 'd2', data: { order: 5 } }];
+    const sorted = all.sort((a, b) => a.data.order - b.data.order).map((d) => d.id);
+    expect(sorted).toEqual(['n0', 'n1', 'd1', 'n2', 'd2', 'n3']);
+    // Assemble sorts negative / fractional orders the same way.
+    const { project } = assembleProject({ ...loaded.meta, decisions: [] }, [], [], [], [],
+      all.map((d) => ({ id: d.id, data: { id: d.id, order: d.data.order } })));
+    expect(project.decisions.map((d) => d.id)).toEqual(['n0', 'n1', 'd1', 'n2', 'd2', 'n3']);
+  });
+
+  it('I2: a real reorder still renumbers', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.actionItems.reverse();
+    const ops = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })));
+    expect(ops.map((o) => [o.id, o.data.order])).toEqual([['a1', 1], ['a2', 0]]);
+  });
+
+  it('I3: a PM with no claim on the program falls back to any project claim for RAID', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.programs[0].raid[0].title = 'Edited by PM of pg2';
+    const op = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })))[0];
+    expect(op.data.viaProgramId).toBe('pg2');
+    tree.programs[1].raid = [{ id: 'rX', title: 'New' }];
+    const lead = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidLead' }))).find((o) => o.id === 'pg2');
+    expect(lead.data.viaWorkstreamId).toBe('w3');
+  });
+
+  it('I4: new mitigationActions comments get authorUid', () => {
+    const loaded = makeLoaded();
+    loaded.docs.raid.get('pg1').data.items[0].mitigationActions = [{ id: 'ma1', name: 'M', comments: [] }];
+    const tree = treeOf(loaded);
+    tree.programs[0].raid[0].mitigationActions[0].comments.push({ id: 'c1', text: 'hi' });
+    const op = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM' })))[0];
+    expect(op.data.items[0].mitigationActions[0].comments).toEqual([{ id: 'c1', text: 'hi', authorUid: 'uidPM' }]);
+  });
+
+  it('Minor 7: no directory and a changed person field -> refused, nothing written', () => {
+    const loaded = makeLoaded();
+    const none = { batches: [], metaPatch: null, refused: 'directory-unavailable' };
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].pic = 'Alice Nguyen';
+    expect(planV2Save(loaded, tree, ctx({ dirIndex: null }))).toEqual(none);
+    const tree2 = treeOf(loaded);
+    ws1(tree2).tasks[0].contributors = ['Carol Tran'];
+    expect(planV2Save(loaded, tree2, ctx({ dirIndex: null }))).toEqual(none);
+    const tree3 = treeOf(loaded);
+    tree3.actionItems.unshift({ id: 'aNew', title: 'New', pic: 'Bob' });
+    expect(planV2Save(loaded, tree3, ctx({ dirIndex: null }))).toEqual(none);
+    // People unchanged: plans normally and keeps stored uids.
+    const tree4 = treeOf(loaded);
+    ws1(tree4).tasks[1].name = 'x';
+    const op = allOps(planV2Save(loaded, tree4, ctx({ dirIndex: null })))[0];
+    expect(op.data.picUid).toBe('uid2');
   });
 
   it('does not mutate its inputs', () => {

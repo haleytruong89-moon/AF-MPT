@@ -135,7 +135,8 @@ async function isOwnerNow(user: UserProfile): Promise<boolean> {
 // Directory for person -> uid resolution in planV2Save, built like the P2 scripts
 // (members + invites feed the index; uidByEmail from members only). Loaded once; a
 // failed load is retried on the next save, and that save plans without it
-// (people left unchanged keep their stored uids).
+// (people left unchanged keep their stored uids; a changed pic / contributors makes
+// the planner refuse with 'directory-unavailable' -> reported as 'error', Ruling AH).
 type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string> };
 let dirPromise: Promise<PlanDirectory> | null = null;
 function directoryForPlan(): Promise<PlanDirectory> {
@@ -182,7 +183,9 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   const plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
   if (plan.refused) {
     console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
-    return { key, value, shared: true, error: 'refused', reason: plan.refused };
+    // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
+    const error = plan.refused === 'directory-unavailable' ? 'error' : 'refused';
+    return { key, value, shared: true, error, reason: plan.refused };
   }
   if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };
   const r = await executeV2Save(
