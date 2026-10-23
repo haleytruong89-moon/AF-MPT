@@ -323,12 +323,11 @@ service cloud.firestore {
         && (t.get('end', null) == null || w.get('end', null) == null || t.end <= w.end);
     }
 
-    function onlyKeys(keys) {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
-    }
-
-    function changedAny(keys) {
-      return request.resource.data.diff(resource.data).affectedKeys().hasAny(keys);
+    // Affected keys of an update. Computed ONCE per update rule (via let in
+    // the *UpdateOk function) and passed down as `ch`: re-running diff() in
+    // every helper hit the 1000-expression evaluation limit (CI, 8447d8e).
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
     }
 
     // Written doc must name the path's workspace and project (anti-spoof).
@@ -352,17 +351,21 @@ service cloud.firestore {
       return request.resource.data.get('updatedBy', request.auth.uid) == request.auth.uid;
     }
 
-    function updatedByOnUpdate() {
-      return !changedAny(['updatedBy']) || request.resource.data.get('updatedBy', null) == request.auth.uid;
+    function updatedByOnUpdate(ch) {
+      return !ch.hasAny(['updatedBy']) || request.resource.data.get('updatedBy', null) == request.auth.uid;
     }
 
     // List field k is append-only: the old items stay as a prefix (missing = []).
-    function appendOnly(k) {
+    // Only evaluated when k is affected. An empty slice (n[0:0]) is an
+    // index-out-of-bound error in the rules runtime, so an empty old list
+    // short-circuits before slicing.
+    function appendOnly(ch, k) {
       let o = resource.data.get(k, []);
       let n = request.resource.data.get(k, []);
-      return o is list && n is list
-        && n.size() >= o.size()
-        && n[0:o.size()] == o;
+      return !ch.hasAny([k])
+        || (o is list && n is list
+          && n.size() >= o.size()
+          && (o.size() == 0 || n[0:o.size()] == o));
     }
 
     // Restricted (default when visibility is absent): Owner + memberUids.
@@ -388,6 +391,13 @@ service cloud.firestore {
     // PM-created WS must have null start/end.
     // version: create = 1, update = +1.
     // get(): workspace, members/{me}, project = 3 (read: 3).
+    function wsUpdateOk(wid, pid) {
+      let ch = changedKeys();
+      return isWsOwner(wid)
+        || (!ch.hasAny(['programId', 'start', 'end'])
+          && isPM(wid, pid, resource.data.get('programId', null)));
+    }
+
     match /workspaces/{wid}/projects/{pid}/workstreams/{wsId} {
       allow read: if canReadProject(wid, pid);
 
@@ -398,11 +408,8 @@ service cloud.firestore {
           && request.resource.data.get('end', null) == null)
       );
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && versionBumped() && (
-        isWsOwner(wid)
-        || (isPM(wid, pid, resource.data.get('programId', null))
-          && !changedAny(['programId', 'start', 'end']))
-      );
+      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && versionBumped()
+        && wsUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)
@@ -440,33 +447,44 @@ service cloud.firestore {
         && withinWs(n, v2WsData(wid, pid, n.workstreamId));
     }
 
-    function taskDatesOk(wid, pid) {
-      return !changedAny(['start', 'end', 'workstreamId']) || taskWithinNewWs(wid, pid);
+    function taskDatesOk(wid, pid, ch) {
+      return !ch.hasAny(['start', 'end', 'workstreamId']) || taskWithinNewWs(wid, pid);
     }
 
-    function taskPMUpdate(wid, pid) {
+    function taskPMUpdate(wid, pid, ch) {
       let n = request.resource.data;
       return isPM(wid, pid, resource.data.get('programId', null))
-        && (!changedAny(['programId', 'workstreamId'])
+        && (!ch.hasAny(['programId', 'workstreamId'])
           || (isPMIn(v2Project(wid, pid), n.get('programId', null))
             && wsInProgram(wid, pid, n.get('workstreamId', null), n.get('programId', null))))
-        && taskDatesOk(wid, pid);
+        && taskDatesOk(wid, pid, ch);
     }
 
-    function taskLeadUpdate(wid, pid) {
-      return isLead(wid, pid, resource.data.get('workstreamId', null))
-        && !changedAny(['programId', 'workstreamId'])
-        && taskDatesOk(wid, pid);
+    function taskLeadUpdate(wid, pid, ch) {
+      return !ch.hasAny(['programId', 'workstreamId'])
+        && isLead(wid, pid, resource.data.get('workstreamId', null))
+        && taskDatesOk(wid, pid, ch);
     }
 
-    function taskAssigneeUpdate(wid) {
-      return isActiveMember(wid)
-        && resource.data.get('picUid', null) == request.auth.uid
-        && onlyKeys(assigneeKeys())
+    // Cheap checks first (picUid, keys, status) before the members get.
+    function taskAssigneeUpdate(wid, ch) {
+      return resource.data.get('picUid', null) == request.auth.uid
+        && ch.hasOnly(assigneeKeys())
         && resource.data.get('status', 'Planned') in ['Planned', 'InProgress']
         && request.resource.data.get('status', null) in ['Planned', 'InProgress']
-        && appendOnly('updates')
-        && appendOnly('checkIns');
+        && appendOnly(ch, 'updates')
+        && appendOnly(ch, 'checkIns')
+        && isActiveMember(wid);
+    }
+
+    function taskUpdateOk(wid, pid) {
+      let ch = changedKeys();
+      return updatedByOnUpdate(ch) && (
+        isWsOwner(wid)
+        || taskAssigneeUpdate(wid, ch)
+        || taskPMUpdate(wid, pid, ch)
+        || taskLeadUpdate(wid, pid, ch)
+      );
     }
 
     match /workspaces/{wid}/projects/{pid}/tasks/{tid} {
@@ -483,12 +501,7 @@ service cloud.firestore {
       );
 
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionBumped() && updatedByOnUpdate() && (
-        isWsOwner(wid)
-        || taskPMUpdate(wid, pid)
-        || taskLeadUpdate(wid, pid)
-        || taskAssigneeUpdate(wid)
-      );
+        && versionBumped() && taskUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)
@@ -514,12 +527,22 @@ service cloud.firestore {
           || isLead(wid, pid, d.workstreamId));
     }
 
-    function actionPicUpdate(wid) {
-      return isActiveMember(wid)
-        && resource.data.get('picUid', null) == request.auth.uid
-        && !changedAny(['picUid', 'picEmail', 'pic', 'workstreamId'])
+    function actionPicUpdate(wid, ch) {
+      return resource.data.get('picUid', null) == request.auth.uid
+        && !ch.hasAny(['picUid', 'picEmail', 'pic', 'workstreamId'])
         && resource.data.get('status', 'Pending') != 'Cancelled'
-        && request.resource.data.get('status', 'Pending') != 'Cancelled';
+        && request.resource.data.get('status', 'Pending') != 'Cancelled'
+        && isActiveMember(wid);
+    }
+
+    function actionUpdateOk(wid, pid) {
+      let ch = changedKeys();
+      return updatedByOnUpdate(ch) && (
+        isWsOwner(wid)
+        || actionPicUpdate(wid, ch)
+        || (actionManager(wid, pid, resource.data)
+          && (!ch.hasAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
+      );
     }
 
     match /workspaces/{wid}/projects/{pid}/actions/{aid} {
@@ -532,12 +555,7 @@ service cloud.firestore {
       );
 
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionBumped() && updatedByOnUpdate() && (
-        isWsOwner(wid)
-        || (actionManager(wid, pid, resource.data)
-          && (!changedAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
-        || actionPicUpdate(wid)
-      );
+        && versionBumped() && actionUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)

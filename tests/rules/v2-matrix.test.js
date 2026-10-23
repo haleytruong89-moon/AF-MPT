@@ -132,7 +132,7 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   // ── Task update ──
   it('V2-5 task update: Owner, PM (own program), Sub-PM (own WS, within dates) allowed', async () => {
     await assertSucceeds(up(doc(await as(OWNER), `${P1}/tasks/t1`), { name: 'o', end: '2027-12-31' }));
-    await assertSucceeds(up(doc(await as(PM), `${P1}/tasks/t1`), { picUid: VIEWER.uid, status: 'Completed' }));
+    await assertSucceeds(up(doc(await as(PM), `${P1}/tasks/t1`), { picUid: VIEWER.uid, status: 'Completed', version: 3 }));
     await assertSucceeds(up(doc(await as(LEAD), `${P1}/tasks/t2`), { end: '2026-06-30', picUid: ASG.uid }));
   });
 
