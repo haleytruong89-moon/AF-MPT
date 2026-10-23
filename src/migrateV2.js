@@ -1,14 +1,25 @@
 // P2.1 pure split / assemble between the v1 project tree (one Firestore doc with
 // programs[].workstreams[].tasks[] and actionItems[]) and the v2 documents
 // (project meta + workstream / task / action docs). No I/O, no mutation of inputs.
-// assembleProject(...splitProject(p)) deep-equals p exactly (modulo the v2-only
-// meta fields programMeta / memberUids, which assemble strips).
+//
+// Source of truth after the switch (Ruling C): `meta.programMeta` owns program-level
+// data; the v1 `programs[]` / `actionItems[]` arrays that stay inside meta are FROZEN
+// (rollback copy) and never read by assembleProject. assembleProject(...splitProject(p))
+// deep-equals p exactly (v2-only meta fields programMeta / memberUids / v1Absent are
+// stripped).
+//
+// Presence flags (so absent v1 keys stay absent):
+//  - meta.v1Absent: ['programs'] and/or ['actionItems'] when the v1 project lacks them.
+//  - programMeta[k].__absent: subset of ['id', 'workstreams'] missing on the v1 program.
+//  - workstream doc .__absent: ['tasks'] when the v1 workstream has no `tasks` key.
 import { canonicalPerson } from './directory.js';
+import { foldName } from './identity.js';
 
 // v2-only field names. A v1 key with the same name is not overwritten: its value is
 // parked in `__v1` on the doc (and reported in report.collisions); assembleProject
 // restores it.
 const STASH = '__v1';
+const ABSENT = '__absent';
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -25,6 +36,7 @@ export function taskWorkstreamOf(project) {
   return map;
 }
 
+const PROGRAM_V2 = ['order', 'pmUid', 'deputyUid', 'start', 'end'];
 const WS_V2 = ['workspaceId', 'projectId', 'programId', 'order', 'leadUid', 'start', 'end', 'version'];
 const TASK_V2 = ['workspaceId', 'projectId', 'programId', 'workstreamId', 'order', 'picUid', 'picEmail', 'contributorUids', 'version'];
 const ACTION_V2 = ['workspaceId', 'projectId', 'order', 'picUid', 'picEmail', 'workstreamId', 'version'];
@@ -48,6 +60,7 @@ function unwrap(data, v2Keys) {
   const out = { ...data };
   const stash = out[STASH];
   delete out[STASH];
+  delete out[ABSENT];
   for (const k of v2Keys) delete out[k];
   if (stash) Object.assign(out, stash);
   return out;
@@ -65,7 +78,7 @@ function makeDocIds() {
   };
 }
 
-// report.duplicateIds: task ids as-is; workstreams as `workstream:<id>`, actions as `action:<id>`.
+// report.duplicateIds: task ids as-is; others as `program:<id>`, `workstream:<id>`, `action:<id>`.
 export function splitProject(project, { wid, dirIndex = null, uidByEmail = new Map() } = {}) {
   const projectId = project.id;
   const report = {
@@ -76,7 +89,7 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
   };
   const groups = new Set(
     (project.contributorRegistry || [])
-      .map((g) => String(typeof g === 'string' ? g : g?.name || '').trim())
+      .map((g) => foldName(typeof g === 'string' ? g : g?.name || ''))
       .filter(Boolean),
   );
   const memberUids = new Set(Array.isArray(project.memberIds) ? project.memberIds : []);
@@ -86,7 +99,7 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
     const none = { uid: null, email: null };
     if (raw == null || (typeof raw === 'string' && !raw.trim())) return none;
     const s = typeof raw === 'string' ? raw : String(raw);
-    if (groups.has(s.trim())) return none;
+    if (groups.has(foldName(s))) return none;
     const p = canonicalPerson(dirIndex, s);
     if (!p.known) {
       report.unresolved.push({ field, raw: s, where });
@@ -101,14 +114,24 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
   const workstreams = [];
   const tasks = [];
   const actions = [];
+  const progIds = makeDocIds();
   const wsIds = makeDocIds();
   const taskIds = makeDocIds();
   const actionIds = makeDocIds();
+  const taskWsDoc = new Map(); // v1 task id -> workstream DOC id (first occurrence wins)
 
   (project.programs || []).forEach((prog, pi) => {
     report.counts.programs++;
-    programMeta[prog.id] = { name: prog.name, order: pi, pmUid: null, deputyUid: null, start: null, end: null };
-    (prog.workstreams || []).forEach((ws, wi) => {
+    const { docId: progKey, dup: pdup } = progIds(prog.id, `__program${pi}`);
+    if (pdup) report.duplicateIds.push(`program:${prog.id}`);
+    const { workstreams: progWs, ...progRest } = prog;
+    const entry = withV2(progRest, { order: pi, pmUid: null, deputyUid: null, start: null, end: null }, 'program', prog.id, report.collisions);
+    const absent = [];
+    if (!hasOwn(prog, 'id')) absent.push('id');
+    if (!hasOwn(prog, 'workstreams')) absent.push('workstreams');
+    if (absent.length) entry[ABSENT] = absent;
+    programMeta[progKey] = entry;
+    (progWs || []).forEach((ws, wi) => {
       report.counts.workstreams++;
       const { docId: wsDocId, dup } = wsIds(ws.id, `__ws${pi}_${wi}`);
       if (dup) report.duplicateIds.push(`workstream:${ws.id}`);
@@ -116,27 +139,26 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
       // difficultyMultiplier / weight only when present, plus any unknown key), so
       // presence/absence and unexpected keys round-trip exactly.
       const { tasks: wsTasks, ...wsRest } = ws;
-      workstreams.push({
-        id: wsDocId,
-        data: withV2(wsRest, {
-          workspaceId: wid, projectId, programId: prog.id, order: wi, leadUid: null, start: null, end: null, version: 1,
-        }, 'workstream', ws.id, report.collisions),
-      });
+      const wsData = withV2(wsRest, {
+        workspaceId: wid, projectId, programId: progKey, order: wi, leadUid: null, start: null, end: null, version: 1,
+      }, 'workstream', ws.id, report.collisions);
+      if (!hasOwn(ws, 'tasks')) wsData[ABSENT] = ['tasks'];
+      workstreams.push({ id: wsDocId, data: wsData });
       (wsTasks || []).forEach((t, ti) => {
         report.counts.tasks++;
         const { docId, dup: tdup } = taskIds(t.id, `__task_${wsDocId}_${ti}`);
         if (tdup) report.duplicateIds.push(String(t.id));
-        const where = t.id ?? docId;
-        const pic = resolve(t.pic, 'task.pic', where);
+        if (t.id != null && !taskWsDoc.has(t.id)) taskWsDoc.set(t.id, wsDocId);
+        const pic = resolve(t.pic, 'task.pic', docId);
         const contributorUids = [];
         for (const c of Array.isArray(t.contributors) ? t.contributors : []) {
-          const r = resolve(c, 'task.contributors', where);
+          const r = resolve(c, 'task.contributors', docId);
           if (r.uid && !contributorUids.includes(r.uid)) contributorUids.push(r.uid);
         }
         tasks.push({
           id: docId,
           data: withV2(t, {
-            workspaceId: wid, projectId, programId: prog.id, workstreamId: wsDocId, order: ti,
+            workspaceId: wid, projectId, programId: progKey, workstreamId: wsDocId, order: ti,
             picUid: pic.uid, picEmail: pic.email, contributorUids, version: 1,
           }, 'task', t.id, report.collisions),
         });
@@ -144,64 +166,76 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
     });
   });
 
-  const wsOf = taskWorkstreamOf(project);
   (project.actionItems || []).forEach((a, ai) => {
     report.counts.actions++;
     const { docId, dup } = actionIds(a.id, `__action_${ai}`);
     if (dup) report.duplicateIds.push(`action:${a.id}`);
-    const pic = resolve(a.pic, 'action.pic', a.id ?? docId);
-    const hit = a.relatedTaskId != null ? wsOf.get(a.relatedTaskId) : null;
+    const pic = resolve(a.pic, 'action.pic', docId);
+    const wsDoc = a.relatedTaskId != null ? taskWsDoc.get(a.relatedTaskId) : undefined;
     actions.push({
       id: docId,
       data: withV2(a, {
         workspaceId: wid, projectId, order: ai, picUid: pic.uid, picEmail: pic.email,
-        workstreamId: hit ? hit.workstreamId : null, version: 1,
+        workstreamId: wsDoc ?? null, version: 1,
       }, 'action', a.id, report.collisions),
     });
   });
 
   const meta = { ...project, programMeta, memberUids: [...memberUids].sort() };
+  const v1Absent = ['programs', 'actionItems'].filter((k) => !hasOwn(project, k));
+  if (v1Absent.length) meta.v1Absent = v1Absent;
   return { meta, workstreams, tasks, actions, report };
 }
 
 const byOrder = (a, b) => (a.data.order ?? 0) - (b.data.order ?? 0);
 
-// Rebuild the exact v1 project. Programs come from meta.programs (ids, names, raid and
-// any other program key); their workstreams are replaced by the docs. A workstream whose
-// v1 original (still inside meta.programs) had no `tasks` key keeps it absent.
+// Rebuild the v1 project from v2 data only. Programs come from meta.programMeta (sorted
+// by order), workstreams / tasks / actions from their docs. meta.programs and
+// meta.actionItems are frozen v1 copies and are ignored.
+// Returns { project, orphans } where orphans are doc ids that attach to nothing:
+// workstream docs whose programId is not in programMeta, task docs whose workstreamId is
+// not a workstream doc. (Action docs always attach; `actions` is kept for symmetry.)
 export function assembleProject(meta, workstreams, tasks, actions) {
-  const { programMeta: _pm, memberUids: _mu, ...project } = meta;
-  void _pm;
-  void _mu;
+  const { programMeta = {}, memberUids: _mu, v1Absent = [], programs: _p, actionItems: _a, ...project } = meta;
+  void _mu; void _p; void _a;
+  const orphans = { workstreams: [], tasks: [], actions: [] };
+  const wsIdSet = new Set(workstreams.map((w) => w.id));
+
   const tasksByWs = new Map();
   for (const t of [...tasks].sort(byOrder)) {
     const k = t.data.workstreamId;
+    if (!wsIdSet.has(k)) { orphans.tasks.push(t.id); continue; }
     if (!tasksByWs.has(k)) tasksByWs.set(k, []);
     tasksByWs.get(k).push(unwrap(t.data, TASK_V2));
   }
   const wsByProgram = new Map();
   for (const w of [...workstreams].sort(byOrder)) {
     const k = w.data.programId;
+    if (!hasOwn(programMeta, k)) { orphans.workstreams.push(w.id); continue; }
     if (!wsByProgram.has(k)) wsByProgram.set(k, []);
     wsByProgram.get(k).push(w);
   }
-  project.programs = (meta.programs || []).map((prog) => {
-    const original = new Map((prog.workstreams || []).map((w) => [w.id, w]));
-    const out = { ...prog };
-    const docs = wsByProgram.get(prog.id);
-    if (docs || hasOwn(prog, 'workstreams')) {
-      out.workstreams = (docs || []).map((w) => {
-        const ws = unwrap(w.data, WS_V2);
-        const orig = original.get(ws.id);
-        const list = tasksByWs.get(w.id) || [];
-        if (list.length || !orig || hasOwn(orig, 'tasks')) ws.tasks = list;
-        return ws;
-      });
-    }
-    return out;
-  });
-  if (hasOwn(meta, 'actionItems') || actions.length) {
+
+  const entries = Object.entries(programMeta).sort((a, b) => (a[1].order ?? 0) - (b[1].order ?? 0));
+  if (entries.length || !v1Absent.includes('programs')) {
+    project.programs = entries.map(([key, entry]) => {
+      const absent = entry[ABSENT] || [];
+      const out = unwrap(entry, PROGRAM_V2);
+      if (!hasOwn(out, 'id') && !absent.includes('id')) out.id = key;
+      const docs = wsByProgram.get(key) || [];
+      if (docs.length || !absent.includes('workstreams')) {
+        out.workstreams = docs.map((w) => {
+          const ws = unwrap(w.data, WS_V2);
+          const list = tasksByWs.get(w.id) || [];
+          if (list.length || !(w.data[ABSENT] || []).includes('tasks')) ws.tasks = list;
+          return ws;
+        });
+      }
+      return out;
+    });
+  }
+  if (actions.length || !v1Absent.includes('actionItems')) {
     project.actionItems = [...actions].sort(byOrder).map((a) => unwrap(a.data, ACTION_V2));
   }
-  return project;
+  return { project, orphans };
 }

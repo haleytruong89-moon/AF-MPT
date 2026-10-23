@@ -14,7 +14,7 @@ const uidByEmail = new Map([['alice@smartosc.com', 'uid1'], ['bob@smartosc.com',
 const run = (p = fixture) => splitProject(clone(p), { wid: 'main', dirIndex: dir, uidByEmail });
 const roundTrip = (p) => {
   const s = run(p);
-  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions);
+  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions).project;
 };
 
 describe('splitProject / assembleProject', () => {
@@ -24,7 +24,7 @@ describe('splitProject / assembleProject', () => {
   it('round-trips even when docs come back shuffled', () => {
     const s = run();
     const rev = (a) => [...a].reverse();
-    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions))).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions)).project).toStrictEqual(fixture);
   });
   it('does not mutate its input', () => {
     const p = clone(fixture);
@@ -34,7 +34,7 @@ describe('splitProject / assembleProject', () => {
   it('counts and programMeta', () => {
     const { report, meta } = run();
     expect(report.counts).toEqual({ programs: 2, workstreams: 3, tasks: 4, actions: 2 });
-    expect(meta.programMeta.pg2).toEqual({ name: 'Program Empty', order: 1, pmUid: null, deputyUid: null, start: null, end: null });
+    expect(meta.programMeta.pg2).toEqual({ id: 'pg2', name: 'Program Empty', raid: [], order: 1, pmUid: null, deputyUid: null, start: null, end: null });
   });
   it('reports duplicate task ids and keeps both docs', () => {
     const s = run();
@@ -71,13 +71,13 @@ describe('splitProject / assembleProject', () => {
   });
   it('lists unknown names, not groups or blanks', () => {
     const { report } = run();
-    expect(report.unresolved).toEqual([{ field: 'task.pic', raw: 'Zed Unknown', where: 't1' }]);
+    expect(report.unresolved).toEqual([{ field: 'task.pic', raw: 'Zed Unknown', where: 't1__dup2' }]);
   });
   it('with no directory everything real is unresolved but the round trip holds', () => {
     const s = splitProject(clone(fixture), { wid: 'main', dirIndex: null, uidByEmail: new Map() });
     expect(s.report.unresolved.length).toBeGreaterThan(0);
     expect(s.report.unresolved.some((u) => u.raw === 'BOD')).toBe(false);
-    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions)).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions).project).toStrictEqual(fixture);
   });
   it('action workstreamId from relatedTaskId, null otherwise', () => {
     const { actions } = run();
@@ -103,5 +103,108 @@ describe('splitProject / assembleProject', () => {
   it('order is the array index', () => {
     const { tasks } = run();
     expect(tasks.filter((t) => t.data.workstreamId === 'w1').map((t) => t.data.order)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('Ruling C: programMeta owns program data; orphans; edge branches', () => {
+  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions);
+
+  it('ignores the frozen meta.programs / meta.actionItems on assemble', () => {
+    const s = run();
+    s.meta.programs = [{ id: 'junk' }];
+    s.meta.actionItems = [{ id: 'junk' }];
+    expect(asm(s).project).toStrictEqual(fixture);
+  });
+  it('programMeta carries every v1 program key except workstreams', () => {
+    const p = clone(fixture);
+    p.programs[0].customKey = 7;
+    const s = run(p);
+    expect(s.meta.programMeta.pg1).toMatchObject({ name: 'Program One', customKey: 7, order: 0, pmUid: null });
+    expect(s.meta.programMeta.pg1.workstreams).toBeUndefined();
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('program keys colliding with v2 names are stashed, reported, restored', () => {
+    const p = clone(fixture);
+    p.programs[1].start = '2026-01-01';
+    const s = run(p);
+    expect(s.report.collisions).toEqual([{ kind: 'program', id: 'pg2', key: 'start' }]);
+    expect(s.meta.programMeta.pg2.start).toBeNull();
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('new-after-switch program, workstream and task appear in the assembled tree', () => {
+    const s = run();
+    s.meta.programMeta.pgNew = { id: 'pgNew', name: 'New', raid: [], order: 2, pmUid: 'u9', deputyUid: null, start: null, end: null };
+    s.workstreams.push({ id: 'wNew', data: { id: 'wNew', name: 'WS New', programId: 'pgNew', order: 0, version: 1 } });
+    s.tasks.push({ id: 'tNew', data: { id: 'tNew', name: 'T new', programId: 'pgNew', workstreamId: 'wNew', order: 0, version: 1 } });
+    const { project, orphans } = asm(s);
+    const pg = project.programs.find((x) => x.id === 'pgNew');
+    expect(project.programs.map((x) => x.id)).toEqual(['pg1', 'pg2', 'pgNew']);
+    expect(pg).toStrictEqual({ id: 'pgNew', name: 'New', raid: [], workstreams: [{ id: 'wNew', name: 'WS New', tasks: [{ id: 'tNew', name: 'T new' }] }] });
+    expect(orphans).toEqual({ workstreams: [], tasks: [], actions: [] });
+  });
+  it('programs without an id in a new entry take the programMeta key', () => {
+    const s = run();
+    s.meta.programMeta.pgX = { name: 'X', order: 5 };
+    expect(asm(s).project.programs.at(-1)).toStrictEqual({ id: 'pgX', name: 'X', workstreams: [] });
+  });
+  it('returns orphan ws and task docs instead of dropping them', () => {
+    const s = run();
+    s.workstreams.push({ id: 'wOrph', data: { id: 'wOrph', programId: 'nope', order: 0 } });
+    s.tasks.push({ id: 'tOrph', data: { id: 'tOrph', workstreamId: 'nope', order: 0 } });
+    const { project, orphans } = asm(s);
+    expect(orphans).toEqual({ workstreams: ['wOrph'], tasks: ['tOrph'], actions: [] });
+    expect(JSON.stringify(project)).not.toContain('Orph');
+  });
+  it('ws without tasks key, program without workstreams key, project without actionItems/programs', () => {
+    const p = clone(fixture);
+    delete p.programs[0].workstreams[1].tasks;
+    delete p.programs[1].workstreams;
+    delete p.actionItems;
+    expect(roundTrip(p)).toStrictEqual(p);
+    const q = { id: 'q', name: 'Q' };
+    expect(roundTrip(q)).toStrictEqual(q);
+  });
+  it('program without an id round-trips', () => {
+    const p = clone(fixture);
+    delete p.programs[1].id;
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('duplicate program, workstream and action ids are reported and kept apart', () => {
+    const p = clone(fixture);
+    p.programs.push(clone(p.programs[0]));
+    p.programs[2].workstreams[0].tasks = [];
+    p.programs[2].workstreams[1].tasks = [];
+    p.programs[2].workstreams[2].tasks = [];
+    p.actionItems.push(clone(p.actionItems[0]));
+    const s = run(p);
+    expect(s.report.duplicateIds).toEqual(expect.arrayContaining(['program:pg1', 'workstream:w1', 'workstream:w2', 'workstream:w3', 'action:a1', 't1']));
+    expect(s.meta.programMeta.pg1__dup2.id).toBe('pg1');
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('items without id (workstream, action) round-trip', () => {
+    const p = clone(fixture);
+    delete p.programs[0].workstreams[1].id;
+    delete p.actionItems[1].id;
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('action workstreamId is the workstream DOC id, consistent with tasks', () => {
+    const p = clone(fixture);
+    p.programs[0].workstreams.unshift({ id: 'w1', name: 'WS dup', tasks: [] });
+    const s = run(p);
+    const a1 = s.actions.find((a) => a.id === 'a1').data;
+    const t2 = s.tasks.find((t) => t.id === 't2').data;
+    expect(a1.workstreamId).toBe(t2.workstreamId);
+    expect(a1.workstreamId).toBe('w1__dup2');
+  });
+  it('groups match case/diacritic-insensitively', () => {
+    const p = clone(fixture);
+    p.programs[0].workstreams[0].tasks[0].contributors = ['bod', 'fín'];
+    p.contributorRegistry.push({ name: 'Fín' });
+    const s = run(p);
+    expect(s.report.unresolved.some((u) => u.raw === 'bod' || u.raw === 'fín')).toBe(false);
+  });
+  it('unresolved.where is the doc id', () => {
+    const { report } = run();
+    expect(report.unresolved[0].where).toBe('t1__dup2');
   });
 });
