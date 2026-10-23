@@ -55,6 +55,17 @@ describe('nextSaveState', () => {
     s = nextSaveState(s, 'p1', 'error', 'CRP');
     expect(s.p1.status).toBe('conflict');
   });
+  it('readonly is sticky: neither error nor ok clears it (only reload does)', () => {
+    let s = nextSaveState({}, 'p1', 'readonly', 'Pilot');
+    expect(s).toEqual({ p1: { status: 'readonly', name: 'Pilot' } });
+    const before = s;
+    s = nextSaveState(s, 'p1', 'error', 'Pilot');
+    expect(s).toBe(before);
+    s = nextSaveState(s, 'p1', 'ok', 'Pilot');
+    expect(s).toBe(before);
+    s = nextSaveState(s, 'p1', 'conflict', 'Pilot');
+    expect(s.p1.status).toBe('readonly');
+  });
 });
 
 describe('hasUnsavedWork', () => {
@@ -103,8 +114,13 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [] });
+    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [] });
+  });
+  it('lists readonly (v2 pilot) projects separately', () => {
+    expect(bannerGroups({
+      a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
+    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'] });
   });
 });
 
@@ -192,5 +208,11 @@ describe('buildProjectWrite — v2 fields stay server-owned (P2.2 task 3)', () =
     expect(buildProjectWrite(ex, { name: 'P' }, opts())).toEqual({ readonly: true });
     expect(buildProjectWrite(ex, { name: 'P' }, opts({ force: true }))).toEqual({ readonly: true });
     expect(buildProjectWrite(ex, { name: 'P' }, opts({ knownRev: 9 }))).toEqual({ readonly: true });
+  });
+  it('never persists the client-only __v2 marker', () => {
+    const { doc } = buildProjectWrite({ rev: 5 }, { name: 'P', __v2: { readOnly: true, orphans: 0 } }, opts());
+    expect('__v2' in doc).toBe(false);
+    const created = buildProjectWrite(null, { name: 'P', __v2: { readOnly: true } }, opts({ knownRev: undefined }));
+    expect('__v2' in created.doc).toBe(false);
   });
 });

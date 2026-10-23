@@ -20,8 +20,10 @@ export function nextRev(serverRev) {
 }
 
 // One banner entry per project. 'ok' clears it; 'conflict' is sticky until reload.
+// 'readonly' (v2 pilot project) is stickier: a v2 project never saves, so even 'ok' keeps it.
 export function nextSaveState(prev, pid, status, name) {
   const cur = prev[pid];
+  if (cur && cur.status === 'readonly') return prev;
   if (status === 'ok') {
     if (!cur) return prev;
     const { [pid]: _drop, ...rest } = prev;
@@ -62,8 +64,10 @@ export function failedRestores(results) {
 
 // Banner wording per failure kind (a mixed state must not call an error a conflict).
 export function bannerGroups(saveState) {
-  const out = { conflict: [], error: [] };
-  for (const v of Object.values(saveState || {})) (v.status === 'conflict' ? out.conflict : out.error).push(v.name);
+  const out = { conflict: [], error: [], readonly: [] };
+  for (const v of Object.values(saveState || {})) {
+    (v.status === 'conflict' ? out.conflict : v.status === 'readonly' ? out.readonly : out.error).push(v.name);
+  }
   return out;
 }
 
@@ -81,7 +85,7 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
   const baseRev = ex && ex.writeId && pendingWriteIds.includes(ex.writeId) ? ex.rev : knownRev;
   if (!force && checkRevision(ex?.rev, baseRev, ex !== null) === 'conflict') return { conflict: true };
   const newRev = nextRev(ex?.rev);
-  const { id: _id, rev: _rev, writeId: _w, programMeta: _pm, memberUids: _mu, visibility: _vis, schemaVersion: _sv, ...body } = incoming;
+  const { id: _id, rev: _rev, writeId: _w, programMeta: _pm, memberUids: _mu, visibility: _vis, schemaVersion: _sv, __v2: _v2, ...body } = incoming;
   // memberIds/roles/relatedParties are edited only via MembersModal: server value wins.
   const doc = {
     ...body,
