@@ -17,7 +17,9 @@
 //     A refused plan has no batches and no metaPatch.
 //
 // Ruling R: every new entry of task updates / checkIns, action updates, RAID
-// items[].history and mitigations[].comments gets authorUid = uid (if missing).
+// items[].history and mitigations[].comments gets authorUid = uid (if missing), on
+// updated docs only (created docs are written as-is).
+// A RAID doc whose items is [] is never created (App ensureProjectRaid placeholder).
 // Ruling X: a task / action list that gains k > 1 entries is written in k steps
 // (rules allow one new entry per write); step 1 sits in batch 1 with every other op.
 import { splitProject, assembleProject } from './migrateV2.js';
@@ -60,22 +62,14 @@ const strip = (data) => {
 };
 
 // Boolean per entry of newList: true = not present in oldList. Entries with an id
-// match by id; id-less entries match by deep equality, greedily from the end (old
-// entries are the suffix: the App prepends).
+// match by id. Id-less entries follow prepend semantics (the App adds newest first):
+// only the leading k = new.length - old.length entries can be new, so an in-place
+// edit (same size) never counts as new.
 function newFlags(oldList, newList) {
   const old = Array.isArray(oldList) ? oldList : [];
   const ids = new Set(old.filter((e) => isObj(e) && e.id != null).map((e) => e.id));
-  const pool = old.filter((e) => !(isObj(e) && e.id != null)).reverse();
-  const used = pool.map(() => false);
-  const flags = new Array(newList.length).fill(false);
-  for (let i = newList.length - 1; i >= 0; i--) {
-    const e = newList[i];
-    if (isObj(e) && e.id != null) { flags[i] = !ids.has(e.id); continue; }
-    const j = pool.findIndex((o, n) => !used[n] && deepEqual(o, e));
-    if (j >= 0) used[j] = true;
-    else flags[i] = true;
-  }
-  return flags;
+  const k = newList.length - old.length;
+  return newList.map((e, i) => (isObj(e) && e.id != null ? !ids.has(e.id) : i < k));
 }
 
 const stampEntry = (e, uid) => (isObj(e) && !hasOwn(e, 'authorUid') ? { ...e, authorUid: uid } : e);
@@ -185,7 +179,21 @@ function steps(kind, oldData, data) {
   return out;
 }
 
-export function planV2Save(loaded, nextTree, { uid, wid, pid, isOwner = false, dirIndex = null, uidByEmail = new Map() } = {}) {
+// The tree reached the App through JSON.stringify (shim read path), so compare
+// against the loaded data in the same form (Timestamps -> their toJSON shape,
+// undefined dropped). Plain-JSON input is unchanged.
+const asJson = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+function normalizeLoaded(loaded) {
+  const docs = {};
+  for (const kind of KINDS) {
+    const m = loaded.docs?.[kind] || new Map();
+    docs[kind] = new Map([...m.entries()].map(([id, e]) => [id, { ...e, data: asJson(e.data) }]));
+  }
+  return { meta: asJson(loaded.meta || {}), docs };
+}
+
+export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false, dirIndex = null, uidByEmail = new Map() } = {}) {
+  const loaded = normalizeLoaded(rawLoaded);
   const none = (refused) => ({ batches: [], metaPatch: null, refused });
   const next = splitProject({ ...nextTree, id: pid ?? nextTree.id }, { wid, dirIndex, uidByEmail });
   const docs = loaded.docs || {};
@@ -198,6 +206,7 @@ export function planV2Save(loaded, nextTree, { uid, wid, pid, isOwner = false, d
   );
   const orphanIds = { workstreams: orphans.workstreams, tasks: orphans.tasks, actions: orphans.actions, raid: orphans.raid, decisions: [] };
 
+  const skippedRaid = new Set();
   const batches = [[]];
   const push = (i, op) => { while (batches.length <= i) batches.push([]); batches[i].push(op); };
 
@@ -232,8 +241,16 @@ export function planV2Save(loaded, nextTree, { uid, wid, pid, isOwner = false, d
     }
     for (const { id, data } of next[kind]) {
       if (stored.has(id)) continue;
-      const d = stampDoc(kind, null, { ...strip(data), version: 1 }, uid);
-      push(0, { kind, op: 'create', id, data: withClaim(d) });
+      // Ensure-on-load placeholders (App ensureProjectRaid sets raid: [] on every
+      // program) must not become RAID docs: a non-manager has no claim and the
+      // denied create would fail the whole batch.
+      if (kind === 'raid' && Array.isArray(data.items) && data.items.length === 0) {
+        skippedRaid.add(id);
+        continue;
+      }
+      // Created docs are not stamped: rules do not check creates, and copied
+      // history keeps its original authors.
+      push(0, { kind, op: 'create', id, data: withClaim({ ...strip(data), version: 1 }) });
     }
   }
 
@@ -254,8 +271,9 @@ export function planV2Save(loaded, nextTree, { uid, wid, pid, isOwner = false, d
     if (s) {
       for (const k of KEEP_PROGRAM) if (hasOwn(s, k)) e[k] = s[k];
       // A non-Owner cannot write the project doc; a present RAID doc already wins
-      // over the stored flags, so keep them as stored.
-      if (!isOwner) {
+      // over the stored flags, so keep them as stored. Same when the RAID create
+      // was skipped (no doc, so the 'raid' flag must stay).
+      if (!isOwner || skippedRaid.has(key)) {
         if (hasOwn(s, '__absent')) e.__absent = s.__absent;
         else delete e.__absent;
       }

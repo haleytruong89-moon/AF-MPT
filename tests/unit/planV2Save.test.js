@@ -276,6 +276,66 @@ describe('planV2Save', () => {
     expect(allOps(planV2Save(loaded, tree, ctx()))[0].data.picUid).toBe('uidFromTooling');
   });
 
+  const absentRaidLoaded = () => {
+    const v1 = clone(fixture);
+    delete v1.programs[1].raid;
+    const s = splitProject(v1, { wid: 'main', dirIndex, uidByEmail });
+    const toMap = (list) => new Map(list.map(({ id, data }) => [id, { version: 2, data }]));
+    return { meta: s.meta, docs: { workstreams: toMap(s.workstreams), tasks: toMap(s.tasks), actions: toMap(s.actions), raid: toMap(s.raid), decisions: toMap(s.decisions) } };
+  };
+
+  it('ensureProjectRaid placeholder (raid: []) on an absent-raid program -> no create, flag kept', () => {
+    for (const isOwner of [false, true]) {
+      const loaded = absentRaidLoaded();
+      const tree = treeOf(loaded);
+      tree.programs[1].raid = [];
+      expect(planV2Save(loaded, tree, ctx({ isOwner }))).toEqual({ batches: [], metaPatch: null, refused: null });
+      ws1(tree).tasks[0].name = 'Edited';
+      const r = planV2Save(loaded, tree, ctx({ isOwner }));
+      expect(allOps(r).map((o) => [o.kind, o.op, o.id])).toEqual([['tasks', 'update', 't1']]);
+      expect(r.metaPatch).toBeNull();
+    }
+  });
+
+  it('missing RAID doc (missingRaid) with raid: [] -> no create; existing RAID doc with same items -> no op', () => {
+    const loaded = makeLoaded();
+    loaded.docs.raid.delete('pg2');
+    const tree = treeOf(loaded);
+    expect(tree.programs[1].raid).toEqual([]);
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+    const loaded2 = makeLoaded();
+    const tree2 = treeOf(loaded2);
+    tree2.programs[0].raid = clone(tree2.programs[0].raid);
+    expect(planV2Save(loaded2, tree2, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
+  it('created docs keep their entries as-is (no authorUid stamping)', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    ws1(tree).tasks.push({ id: 'tCopy', name: 'Copy', updates: [{ id: 'u9', text: 'by X', authorUid: 'uidX' }, { text: 'no author' }] });
+    const op = allOps(planV2Save(loaded, tree, ctx()))[0];
+    expect(op.op).toBe('create');
+    expect(op.data.updates).toEqual([{ id: 'u9', text: 'by X', authorUid: 'uidX' }, { text: 'no author' }]);
+  });
+
+  it('id-less in-place edit (same size) is not stamped', () => {
+    const loaded = makeLoaded();
+    loaded.docs.tasks.get('t2').data.updates = [{ text: 'a' }, { text: 'b' }];
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].updates = [{ text: 'a edited' }, { text: 'b' }];
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op.data.updates).toEqual([{ text: 'a edited' }, { text: 'b' }]);
+  });
+
+  it('Timestamp-like values in loaded data compare in their JSON form (no diff)', () => {
+    const loaded = makeLoaded();
+    const ts = { seconds: 1, nanoseconds: 0, toJSON() { return { seconds: 1, nanoseconds: 0 }; }, toMillis() { return 1000; } };
+    loaded.meta.reviewedAt = ts;
+    loaded.docs.tasks.get('t2').data.doneAt = ts;
+    const tree = treeOf(loaded); // JSON round trip, like the shim read path
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
   it('does not mutate its inputs', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
