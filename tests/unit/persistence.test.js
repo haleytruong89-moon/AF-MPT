@@ -134,3 +134,30 @@ describe('buildProjectWrite (B3 debt: decision used inside runTransaction)', () 
     expect(buildProjectWrite(ex, incoming, { uid: 'a', knownRev: 5, force: true, now: NOW }).newRev).toBe(7);
   });
 });
+
+describe('buildProjectWrite — own write detection (review I1)', () => {
+  const NOW = { __ts: 'now' };
+  const inc = { id: 'p1', name: 'CRP' };
+  it('a retry that finds its own writeId on the server is already applied (no write, no conflict)', () => {
+    const ex = { rev: 6, writeId: 'w2', memberIds: ['a'], roles: { a: 'owner' } };
+    const r = buildProjectWrite(ex, inc, { uid: 'a', knownRev: 5, force: false, now: NOW, writeId: 'w2' });
+    expect(r).toEqual({ conflict: false, newRev: 6, doc: null });
+  });
+  it('an earlier save whose result was lost counts as ours on the next save', () => {
+    const ex = { rev: 6, writeId: 'w1', memberIds: ['a'], roles: { a: 'owner' } };
+    const r = buildProjectWrite(ex, inc, { uid: 'a', knownRev: 5, force: false, now: NOW, writeId: 'w2', pendingWriteIds: ['w1'] });
+    expect(r.conflict).toBe(false);
+    expect(r.newRev).toBe(7);
+    expect(r.doc.writeId).toBe('w2');
+  });
+  it('another client\'s write is still a conflict', () => {
+    const ex = { rev: 6, writeId: 'other', memberIds: ['a'], roles: { a: 'owner' } };
+    expect(buildProjectWrite(ex, inc, { uid: 'a', knownRev: 5, force: false, now: NOW, writeId: 'w2', pendingWriteIds: ['w1'] })).toEqual({ conflict: true });
+  });
+  it('more cases: legacy doc without rev, force on create, deletedAt/createdAt kept', () => {
+    expect(buildProjectWrite({ memberIds: ['a'], roles: { a: 'owner' } }, inc, { uid: 'a', knownRev: undefined, force: false, now: NOW }).newRev).toBe(1);
+    expect(buildProjectWrite(null, inc, { uid: 'a', knownRev: 3, force: true, now: NOW }).newRev).toBe(1);
+    const r = buildProjectWrite({ rev: 2, deletedAt: 'D', createdAt: 'C', memberIds: ['a'], roles: { a: 'owner' } }, inc, { uid: 'a', knownRev: 2, force: false, now: NOW });
+    expect(r.doc).toMatchObject({ deletedAt: 'D', createdAt: 'C' });
+  });
+});

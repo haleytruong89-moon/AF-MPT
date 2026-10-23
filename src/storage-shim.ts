@@ -48,6 +48,8 @@ const ACTIVITY_CAP = 500;
 
 // B3: rev of each project as last read/written by this client.
 const knownRev = new Map<string, number>();
+// Recent saves whose outcome is unknown (network error after commit was sent).
+const pendingWriteIds = new Map<string, string[]>(); // last few, newest last
 const projectWriteQueue = createKeyedQueue();
 
 /** Per-user localStorage key for the "currently selected project". */
@@ -191,9 +193,11 @@ window.storage = {
         // Strip RBAC-internal fields from the value so the new App.jsx isn't
         // confused by extra members/roles fields. (Member management uses the
         // separate MembersModal which reads them via the data.ts hooks.)
-        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, ...rest } =
+        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, writeId: _writeId, ...rest } =
           data as Record<string, unknown>;
+        void _writeId;
         knownRev.set(pid, typeof rev === 'number' ? rev : 0);
+        pendingWriteIds.delete(pid);
         // Suppress unused warnings — these are intentional drops:
         void memberIds;
         void roles;
@@ -286,7 +290,13 @@ window.storage = {
         const force = parsed[FORCE_WRITE_FLAG] === true;
         const { [FORCE_WRITE_FLAG]: _force, ...incoming } = parsed;
         void _force;
-        const opts = { uid: user.uid, knownRev: knownRev.get(pid), force, now: serverTimestamp() };
+        const writeId = crypto.randomUUID();
+        const opts = {
+          uid: user.uid, knownRev: knownRev.get(pid), force, now: serverTimestamp(),
+          writeId, pendingWriteIds: pendingWriteIds.get(pid) || [],
+        };
+        // If this save ends in an error, the commit may still have landed: remember it.
+        pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-3));
         // B3 debt: read, rev check and write in one transaction — Firestore re-runs
         // the function if another client writes in between, so no silent overwrite.
         let result: { conflict: boolean; newRev?: number };
@@ -300,7 +310,7 @@ window.storage = {
             }
             const ex = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
             const plan = buildProjectWrite(ex, incoming, opts);
-            if (!plan.conflict) tx.set(PROJECT_REF(pid), plan.doc);
+            if (!plan.conflict && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
             return plan;
           });
         } catch (e) {
@@ -321,6 +331,7 @@ window.storage = {
           console.warn('[storage] project changed on server since load; write refused:', pid);
           return { key, value, shared: true, error: 'conflict' };
         }
+        pendingWriteIds.delete(pid);
         knownRev.set(pid, result.newRev as number);
         return { key, value, shared: true };
         });
