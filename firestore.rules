@@ -65,18 +65,44 @@ service cloud.firestore {
     // are not "affected" so stale-but-identical owner fields pass.
     // There is no client-side claim or release: ownerless recovery is an
     // admin-script operation (see CLAUDE.md Rollback).
+    // P2.1 (2026-10-23): ownerUids[] (set by scripts/p2-set-owner-uids.mjs) is
+    // owner-only like the other owner fields; the client never writes it.
     function ownerFields() {
-      return ['workspaceOwner', 'ownershipLog', 'defaultView'];
+      return ['workspaceOwner', 'ownershipLog', 'defaultView', 'ownerUids'];
+    }
+
+    // Owner = uid in ownerUids[] OR the legacy workspaceOwner email (kept until
+    // P2.5 so a missing/empty ownerUids never locks the Owner out).
+    // Used by isWorkspaceOwner() (workspace doc) and isDirectoryOwner()
+    // (members/invites, via get()); keep the two call sites in sync.
+    function isOwnerIn(ws) {
+      return (ws.get('ownerUids', []) is list && request.auth.uid in ws.get('ownerUids', []))
+        || (ws.get('workspaceOwner', null) is string
+          && ws.workspaceOwner.lower() == request.auth.token.email.lower());
     }
 
     function isWorkspaceOwner() {
-      return resource.data.get('workspaceOwner', null) is string
-        && resource.data.workspaceOwner.lower() == request.auth.token.email.lower();
+      return isOwnerIn(resource.data);
     }
 
     function newOwnerIsValid() {
       return request.resource.data.get('workspaceOwner', null) is string
         && request.resource.data.workspaceOwner.lower().matches('.*@smartosc[.]com$');
+    }
+
+    // ownerUids, when written, must stay a non-empty list (no removal, no []).
+    function newOwnerUidsAreValid() {
+      return request.resource.data.get('ownerUids', null) is list
+        && request.resource.data.ownerUids.size() > 0;
+    }
+
+    // Owner write: each owner field that changes must stay valid. Fields that
+    // are not affected are not re-checked, so an owner can change only
+    // ownerUids (or defaultView) without touching workspaceOwner.
+    function ownerWriteIsValid() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return (!changed.hasAny(['workspaceOwner']) || newOwnerIsValid())
+        && (!changed.hasAny(['ownerUids']) || newOwnerUidsAreValid());
     }
 
     match /workspaces/{workspace} {
@@ -87,7 +113,7 @@ service cloud.firestore {
 
       allow update: if isSmartOSC() && workspace == 'main' && (
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
-        || (isWorkspaceOwner() && newOwnerIsValid())
+        || (isWorkspaceOwner() && ownerWriteIsValid())
       );
 
       allow delete: if false;
@@ -103,11 +129,10 @@ service cloud.firestore {
       return request.auth.token.email.lower();
     }
 
-    // Same check as isWorkspaceOwner() via get(); keep in sync; ownerUids[] replaces both in P2.
+    // Same check as isWorkspaceOwner() (isOwnerIn) via get(); keep in sync.
+    // The legacy email branch is dropped from isOwnerIn() in P2.5.
     function isDirectoryOwner() {
-      let ws = get(/databases/$(database)/documents/workspaces/main).data;
-      return ws.get('workspaceOwner', null) is string
-        && ws.workspaceOwner.lower() == callerEmail();
+      return isOwnerIn(get(/databases/$(database)/documents/workspaces/main).data);
     }
 
     function invitePath() {

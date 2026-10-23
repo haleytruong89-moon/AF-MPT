@@ -9,6 +9,8 @@ const isDomainEmail = (email) => /@smartosc\.com$/.test(email);
 // Owner-only fields of workspaces/main (must match ownerFields() in firestore.rules).
 export const OWNER_FIELDS = ['workspaceOwner', 'ownershipLog', 'defaultView'];
 export const OWNER_WRITE_FLAG = '__ownerFieldsWrite';
+// Owner-only in the rules too, but never written by the client at all.
+export const ADMIN_ONLY_FIELDS = ['ownerUids'];
 
 // Shape a meta object for persistence. Ordinary writes (any user, possibly a
 // stale in-memory copy) never carry owner fields — merge:true keeps the stored
@@ -19,6 +21,10 @@ export function metaForWrite(incoming) {
   const ownerWrite = out[OWNER_WRITE_FLAG] === true;
   delete out[OWNER_WRITE_FLAG];
   if (!ownerWrite) for (const f of OWNER_FIELDS) delete out[f];
+  // ownerUids (P2.1) is owner-only in firestore.rules but written only by
+  // scripts/p2-set-owner-uids.mjs. The client never echoes it back: a stale
+  // copy would be rejected for non-owners and could revert it for owners.
+  for (const f of ADMIN_ONLY_FIELDS) delete out[f];
   return out;
 }
 

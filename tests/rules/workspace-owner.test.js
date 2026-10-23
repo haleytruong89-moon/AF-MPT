@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteDoc, getDoc, deleteField } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
 
 const OWNER = { uid: 'u_owner', email: 'hattt4@smartosc.com' };
@@ -98,5 +98,112 @@ describe('B1: workspace owner fields are owner-only', () => {
   it('B1-13 domain user can still read meta', async () => {
     const db = await asUser(USER.uid, USER.email);
     await assertSucceeds(getDoc(doc(db, META)));
+  });
+});
+
+// P2.1 Task 3: ownerUids[] with the legacy workspaceOwner email as fallback.
+describe('P2.1: ownerUids with legacy email fallback', () => {
+  const CO = { uid: 'u_co', email: 'co@smartosc.com' }; // owner by uid only
+  const MEMBERS = 'workspaces/main/members';
+  const INVITES = 'workspaces/main/invites';
+  const entry = (email) => ({
+    email, displayName: 'X', aliases: [], department: 'AF', status: 'active',
+    updatedAt: '2026-10-23T00:00:00Z', updatedBy: OWNER.email,
+  });
+
+  beforeEach(async () => {
+    await resetData();
+    await seedDoc(META, { ...baseMeta(), ownerUids: [CO.uid] });
+  });
+  afterAll(cleanup);
+
+  it('OU-1 a uid in ownerUids can update owner fields', async () => {
+    const db = await asUser(CO.uid, CO.email);
+    await assertSucceeds(updateDoc(doc(db, META), { defaultView: 'gantt' }));
+    await assertSucceeds(updateDoc(doc(db, META), {
+      ownershipLog: [...baseMeta().ownershipLog, { id: 'own_2', action: 'note', to: CO.email }],
+    }));
+  });
+
+  it('OU-2 legacy email-only owner still can (ownerUids present without them, or absent)', async () => {
+    const db = await asUser(OWNER.uid, OWNER.email);
+    await assertSucceeds(updateDoc(doc(db, META), { defaultView: 'gantt' }));
+    await seedDoc(META, baseMeta());
+    await assertSucceeds(updateDoc(doc(db, META), { defaultView: 'board' }));
+  });
+
+  it('OU-3 a non-owner cannot add themselves to ownerUids', async () => {
+    const db = await asUser(USER.uid, USER.email);
+    await assertFails(updateDoc(doc(db, META), { ownerUids: [CO.uid, USER.uid] }));
+    await assertFails(setDoc(doc(db, META), { ownerUids: [USER.uid] }, { merge: true }));
+    await assertFails(updateDoc(doc(db, META), { ownerUids: [USER.uid] }));
+    await seedDoc(META, baseMeta()); // no ownerUids yet
+    await assertFails(updateDoc(doc(db, META), { ownerUids: [USER.uid] }));
+  });
+
+  it('OU-4 the Owner cannot set ownerUids to [], remove it, or make it a non-list', async () => {
+    for (const who of [OWNER, CO]) {
+      const db = await asUser(who.uid, who.email);
+      await assertFails(updateDoc(doc(db, META), { ownerUids: [] }));
+      await assertFails(updateDoc(doc(db, META), { ownerUids: deleteField() }));
+      await assertFails(updateDoc(doc(db, META), { ownerUids: CO.uid }));
+      await assertFails(updateDoc(doc(db, META), { ownerUids: { [CO.uid]: true } }));
+    }
+  });
+
+  it('OU-5 the Owner may update only ownerUids (workspaceOwner untouched)', async () => {
+    const db = await asUser(OWNER.uid, OWNER.email);
+    await assertSucceeds(updateDoc(doc(db, META), { ownerUids: [CO.uid, OWNER.uid] }));
+    await seedDoc(META, baseMeta()); // first write of the field
+    await assertSucceeds(updateDoc(doc(db, META), { ownerUids: [OWNER.uid] }));
+  });
+
+  it('OU-6 a uid owner may change owner fields when workspaceOwner is absent', async () => {
+    const { workspaceOwner: _drop, ...noEmail } = baseMeta();
+    void _drop;
+    await seedDoc(META, { ...noEmail, ownerUids: [CO.uid] });
+    const db = await asUser(CO.uid, CO.email);
+    await assertSucceeds(updateDoc(doc(db, META), { defaultView: 'gantt' }));
+  });
+
+  it('OU-7 create may not set ownerUids', async () => {
+    await resetData();
+    const db = await asUser(USER.uid, USER.email);
+    await assertFails(setDoc(doc(db, META), { seeded: true, ownerUids: [USER.uid] }));
+  });
+
+  it('OU-8 non-owner ordinary writes still pass, including a stale identical ownerUids echo', async () => {
+    const db = await asUser(USER.uid, USER.email);
+    await assertSucceeds(updateDoc(doc(db, META), { userPreferences: { Staff: { x: 1 } } }));
+    await assertSucceeds(setDoc(doc(db, META), {
+      ...baseMeta(), ownerUids: [CO.uid], userPreferences: { Staff: { x: 2 } },
+    }, { merge: true }));
+  });
+
+  it('OU-9 ownerUids as a map does not grant ownership', async () => {
+    await seedDoc(META, { seeded: true, ownerUids: { [USER.uid]: true } });
+    const db = await asUser(USER.uid, USER.email);
+    await assertFails(updateDoc(doc(db, META), { defaultView: 'gantt' }));
+  });
+
+  it('OU-10 directory owner writes are allowed via ownerUids (members and invites)', async () => {
+    const db = await asUser(CO.uid, CO.email);
+    const m = doc(db, `${MEMBERS}/u_x`);
+    await assertSucceeds(setDoc(m, entry('x@smartosc.com')));
+    await assertSucceeds(updateDoc(m, { department: 'HR' }));
+    await assertSucceeds(deleteDoc(m));
+    const i = doc(db, `${INVITES}/y@smartosc.com`);
+    await assertSucceeds(setDoc(i, entry('y@smartosc.com')));
+    await assertSucceeds(updateDoc(i, { department: 'HR' }));
+    await assertSucceeds(deleteDoc(i));
+  });
+
+  it('OU-11 directory: legacy email owner still can; a non-owner cannot', async () => {
+    const owner = await asUser(OWNER.uid, OWNER.email);
+    await assertSucceeds(setDoc(doc(owner, `${MEMBERS}/u_y`), entry('y@smartosc.com')));
+    await assertSucceeds(setDoc(doc(owner, `${INVITES}/z@smartosc.com`), entry('z@smartosc.com')));
+    const user = await asUser(USER.uid, USER.email);
+    await assertFails(setDoc(doc(user, `${MEMBERS}/u_z`), entry('z@smartosc.com')));
+    await assertFails(setDoc(doc(user, `${INVITES}/w@smartosc.com`), entry('w@smartosc.com')));
   });
 });

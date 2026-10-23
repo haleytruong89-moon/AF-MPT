@@ -77,4 +77,9 @@ describe('metaForWrite', () => {
     metaForWrite(input);
     expect(input).toEqual(meta);
   });
+
+  it('never writes ownerUids, even on a flagged owner write (admin-script only)', () => {
+    expect('ownerUids' in metaForWrite({ ...meta, ownerUids: ['u_owner'] })).toBe(false);
+    expect('ownerUids' in metaForWrite({ ...meta, ownerUids: ['u_owner'], [OWNER_WRITE_FLAG]: true })).toBe(false);
+  });
 });
