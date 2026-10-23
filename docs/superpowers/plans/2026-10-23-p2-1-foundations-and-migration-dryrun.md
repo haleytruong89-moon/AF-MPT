@@ -181,5 +181,5 @@
   4. Publish the rules from the PR head (additive), keeping the P1 version 23/10 6:35 for rollback.
   5. Merge.
   6. Run `p2-set-owner-uids` preview, HOD approves, then `--apply`.
-  7. Check that the Owner can still transfer ownership and edit the directory.
+  7. Check: the Transfer ownership button is disabled with its tooltip (Ruling D); `defaultView` and a People-directory edit still save; a non-owner preference save still works. Confirm in the preview that the resolved uid equals HOD's uid in Firebase Console → Authentication.
   8. Rollback: `--rollback <manifest>`, the Console rules version, then Vercel Promote.
