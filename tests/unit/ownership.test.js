@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWorkspaceOwnerEmail, transferCandidates, metaForWrite, OWNER_WRITE_FLAG } from '../../src/ownership.js';
+import { isWorkspaceOwnerEmail, transferCandidates, metaForWrite, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from '../../src/ownership.js';
 
 describe('isWorkspaceOwnerEmail', () => {
   it('matches the same email case-insensitively', () => {
@@ -76,5 +76,26 @@ describe('metaForWrite', () => {
     const input = { ...meta };
     metaForWrite(input);
     expect(input).toEqual(meta);
+  });
+
+  it('never writes ownerUids, even on a flagged owner write (admin-script only)', () => {
+    expect('ownerUids' in metaForWrite({ ...meta, ownerUids: ['u_owner'] })).toBe(false);
+    expect('ownerUids' in metaForWrite({ ...meta, ownerUids: ['u_owner'], [OWNER_WRITE_FLAG]: true })).toBe(false);
+  });
+});
+
+describe('transferLocked', () => {
+  it('locks in-app transfer while ownerUids is a non-empty list', () => {
+    expect(transferLocked({ workspaceOwner: 'a@smartosc.com', ownerUids: ['u'] })).toBe(true);
+  });
+  it('does not lock when ownerUids is missing, empty or not a list', () => {
+    expect(transferLocked({ workspaceOwner: 'a@smartosc.com' })).toBe(false);
+    expect(transferLocked({ ownerUids: [] })).toBe(false);
+    expect(transferLocked({ ownerUids: 'u' })).toBe(false);
+    expect(transferLocked(null)).toBe(false);
+    expect(transferLocked(undefined)).toBe(false);
+  });
+  it('exposes the message shown to the owner', () => {
+    expect(TRANSFER_LOCKED_MESSAGE).toBe('Ownership transfer is handled by an admin until the permission upgrade finishes (P2.5).');
   });
 });

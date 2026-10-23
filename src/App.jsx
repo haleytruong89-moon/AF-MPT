@@ -17,7 +17,7 @@ import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
-import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG } from './ownership';
+import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -13232,6 +13232,7 @@ export default function App() {
   };
 
   const changeOwnership = async (action, newOwner) => {
+    if (transferLocked(meta)) { showToast(TRANSFER_LOCKED_MESSAGE); return false; }
     const oldOwner = meta?.workspaceOwner || null;
     const entry = {
       id: uid('own'),
@@ -13890,7 +13891,7 @@ export default function App() {
                     </div>
                     {isOwner ? (
                       <div style={{ display: 'flex', gap: 6 }}>
-                        <Btn size="sm" onClick={async () => {
+                        <Btn size="sm" disabled={transferLocked(meta)} title={transferLocked(meta) ? TRANSFER_LOCKED_MESSAGE : undefined} onClick={async () => {
                           setUserMenuOpen(false);
                           setShowTransferOwner(true);
                         }}>Transfer</Btn>
@@ -13981,6 +13982,7 @@ export default function App() {
             onTransfer={async (newOwner) => {
               setShowTransferOwner(false);
               const ok = await changeOwnership('transfer', newOwner);
+              if (!ok && transferLocked(meta)) return; // changeOwnership already explained why
               showToast(ok ? `Ownership transferred to ${newOwner}` : 'Transfer failed — reload the page and try again');
             }}
           />

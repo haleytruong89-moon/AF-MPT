@@ -14,6 +14,7 @@ import * as XLSX from 'xlsx';
 XLSX.set_fs(fs); // required for XLSX.writeFile in ESM
 import { foldName } from '../src/identity.js';
 import { buildDirectoryIndex, canonicalPerson } from '../src/directory.js';
+import { toJsonable, revive, applyWrites, rollbackManifest } from './lib/manifest.mjs';
 
 const WS = 'workspaces/main';
 const str = (v) => String(v ?? '').trim();
@@ -88,47 +89,21 @@ export function buildPreviewWorkbook(plan) {
   return wb;
 }
 
-// Firestore Timestamps do not survive JSON; tag them so rollback can restore them.
-export function toJsonable(v, Timestamp) {
-  if (v instanceof Timestamp) return { __ts: [v.seconds, v.nanoseconds] };
-  if (Array.isArray(v)) return v.map((x) => toJsonable(x, Timestamp));
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toJsonable(x, Timestamp)]));
-  return v;
-}
-export function revive(v, Timestamp) {
-  if (Array.isArray(v)) return v.map((x) => revive(x, Timestamp));
-  if (v && typeof v === 'object') {
-    if (Array.isArray(v.__ts) && Object.keys(v).length === 1) return new Timestamp(v.__ts[0], v.__ts[1]);
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, revive(x, Timestamp)]));
-  }
-  return v;
-}
+// Manifest helpers live in scripts/lib/manifest.mjs (shared with P2 scripts);
+// re-exported so existing imports keep working.
+export { toJsonable, revive, rollbackManifest };
 
-// Writes the plan. The manifest (previous content of every path) is handed to
-// writeManifest BEFORE the first write. Refuses when the plan has errors.
+// Writes the plan (full-doc sets). The manifest (previous content of every
+// path) is handed to writeManifest BEFORE the first write. Refuses when the
+// plan has errors.
 export async function applyPlan(db, plan, { FieldValue, Timestamp, writeManifest }) {
   if (plan.errors.length) throw new Error('Refusing to apply: plan has errors');
-  const targets = [
+  const writes = [
     ...plan.members.map((m) => ({ path: `${WS}/members/${m.uid}`, data: m.data })),
     ...plan.invites.map((i) => ({ path: `${WS}/invites/${i.email}`, data: i.data })),
-  ];
-  const entries = [];
-  for (const t of targets) {
-    const snap = await db.doc(t.path).get();
-    entries.push({ path: t.path, before: snap.exists ? toJsonable(snap.data(), Timestamp) : null });
-  }
-  writeManifest({ createdAt: new Date().toISOString(), entries });
-  for (const t of targets) await db.doc(t.path).set({ ...t.data, updatedAt: FieldValue.serverTimestamp() });
-  return { written: targets.length, members: plan.members.length, invites: plan.invites.length };
-}
-
-export async function rollbackManifest(db, manifest, { Timestamp }) {
-  let restored = 0, deleted = 0;
-  for (const e of manifest.entries) {
-    const ref = db.doc(e.path);
-    if (e.before) { await ref.set(revive(e.before, Timestamp)); restored++; } else { await ref.delete(); deleted++; }
-  }
-  return { restored, deleted };
+  ].map((w) => ({ path: w.path, data: { ...w.data, updatedAt: FieldValue.serverTimestamp() } }));
+  const r = await applyWrites(db, writes, { Timestamp, writeManifest });
+  return { written: r.written, members: plan.members.length, invites: plan.invites.length };
 }
 
 function readSheet(file, sheet) {
@@ -168,8 +143,8 @@ async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.rollback) {
     const manifest = JSON.parse(fs.readFileSync(o.rollback, 'utf8'));
-    const { db, Timestamp } = await openDb(o.key);
-    const r = await rollbackManifest(db, manifest, { Timestamp });
+    const { db, FieldValue, Timestamp } = await openDb(o.key);
+    const r = await rollbackManifest(db, manifest, { FieldValue, Timestamp });
     console.log(`Rollback done: ${r.restored} restored, ${r.deleted} deleted.`);
     return;
   }

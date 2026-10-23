@@ -40,12 +40,12 @@ Không có trường người phụ trách ở program/workstream. Task: `pic` (
 | # | Mức | Rủi ro | Xử lý ở pha |
 |---|---|---|---|
 | 1 | H bảo mật | Tự thăng Owner (ghi `workspaces/main`) | **B1** |
-| 2 | H dữ liệu | Last-write-wins, ghi đè cả doc | B3 (giảm nhẹ) → **P2** (giải gốc) |
+| 2 | H dữ liệu | Last-write-wins, ghi đè cả doc | B3 (giảm nhẹ) + transaction (PR #14) → **P2.3** (ghi theo document + `version`, rules đã bắt `version+1` từ P2.1) |
 | 3 | H dữ liệu | Lưu thất bại không báo | **B2** |
 | 4 | H quy mô | 1 MiB/document | **P2** |
-| 5 | M | UI không áp role | P2 + P4 |
+| 5 | M | UI không áp role | P2.1 rules theo vai trò (chưa dùng) → P2.4 + P4 |
 | 6 | M | Webhook đọc được bởi mọi member | Q2 (sau P3) |
-| 7 | M | Activity log ghi đè được | **P2** (append-only) |
+| 7 | M | Activity log ghi đè được | **P2.1** rules `activity/{eid}` chỉ create → dùng từ P2.3 |
 | 8 | M | Restore JSON ghi đè từ client; domain hard-code trong rules | P2 |
 | 9 | M | Monolith, không test, không type-check | Test rules ở P2; không refactor lớn |
 | 10 | M | Hai đường ghi (shim + `data.ts`) | P2: dồn về 1 đường |
