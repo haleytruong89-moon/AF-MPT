@@ -195,7 +195,15 @@ service cloud.firestore {
 
     match /workspaces/main/projects/{pid} {
 
-      allow read: if isSmartOSC() && isMember(resource.data);
+      // P2.3 Ruling V: a schemaVersion 2 doc is also readable per
+      // canReadProject (Owner, memberUids, department visibility for active
+      // members). v1 docs unchanged. The memberIds list query still passes
+      // on the first branch. get(): v2 branch = workspace, members/{me},
+      // project = 3.
+      allow read: if isSmartOSC() && (
+        isMember(resource.data)
+        || (resource.data.get('schemaVersion', 1) == 2 && canReadProject('main', pid))
+      );
 
       // CREATE — creator must put themselves as owner; required fields enforced.
       // A non-Owner create may not carry the owner-only v2 keys (get(): 1).
@@ -603,7 +611,8 @@ service cloud.firestore {
     // P2.3: the PIC may only touch these keys (no title / due / pic / ws...);
     // updates is append-only for the PIC (like the task Assignee).
     function actionPicKeys() {
-      return ['status', 'completedAt', 'updates', 'updatedAt', 'updatedBy', 'version'];
+      // Ruling U: subtasks of their own action (no shape checks).
+      return ['status', 'completedAt', 'subtasks', 'updates', 'updatedAt', 'updatedBy', 'version'];
     }
 
     function actionPicUpdate(wid, ch) {

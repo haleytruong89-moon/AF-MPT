@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, deleteDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, collection, query, where, serverTimestamp } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
 
 // P2.3 Task 1: rules completion.
@@ -255,5 +255,56 @@ describe('P2.3 rules completion', () => {
       { authorUid: VIEWER.uid, type: 'x', createdAt: '2026-10-23T00:00:00Z' }));
     await assertFails(setDoc(doc(db, `${P1}/activity/n4`),
       { authorUid: ASG.uid, type: 'x', createdAt: serverTimestamp() }));
+  });
+
+  // ── Fix round 1 ──
+  it('P23-18 Ruling U: action PIC may tick a subtask; due still denied', async () => {
+    await seedDoc(`${P1}/actions/a2`, action({ subtasks: [{ id: 's1', title: 'S', status: 'Pending' }] }));
+    await assertSucceeds(up(ASG, `${P1}/actions/a2`,
+      { subtasks: [{ id: 's1', title: 'S', status: 'Done', completedAt: '2026-10-23T00:00:00Z' }] }));
+    await assertFails(up(ASG, `${P1}/actions/a2`, { due: '2026-12-31', version: 3 }));
+    await assertFails(up(ASG, `${P1}/actions/a2`, { dueDate: '2026-12-31', version: 3 }));
+    // Only the PIC's own action.
+    await seedDoc(`${P1}/actions/a3`, action({ picUid: VIEWER.uid, subtasks: [{ id: 's1', status: 'Pending' }] }));
+    await assertFails(up(ASG, `${P1}/actions/a3`, { subtasks: [{ id: 's1', status: 'Done' }] }));
+  });
+
+  it('P23-19 Ruling V: v2 project doc readable via canReadProject; v1 read unchanged', async () => {
+    const DEACT = { uid: 'u_deact', email: 'deact@smartosc.com' };
+    await seedDoc(`${WS}/members/${DEACT.uid}`, member(DEACT.email, 'deactivated'));
+    const PV3 = `${WS}/projects/pv3`; // restricted, memberUids differs from memberIds
+    const PV4 = `${WS}/projects/pv4`; // department
+    await seedDoc(PV3, project({ schemaVersion: 2, memberIds: [PO.uid], memberUids: [VIEWER.uid, DEACT.uid] }));
+    await seedDoc(PV4, project({ schemaVersion: 2, memberIds: [PO.uid], memberUids: [], visibility: 'department' }));
+    // Owner not in memberIds.
+    await assertSucceeds(getDoc(doc(await as(OWNER), PV3)));
+    // In memberUids, not in memberIds.
+    await assertSucceeds(getDoc(doc(await as(VIEWER), PV3)));
+    // v1 memberIds still works.
+    await assertSucceeds(getDoc(doc(await as(PO), PV3)));
+    // Active member, not in memberUids: restricted denied, department allowed.
+    await assertFails(getDoc(doc(await as(OUTSIDER), PV3)));
+    await assertSucceeds(getDoc(doc(await as(OUTSIDER), PV4)));
+    // Deactivated member (in memberUids) denied; on department too.
+    await assertFails(getDoc(doc(await as(DEACT), PV3)));
+    await assertFails(getDoc(doc(await as(DEACT), PV4)));
+    // v1 doc unchanged: memberIds only (Owner not in memberIds denied).
+    await assertSucceeds(getDoc(doc(await as(VIEWER), P1)));
+    await assertFails(getDoc(doc(await as(OWNER), P1)));
+    await assertFails(getDoc(doc(await as(OUTSIDER), P1)));
+  });
+
+  it('P23-20 the client memberIds list query still passes', async () => {
+    const db = await as(PO);
+    await assertSucceeds(getDocs(query(collection(db, `${WS}/projects`), where('memberIds', 'array-contains', PO.uid))));
+  });
+
+  it('P23-21 Ruling W: Assignee / contributor resolving a blocker denied; Sub-PM may resolve it', async () => {
+    const blocker = { text: 'b', authorUid: ASG.uid, isBlocker: true };
+    await seedDoc(`${P1}/tasks/t2`, task({ updates: [blocker], contributorUids: [VIEWER.uid] }));
+    const resolved = [{ ...blocker, resolvedAt: '2026-10-23T00:00:00Z', resolvedBy: 'x', resolution: 'ok' }];
+    await assertFails(up(ASG, `${P1}/tasks/t2`, { updates: resolved }));
+    await assertFails(up(VIEWER, `${P1}/tasks/t2`, { updates: resolved }));
+    await assertSucceeds(up(LEAD, `${P1}/tasks/t2`, { updates: resolved }));
   });
 });
