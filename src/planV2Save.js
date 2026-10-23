@@ -151,13 +151,14 @@ const stampDoc = (kind, oldData, data, uid) => mapEntryLists(kind, oldData, data
 const carryDoc = (kind, oldData, data) => mapEntryLists(kind, oldData, data, carryList);
 
 // Ruling AD (I2): next = [{ id, data }] in tree order. When the stored docs that
-// remain keep their relative order (strictly increasing stored `order`), reuse it
-// and slot new docs around them; otherwise keep the split's index renumbering.
+// remain keep their relative order (non-decreasing stored `order`: concurrent
+// prepends can tie), reuse it and slot new docs around them; otherwise keep the
+// split's index renumbering.
 function keepOrder(stored, next) {
   const orderOf = (id) => stored.get(id)?.data?.order;
   const ords = next.filter((d) => stored.has(d.id)).map((d) => orderOf(d.id));
   if (!ords.length || !ords.every((o) => typeof o === 'number' && Number.isFinite(o))) return next;
-  if (!ords.every((o, i) => i === 0 || ords[i - 1] < o)) return next;
+  if (!ords.every((o, i) => i === 0 || ords[i - 1] <= o)) return next;
   const out = next.map((d) => ({ id: d.id, data: { ...d.data } }));
   let prev = null; // stored order of the last existing doc seen
   let run = []; // new docs since then

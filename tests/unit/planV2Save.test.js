@@ -418,6 +418,16 @@ describe('planV2Save', () => {
     expect(project.decisions.map((d) => d.id)).toEqual(['n0', 'n1', 'd1', 'n2', 'd2', 'n3']);
   });
 
+  it('I2: tied stored orders (concurrent prepends) are kept; an untouched tree is a no-op', () => {
+    const loaded = makeLoaded();
+    const a2 = loaded.docs.actions.get('a2');
+    loaded.docs.actions.set('a2', { ...a2, data: { ...a2.data, order: loaded.docs.actions.get('a1').data.order } });
+    expect(allOps(planV2Save(loaded, treeOf(loaded), ctx()))).toEqual([]);
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[0].title = 'Edited';
+    expect(allOps(planV2Save(loaded, tree, ctx())).map((o) => o.kind)).toEqual(['tasks']);
+  });
+
   it('I2: a real reorder still renumbers', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
