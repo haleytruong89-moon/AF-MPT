@@ -161,3 +161,36 @@ describe('buildProjectWrite — own write detection (review I1)', () => {
     expect(r.doc).toMatchObject({ deletedAt: 'D', createdAt: 'C' });
   });
 });
+
+describe('buildProjectWrite — v2 fields stay server-owned (P2.2 task 3)', () => {
+  const V2_KEYS = { programMeta: { p1: { x: 1 } }, memberUids: ['u1'], visibility: 'restricted', schemaVersion: 1 };
+  const opts = (o = {}) => ({ uid: 'a', knownRev: 5, force: false, now: 'TS', ...o });
+  it('ignores incoming v2 keys and keeps server values', () => {
+    const ex = { rev: 5, ...V2_KEYS };
+    const inc = { name: 'P', programMeta: { evil: 1 }, memberUids: ['x'], visibility: 'department', schemaVersion: 7 };
+    const { doc } = buildProjectWrite(ex, inc, opts());
+    expect(doc.programMeta).toEqual(V2_KEYS.programMeta);
+    expect(doc.memberUids).toEqual(['u1']);
+    expect(doc.visibility).toBe('restricted');
+    expect(doc.schemaVersion).toBe(1);
+  });
+  it.each(Object.keys(V2_KEYS))('preserves %s independently; omits it when absent on ex', (k) => {
+    const ex = { rev: 5, [k]: V2_KEYS[k] };
+    const inc = { name: 'P', ...V2_KEYS };
+    const { doc } = buildProjectWrite(ex, inc, opts());
+    for (const other of Object.keys(V2_KEYS)) {
+      if (other === k) expect(doc[other]).toEqual(V2_KEYS[k]);
+      else expect(other in doc).toBe(false);
+    }
+  });
+  it('omits all v2 keys on create even if incoming has them', () => {
+    const { doc } = buildProjectWrite(null, { name: 'P', ...V2_KEYS }, opts({ knownRev: undefined }));
+    for (const k of Object.keys(V2_KEYS)) expect(k in doc).toBe(false);
+  });
+  it('returns readonly for a v2 doc, even with force or stale rev', () => {
+    const ex = { rev: 9, schemaVersion: 2 };
+    expect(buildProjectWrite(ex, { name: 'P' }, opts())).toEqual({ readonly: true });
+    expect(buildProjectWrite(ex, { name: 'P' }, opts({ force: true }))).toEqual({ readonly: true });
+    expect(buildProjectWrite(ex, { name: 'P' }, opts({ knownRev: 9 }))).toEqual({ readonly: true });
+  });
+});

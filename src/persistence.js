@@ -73,12 +73,15 @@ export function bannerGroups(saveState) {
 // writeId tags each save. A transaction retry that finds its own writeId on the
 // server already landed (a lost commit response); pendingWriteIds are earlier saves
 // of this client whose result was lost — their rev bump is ours, not a conflict.
+const V2_SERVER_KEYS = ['programMeta', 'memberUids', 'visibility', 'schemaVersion'];
 export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, writeId, pendingWriteIds = /** @type {string[]} */ ([]) }) {
+  // A v2 project is never written through the v1 path (not even with force).
+  if (ex?.schemaVersion === 2) return { readonly: true };
   if (ex && writeId && ex.writeId === writeId) return { conflict: false, newRev: ex.rev, doc: null };
   const baseRev = ex && ex.writeId && pendingWriteIds.includes(ex.writeId) ? ex.rev : knownRev;
   if (!force && checkRevision(ex?.rev, baseRev, ex !== null) === 'conflict') return { conflict: true };
   const newRev = nextRev(ex?.rev);
-  const { id: _id, rev: _rev, writeId: _w, ...body } = incoming;
+  const { id: _id, rev: _rev, writeId: _w, programMeta: _pm, memberUids: _mu, visibility: _vis, schemaVersion: _sv, ...body } = incoming;
   // memberIds/roles/relatedParties are edited only via MembersModal: server value wins.
   const doc = {
     ...body,
@@ -91,6 +94,8 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
     rev: newRev,
     updatedAt: now,
   };
+  // v2 fields are server-owned (Owner-only in rules): copy from ex when present, never from incoming.
+  for (const k of V2_SERVER_KEYS) if (ex && ex[k] !== undefined) doc[k] = ex[k];
   if (writeId) doc.writeId = writeId;
   return { conflict: false, newRev, doc };
 }

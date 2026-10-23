@@ -300,7 +300,7 @@ window.storage = {
         pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-50));
         // B3 debt: read, rev check and write in one transaction — Firestore re-runs
         // the function if another client writes in between, so no silent overwrite.
-        let result: { conflict: boolean; newRev?: number };
+        let result: { conflict?: boolean; readonly?: boolean; newRev?: number };
         try {
           result = await runTransaction(db, async (tx) => {
             let snap;
@@ -311,7 +311,7 @@ window.storage = {
             }
             const ex = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
             const plan = buildProjectWrite(ex, incoming, opts);
-            if (!plan.conflict && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
+            if (!plan.conflict && !plan.readonly && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
             return plan;
           });
         } catch (e) {
@@ -327,6 +327,12 @@ window.storage = {
           const plan = buildProjectWrite(null, incoming, opts);
           await setDoc(PROJECT_REF(pid), plan.doc);
           result = plan;
+        }
+        if (result.readonly) {
+          // v2 project: never written through the v1 path. Nothing reached the server.
+          pendingWriteIds.set(pid, (pendingWriteIds.get(pid) || []).filter((w) => w !== writeId));
+          console.warn('[storage] v2 project is read-only in this client; write skipped:', pid);
+          return { key, value, shared: true, error: 'readonly' };
         }
         if (result.conflict) {
           console.warn('[storage] project changed on server since load; write refused:', pid);
