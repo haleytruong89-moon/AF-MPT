@@ -169,11 +169,12 @@ service cloud.firestore {
     }
 
     // ─────── Projects ───────
-    // Per-doc read rule: only members. Firestore enforces this on get() and
-    // on list() — but list queries must constrain themselves so Firestore can
-    // prove all returned docs match. The client uses
+    // Per-doc read rule: members (memberIds), plus canReadProject for
+    // schemaVersion 2 docs (Ruling V, below). Firestore enforces this on get()
+    // and on list() — but list queries must constrain themselves so Firestore
+    // can prove all returned docs match. The client lists with
     //     query(projects, where('memberIds', 'array-contains', uid))
-    // which guarantees every result has uid in memberIds.
+    // which passes on the memberIds branch.
     // P2.2 gate (2026-10-23): v2 project fields are workspace-Owner-only
     // (Owner = isOwnerIn(workspaces/main) via isDirectoryOwner(), NOT the v1
     // per-project 'owner' role). Added on top of the v1 rule, never instead.
