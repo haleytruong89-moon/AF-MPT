@@ -53,7 +53,7 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
 
     const copy = await treeUnder(NEW);
     expect(copy.exists).toBe(true);
-    expect(copy.cols).toEqual(['actions', 'raid', 'tasks', 'workstreams']);
+    expect(copy.cols).toEqual(['actions', 'decisions', 'raid', 'tasks', 'workstreams']);
     expect(copy.data.memberIds).toEqual(['u_hod']);
     expect(copy.data.roles).toEqual({ u_hod: 'owner' });
     expect(copy.data.memberUids).toEqual(['u_hod']);
@@ -66,6 +66,10 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
       expect(d.data().projectId).toBe(NEW);
       expect(d.data().updatedBy).toBe('p2-pilot-copy');
     });
+
+    const decs = await db.collection(`${WS}/projects/${NEW}/decisions`).get();
+    expect(decs.docs.map((d) => d.id)).toEqual(["d1"]);
+    expect(decs.docs[0].data()).toMatchObject({ projectId: NEW, version: 1, updatedBy: "p2-pilot-copy", title: "Go" });
 
     // Every manifest entry is a new doc under NEW.
     expect(assertPilotManifest(manifest)).toBe(NEW);
