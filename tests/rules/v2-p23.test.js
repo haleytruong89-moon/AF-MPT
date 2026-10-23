@@ -319,3 +319,22 @@ describe('P2.3 rules completion', () => {
     await assertSucceeds(up(ASG, `${P1}/actions/a3`, { updates: [by(ASG)] }));
   });
 });
+
+describe('P2.3 Task 5: memberUids patch on a v2 project', () => {
+  beforeEach(async () => {
+    await resetData();
+    await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
+    for (const u of ALL) await seedDoc(`${WS}/members/${u.uid}`, member(u.email));
+    await seedDoc(PV2, project({ schemaVersion: 2 }));
+  });
+
+  it('P23-T5 Owner may patch memberUids with memberIds/roles; operator and per-project owner may not', async () => {
+    await assertSucceeds(v1up(OWNER, PV2, {
+      memberIds: [...ALL.map((u) => u.uid), 'u_new'],
+      roles: { [PO.uid]: 'owner', u_new: 'member' },
+      memberUids: [...ALL.map((u) => u.uid), 'u_new'],
+    }));
+    await assertFails(v1up(OP, PV2, { memberUids: [OP.uid] }));
+    await assertFails(v1up(PO, PV2, { memberUids: [PO.uid] }));
+  });
+});
