@@ -394,6 +394,12 @@ service cloud.firestore {
       return request.resource.data.get('updatedBy', null) == request.auth.uid;
     }
 
+    // Ruling Z (P2.3): list field k of d, a missing OR null value read as []
+    // (migrated docs may hold updates: null).
+    function listOrEmpty(d, k) {
+      return d.get(k, null) == null ? [] : d.get(k, null);
+    }
+
     // List field k is append-only (missing = []). App.jsx PREPENDS new
     // entries (newest first: `updates: [newU, ...old]`), so the old items
     // must stay as the SUFFIX and at most one entry is added per write
@@ -403,8 +409,8 @@ service cloud.firestore {
     // short-circuits before slicing. The new entry's authorUid is checked
     // by newEntryOk (all writers).
     function appendOnly(ch, k) {
-      let o = resource.data.get(k, []);
-      let n = request.resource.data.get(k, []);
+      let o = listOrEmpty(resource.data, k);
+      let n = listOrEmpty(request.resource.data, k);
       return !ch.hasAny([k])
         || (o is list && n is list
           && (n == o
@@ -418,8 +424,8 @@ service cloud.firestore {
     // editing history) is not checked here. Rules cannot loop, so nested
     // lists (RAID items[].history[], mitigation comments[]) are not checked.
     function newEntryOk(ch, k) {
-      let o = resource.data.get(k, []);
-      let n = request.resource.data.get(k, []);
+      let o = listOrEmpty(resource.data, k);
+      let n = listOrEmpty(request.resource.data, k);
       return !ch.hasAny([k])
         || (o is list && n is list
           && (n.size() <= o.size()

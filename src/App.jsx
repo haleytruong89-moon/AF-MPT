@@ -4523,7 +4523,11 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   const canSave = title.trim() && pic.trim();
 
   const submit = () => {
+    // Merge onto the current stored action (fresh from project, else the snapshot) so
+    // fields the form does not edit (updates, subtasks, completedAt…) are kept.
+    const base = (initial && (project?.actionItems || []).find((x) => x.id === initial.id)) || initial || {};
     onSave({
+      ...base,
       id: initial?.id || uid('act'),
       timestamp: initial?.timestamp || new Date().toISOString(),
       title: title.trim(),

@@ -307,4 +307,15 @@ describe('P2.3 rules completion', () => {
     await assertFails(up(VIEWER, `${P1}/tasks/t2`, { updates: resolved }));
     await assertSucceeds(up(LEAD, `${P1}/tasks/t2`, { updates: resolved }));
   });
+
+  it('P23-22 Ruling Z: a null updates / checkIns list counts as [] (append by Assignee, PIC, PM)', async () => {
+    await seedDoc(`${P1}/tasks/t3`, task({ updates: null, checkIns: null }));
+    await assertSucceeds(up(ASG, `${P1}/tasks/t3`, { updates: [by(ASG)] }));
+    await seedDoc(`${P1}/tasks/t4`, task({ updates: null, checkIns: null }));
+    await assertSucceeds(up(PM, `${P1}/tasks/t4`, { checkIns: [by(PM)] }));
+    // Still a real check: someone else's authorUid on the added entry is denied.
+    await assertFails(up(ASG, `${P1}/tasks/t4`, { version: 3, updates: [by(PM)] }));
+    await seedDoc(`${P1}/actions/a3`, action({ updates: null }));
+    await assertSucceeds(up(ASG, `${P1}/actions/a3`, { updates: [by(ASG)] }));
+  });
 });
