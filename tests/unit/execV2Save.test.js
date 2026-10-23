@@ -87,7 +87,7 @@ describe('executeV2Save', () => {
     }
   });
 
-  it('delete of a doc already gone is skipped; delete with matching version deletes', async () => {
+  it('delete of a doc already gone is recorded in written (cache drops it); delete with matching version deletes', async () => {
     const { fs, store } = fakeFs({ [`${P}/workstreams/w1`]: { version: 2 } });
     const plan = { batches: [[
       { kind: 'workstreams', op: 'delete', id: 'w1', expectVersion: 2 },
@@ -96,7 +96,10 @@ describe('executeV2Save', () => {
     const r = await executeV2Save(fs, ctx(plan));
     expect(r.status).toBe('ok');
     expect(store.has(`${P}/workstreams/w1`)).toBe(false);
-    expect(r.written).toEqual([{ kind: 'workstreams', op: 'delete', id: 'w1', version: null, data: null }]);
+    expect(r.written).toEqual([
+      { kind: 'workstreams', op: 'delete', id: 'w1', version: null, data: null },
+      { kind: 'workstreams', op: 'delete', id: 'w0', version: null, data: null },
+    ]);
   });
 
   it('metaPatch: update on the project doc in batch 1, DELETE_FIELD mapped, updatedAt stamped', async () => {

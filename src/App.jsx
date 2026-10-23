@@ -2015,7 +2015,7 @@ function SaveBanner({ saveState }) {
         {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
-        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were not saved: you don’t have permission for them. Closing a task needs your Sub-PM or PM. </>}
+        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (closing a task needs your Sub-PM or PM). Reload to continue — edits made after this are not saved either. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were not saved: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead. </>}
       </span>
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>

@@ -86,6 +86,8 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
   const [ws, tasks, actions, raid, decisions] = lists;
   const toMap = (list: Array<{ id: string; data: Record<string, unknown> }>) =>
     new Map(list.map(({ id, data }) => [id, { version: typeof data.version === 'number' ? data.version : 0, data }]));
+  // Replaces the cached `loaded` object: safe only because the App loads each project once;
+  // a read during an in-flight save would make applyWritten update a discarded object.
   v2Loaded.set(pid, {
     meta,
     docs: { workstreams: toMap(ws), tasks: toMap(tasks), actions: toMap(actions), raid: toMap(raid), decisions: toMap(decisions) },

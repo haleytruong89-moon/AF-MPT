@@ -58,8 +58,8 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
         ops.forEach((op, k) => {
           const ref = refOf(op);
           if (op.op === 'delete') {
-            if (!snaps[k].exists()) return;
-            tx.delete(ref);
+            // Already gone: nothing to delete, but record it so the cache drops the stale entry.
+            if (snaps[k].exists()) tx.delete(ref);
             out.push({ kind: op.kind, op: 'delete', id: op.id, version: null, data: null });
             return;
           }
