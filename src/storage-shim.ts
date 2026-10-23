@@ -49,7 +49,7 @@ const ACTIVITY_CAP = 500;
 // B3: rev of each project as last read/written by this client.
 const knownRev = new Map<string, number>();
 // Recent saves whose outcome is unknown (network error after commit was sent).
-const pendingWriteIds = new Map<string, string[]>(); // last few, newest last
+const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a long outage may queue many autosaves)
 const projectWriteQueue = createKeyedQueue();
 
 /** Per-user localStorage key for the "currently selected project". */
@@ -290,13 +290,14 @@ window.storage = {
         const force = parsed[FORCE_WRITE_FLAG] === true;
         const { [FORCE_WRITE_FLAG]: _force, ...incoming } = parsed;
         void _force;
-        const writeId = crypto.randomUUID();
+        // randomUUID needs a secure context (https/localhost); fall back for dev over LAN http.
+        const writeId = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
         const opts = {
           uid: user.uid, knownRev: knownRev.get(pid), force, now: serverTimestamp(),
           writeId, pendingWriteIds: pendingWriteIds.get(pid) || [],
         };
         // If this save ends in an error, the commit may still have landed: remember it.
-        pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-3));
+        pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-50));
         // B3 debt: read, rev check and write in one transaction — Firestore re-runs
         // the function if another client writes in between, so no silent overwrite.
         let result: { conflict: boolean; newRev?: number };
