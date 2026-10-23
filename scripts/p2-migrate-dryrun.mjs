@@ -92,6 +92,12 @@ export function buildReportWorkbook(result) {
   return wb;
 }
 
+// Sheet / column names of the assignment template; scripts/lib/assignments.mjs reads them back.
+export const PROGRAMS_SHEET = 'Programs';
+export const WORKSTREAMS_SHEET = 'Workstreams';
+export const PROGRAM_COLS = ['Project', 'Program id', 'Program', 'PM email', 'Deputy email'];
+export const WORKSTREAM_COLS = ['Project', 'Workstream id', 'Program', 'Workstream', 'Sub-PM email', 'Start', 'End'];
+
 export function buildAssignmentTemplate(backup) {
   assertBackup(backup);
   const programs = [];
@@ -126,8 +132,8 @@ export function buildAssignmentTemplate(backup) {
   ];
   const wb = XLSX.utils.book_new();
   const sheet = (rows, cols) => XLSX.utils.json_to_sheet(rows, { header: cols });
-  XLSX.utils.book_append_sheet(wb, sheet(programs, ['Project', 'Program id', 'Program', 'PM email', 'Deputy email']), 'Programs');
-  XLSX.utils.book_append_sheet(wb, sheet(workstreams, ['Project', 'Workstream id', 'Program', 'Workstream', 'Sub-PM email', 'Start', 'End']), 'Workstreams');
+  XLSX.utils.book_append_sheet(wb, sheet(programs, PROGRAM_COLS), PROGRAMS_SHEET);
+  XLSX.utils.book_append_sheet(wb, sheet(workstreams, WORKSTREAM_COLS), WORKSTREAMS_SHEET);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(instructions), 'Instructions');
   return wb;
 }
