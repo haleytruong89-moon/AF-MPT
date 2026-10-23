@@ -3,18 +3,25 @@ import { planOwnerUids, membersByEmailFrom } from '../../scripts/p2-set-owner-ui
 import { applyWrites, rollbackManifest } from '../../scripts/lib/manifest.mjs';
 
 const OWNER = 'hattt4@smartosc.com';
+const active = (uid) => ({ uid, status: 'active' });
 
 describe('planOwnerUids', () => {
   it('returns [uid] of the workspaceOwner email (case-insensitive)', () => {
-    const r = planOwnerUids({ workspaceOwner: 'HaTTT4@SmartOSC.com' }, new Map([[OWNER, 'u_owner']]));
+    const r = planOwnerUids({ workspaceOwner: 'HaTTT4@SmartOSC.com' }, new Map([[OWNER, active('u_owner')]]));
     expect(r).toEqual({ ownerUids: ['u_owner'] });
   });
   it('errors when workspaceOwner has no members entry', () => {
-    const r = planOwnerUids({ workspaceOwner: OWNER }, new Map([['x@smartosc.com', 'u_x']]));
+    const r = planOwnerUids({ workspaceOwner: OWNER }, new Map([['x@smartosc.com', active('u_x')]]));
     expect(r.error).toMatch(/no members entry/);
   });
+  it('errors when the member entry is not active', () => {
+    const r = planOwnerUids({ workspaceOwner: OWNER }, new Map([[OWNER, { uid: 'u_owner', status: 'deactivated' }]]));
+    expect(r.error).toMatch(/not active/);
+    const r2 = planOwnerUids({ workspaceOwner: OWNER }, new Map([[OWNER, { uid: 'u_owner' }]]));
+    expect(r2.error).toMatch(/not active/);
+  });
   it('is a no-op when ownerUids is already set', () => {
-    const r = planOwnerUids({ workspaceOwner: OWNER, ownerUids: ['u_owner'] }, new Map([[OWNER, 'u_owner']]));
+    const r = planOwnerUids({ workspaceOwner: OWNER, ownerUids: ['u_owner'] }, new Map([[OWNER, active('u_owner')]]));
     expect(r).toEqual({ noop: true });
   });
   it('errors when the workspace doc is missing', () => {
@@ -24,23 +31,23 @@ describe('planOwnerUids', () => {
     expect(planOwnerUids({ workspaceOwner: 'Hà Trương Thị Thu' }, new Map()).error).toMatch(/not an email/);
   });
   it('errors when ownerUids exists but is not a non-empty list', () => {
-    expect(planOwnerUids({ workspaceOwner: OWNER, ownerUids: 'u_owner' }, new Map([[OWNER, 'u']])).error).toMatch(/not a list/);
-    // An empty list is treated as unset (it would lock nobody out but grants nobody).
-    expect(planOwnerUids({ workspaceOwner: OWNER, ownerUids: [] }, new Map([[OWNER, 'u']]))).toEqual({ ownerUids: ['u'] });
+    expect(planOwnerUids({ workspaceOwner: OWNER, ownerUids: 'u_owner' }, new Map([[OWNER, active('u')]])).error).toMatch(/not a list/);
+    // An empty list is treated as unset (it grants nobody).
+    expect(planOwnerUids({ workspaceOwner: OWNER, ownerUids: [] }, new Map([[OWNER, active('u')]]))).toEqual({ ownerUids: ['u'] });
   });
   it('errors when the email maps to several member docs', () => {
     const map = membersByEmailFrom([
-      { id: 'u_1', data: { email: OWNER } },
-      { id: 'u_2', data: { email: 'HATTT4@smartosc.com' } },
+      { id: 'u_1', data: { email: OWNER, status: 'active' } },
+      { id: 'u_2', data: { email: 'HATTT4@smartosc.com', status: 'active' } },
     ]);
     expect(planOwnerUids({ workspaceOwner: OWNER }, map).error).toMatch(/several members/);
   });
 });
 
 describe('membersByEmailFrom', () => {
-  it('maps lower-cased email to uid and skips docs without email', () => {
-    const map = membersByEmailFrom([{ id: 'u_a', data: { email: 'A@smartosc.com' } }, { id: 'u_b', data: {} }]);
-    expect([...map]).toEqual([['a@smartosc.com', 'u_a']]);
+  it('maps lower-cased email to {uid, status} and skips docs without email', () => {
+    const map = membersByEmailFrom([{ id: 'u_a', data: { email: 'A@smartosc.com', status: 'active' } }, { id: 'u_b', data: {} }]);
+    expect([...map]).toEqual([['a@smartosc.com', { uid: 'u_a', status: 'active' }]]);
   });
 });
 
@@ -79,8 +86,8 @@ describe('applyWrites / rollbackManifest', () => {
     expect(r).toEqual({ written: 1 });
     expect(log).toEqual(['manifest', `set-merge ${WS}`]);
     expect(db.store.get(WS)).toEqual({ workspaceOwner: OWNER, userPreferences: { a: 1 }, ownerUids: ['u_owner'] });
-    expect(manifest.entries[0]).toMatchObject({ path: WS, merge: true, fields: ['ownerUids'] });
-    expect(manifest.entries[0].before).toEqual({ workspaceOwner: OWNER, userPreferences: { a: 1 } });
+    // Merge entries record only the written fields' previous values (none here).
+    expect(manifest.entries[0]).toEqual({ path: WS, merge: true, fields: ['ownerUids'], before: {} });
   });
 
   it('rollback of a merge write restores only the written fields and keeps later client changes', async () => {
@@ -101,6 +108,7 @@ describe('applyWrites / rollbackManifest', () => {
     const db = fakeDb({ [WS]: { ownerUids: ['old'], at: new FakeTs(5, 7), x: 1 } });
     let saved;
     await applyWrites(db, [{ path: WS, data: { ownerUids: ['new'], at: 'later' }, merge: true }], deps([], (m) => { saved = JSON.stringify(m); }));
+    expect(JSON.parse(saved).entries[0].before).toEqual({ ownerUids: ['old'], at: { __ts: [5, 7] } });
     await rollbackManifest(db, JSON.parse(saved), { FieldValue: FV, Timestamp: FakeTs });
     const back = db.store.get(WS);
     expect(back.ownerUids).toEqual(['old']);

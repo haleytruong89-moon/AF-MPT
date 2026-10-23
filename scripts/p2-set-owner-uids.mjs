@@ -3,7 +3,13 @@
 // Safe by default: without --apply it only READS and prints the plan.
 // --apply writes ONLY the ownerUids field (set with merge) after recording a
 // manifest; --rollback restores ONLY that field from the manifest, so client
-// writes to the workspace doc made in between are kept.
+// writes to the workspace doc made in between are kept. The manifest holds
+// only ownerUids' previous value; p2-*-manifest*.json is gitignored.
+//
+// Once ownerUids is set, the app locks its "Transfer" workspace-owner control
+// (src/ownership.js transferLocked): an in-app transfer changes only
+// workspaceOwner and would leave the old owner in ownerUids. Until P2.5,
+// transfer = admin edit of both fields (Console or a script).
 //
 // Usage:
 //   node scripts/p2-set-owner-uids.mjs [--apply] [--key service-account.json]
@@ -17,14 +23,16 @@ const WS = 'workspaces/main';
 const norm = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
 
 // docs: Array<{ id, data }> from workspaces/main/members. Returns
-// Map<lower-cased email, uid | uid[]> (an array when several docs share an email).
+// Map<lower-cased email, {uid, status} | Array<{uid, status}>> (an array when
+// several docs share an email).
 export function membersByEmailFrom(docs) {
   const map = new Map();
   for (const d of docs || []) {
     const email = norm(d.data?.email);
     if (!email) continue;
-    if (!map.has(email)) map.set(email, d.id);
-    else map.set(email, [].concat(map.get(email), d.id));
+    const m = { uid: d.id, status: d.data?.status };
+    if (!map.has(email)) map.set(email, m);
+    else map.set(email, [].concat(map.get(email), m));
   }
   return map;
 }
@@ -41,8 +49,9 @@ export function planOwnerUids(wsDoc, membersByEmail) {
   if (!owner.includes('@')) return { error: `workspaceOwner "${wsDoc.workspaceOwner ?? ''}" is not an email` };
   const hit = membersByEmail?.get(owner);
   if (!hit) return { error: `workspaceOwner ${owner} has no members entry (sign in once or run the P1 directory build)` };
-  if (Array.isArray(hit)) return { error: `workspaceOwner ${owner} matches several members docs: ${hit.join(', ')}` };
-  return { ownerUids: [hit] };
+  if (Array.isArray(hit)) return { error: `workspaceOwner ${owner} matches several members docs: ${hit.map((m) => m.uid).join(', ')}` };
+  if (hit.status !== 'active') return { error: `workspaceOwner ${owner} members entry ${hit.uid} is not active (status: ${hit.status ?? 'missing'})` };
+  return { ownerUids: [hit.uid] };
 }
 
 function parseArgs(argv) {
@@ -88,6 +97,7 @@ async function main() {
   const membersByEmail = membersByEmailFrom(docs);
   const plan = planOwnerUids(wsDoc, membersByEmail);
   const resolved = membersByEmail.get(norm(wsDoc?.workspaceOwner));
+  // resolved is {uid, status}, an array of them, or undefined.
   console.log(`workspaceOwner:    ${JSON.stringify(wsDoc?.workspaceOwner ?? null)}`);
   console.log(`resolved uid:      ${JSON.stringify(resolved ?? null)}`);
   console.log(`current ownerUids: ${JSON.stringify(wsDoc?.ownerUids ?? null)}`);

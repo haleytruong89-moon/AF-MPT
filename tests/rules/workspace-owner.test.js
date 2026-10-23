@@ -198,6 +198,24 @@ describe('P2.1: ownerUids with legacy email fallback', () => {
     await assertSucceeds(deleteDoc(i));
   });
 
+  it('OU-12 a uid-only owner cannot set a non-domain workspaceOwner (but may transfer within the domain)', async () => {
+    const db = await asUser(CO.uid, CO.email);
+    await assertFails(updateDoc(doc(db, META), { workspaceOwner: 'x@gmail.com' }));
+    await assertFails(updateDoc(doc(db, META), { workspaceOwner: null }));
+    await assertSucceeds(updateDoc(doc(db, META), { workspaceOwner: CO.email }));
+  });
+
+  it('OU-13 a doc with neither ownerUids nor workspaceOwner grants nobody owner writes', async () => {
+    await seedDoc(META, { seeded: true, userPreferences: {} });
+    for (const who of [OWNER, CO, USER]) {
+      const db = await asUser(who.uid, who.email);
+      await assertFails(updateDoc(doc(db, META), { defaultView: 'gantt' }));
+      await assertFails(updateDoc(doc(db, META), { ownerUids: [who.uid] }));
+      await assertFails(setDoc(doc(db, `${MEMBERS}/u_q`), entry('q@smartosc.com')));
+      await assertFails(setDoc(doc(db, `${INVITES}/q@smartosc.com`), entry('q@smartosc.com')));
+    }
+  });
+
   it('OU-11 directory: legacy email owner still can; a non-owner cannot', async () => {
     const owner = await asUser(OWNER.uid, OWNER.email);
     await assertSucceeds(setDoc(doc(owner, `${MEMBERS}/u_y`), entry('y@smartosc.com')));

@@ -40,6 +40,9 @@ describe('P2 ownerUids apply / rollback against the emulator', () => {
     // A client writes in between.
     await db.doc(WS).set({ userPreferences: { a: 2 } }, { merge: true });
 
+    // The manifest holds only the written field's previous value (absent here).
+    expect(JSON.parse(manifestJson).entries).toEqual([{ path: WS, merge: true, fields: ['ownerUids'], before: {} }]);
+
     const rb = await rollbackManifest(db, JSON.parse(manifestJson), { FieldValue, Timestamp });
     expect(rb).toEqual({ restored: 1, deleted: 0 });
     const back = (await db.doc(WS).get()).data();

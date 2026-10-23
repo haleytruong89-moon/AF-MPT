@@ -24,7 +24,8 @@ export function revive(v, Timestamp) {
 // - merge falsy: set(data) replaces the doc. Rollback restores the full
 //   before-image (or deletes the doc if it did not exist).
 // - merge true: set(data, {merge:true}) changes only the top-level keys of data.
-//   The manifest records those keys in `fields`, and rollback restores ONLY
+//   The manifest records those keys in `fields` and only their previous
+//   values in `before`; rollback restores ONLY
 //   them (previous value, or field delete if absent). Restoring the whole
 //   before-image would silently revert anything clients wrote to the same doc
 //   after the apply (e.g. userPreferences on workspaces/main).
@@ -32,9 +33,17 @@ export async function applyWrites(db, writes, { Timestamp, writeManifest }) {
   const entries = [];
   for (const w of writes) {
     const snap = await db.doc(w.path).get();
-    const entry = { path: w.path, before: snap.exists ? toJsonable(snap.data(), Timestamp) : null };
-    if (w.merge) { entry.merge = true; entry.fields = Object.keys(w.data); }
-    entries.push(entry);
+    const data = snap.exists ? snap.data() : null;
+    if (w.merge) {
+      // Only the written fields' previous values (a field absent before is
+      // simply missing from `before`); the rest of the doc is not recorded.
+      const fields = Object.keys(w.data);
+      const before = {};
+      for (const f of fields) if (data && f in data) before[f] = toJsonable(data[f], Timestamp);
+      entries.push({ path: w.path, merge: true, fields, before });
+    } else {
+      entries.push({ path: w.path, before: data ? toJsonable(data, Timestamp) : null });
+    }
   }
   writeManifest({ createdAt: new Date().toISOString(), entries });
   for (const w of writes) {

@@ -6,7 +6,8 @@ const norm = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
 // Same domain rule as firestore.rules newOwnerIsValid().
 const isDomainEmail = (email) => /@smartosc\.com$/.test(email);
 
-// Owner-only fields of workspaces/main (must match ownerFields() in firestore.rules).
+// Owner-only fields of workspaces/main.
+// OWNER_FIELDS + ADMIN_ONLY_FIELDS = ownerFields() in firestore.rules.
 export const OWNER_FIELDS = ['workspaceOwner', 'ownershipLog', 'defaultView'];
 export const OWNER_WRITE_FLAG = '__ownerFieldsWrite';
 // Owner-only in the rules too, but never written by the client at all.
@@ -26,6 +27,15 @@ export function metaForWrite(incoming) {
   // copy would be rejected for non-owners and could revert it for owners.
   for (const f of ADMIN_ONLY_FIELDS) delete out[f];
   return out;
+}
+
+// P2.1: once scripts/p2-set-owner-uids.mjs has set ownerUids, an in-app
+// transfer (which only changes workspaceOwner) would leave the old owner in
+// ownerUids. Transfer is admin-only until P2.5.
+export const TRANSFER_LOCKED_MESSAGE =
+  'Ownership transfer is handled by an admin until the permission upgrade finishes (P2.5).';
+export function transferLocked(meta) {
+  return Array.isArray(meta?.ownerUids) && meta.ownerUids.length > 0;
 }
 
 export function isWorkspaceOwnerEmail(workspaceOwner, email) {

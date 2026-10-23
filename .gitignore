@@ -46,3 +46,6 @@ p1-directory-manifest-*.json
 
 # P2 migration dry-run outputs (real people data) - never commit
 p2-*.xlsx
+
+# P2 Admin-script manifests (before-images) - never commit
+p2-*-manifest*.json
