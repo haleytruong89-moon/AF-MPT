@@ -43,3 +43,6 @@ p1-roster*.xlsx
 p1-directory-preview*.xlsx
 p1-directory-applied*.xlsx
 p1-directory-manifest-*.json
+
+# P2 migration dry-run outputs (real people data) - never commit
+p2-*.xlsx
