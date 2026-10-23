@@ -14,7 +14,7 @@ const uidByEmail = new Map([['alice@smartosc.com', 'uid1'], ['bob@smartosc.com',
 const run = (p = fixture) => splitProject(clone(p), { wid: 'main', dirIndex: dir, uidByEmail });
 const roundTrip = (p) => {
   const s = run(p);
-  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions).project;
+  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid).project;
 };
 
 describe('splitProject / assembleProject', () => {
@@ -24,7 +24,7 @@ describe('splitProject / assembleProject', () => {
   it('round-trips even when docs come back shuffled', () => {
     const s = run();
     const rev = (a) => [...a].reverse();
-    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions)).project).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions), rev(s.raid)).project).toStrictEqual(fixture);
   });
   it('does not mutate its input', () => {
     const p = clone(fixture);
@@ -34,7 +34,8 @@ describe('splitProject / assembleProject', () => {
   it('counts and programMeta', () => {
     const { report, meta } = run();
     expect(report.counts).toEqual({ programs: 2, workstreams: 3, tasks: 4, actions: 2 });
-    expect(meta.programMeta.pg2).toEqual({ id: 'pg2', name: 'Program Empty', raid: [], order: 1, pmUid: null, deputyUid: null, start: null, end: null });
+    expect(meta.programMeta.pg2).toEqual({ id: 'pg2', name: 'Program Empty', order: 1, pmUid: null, deputyUid: null, start: null, end: null });
+    expect(meta.programMeta.pg1.raid).toBeUndefined();
   });
   it('reports duplicate task ids and keeps both docs', () => {
     const s = run();
@@ -77,7 +78,7 @@ describe('splitProject / assembleProject', () => {
     const s = splitProject(clone(fixture), { wid: 'main', dirIndex: null, uidByEmail: new Map() });
     expect(s.report.unresolved.length).toBeGreaterThan(0);
     expect(s.report.unresolved.some((u) => u.raw === 'BOD')).toBe(false);
-    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions).project).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid).project).toStrictEqual(fixture);
   });
   it('action workstreamId from relatedTaskId, null otherwise', () => {
     const { actions } = run();
@@ -107,7 +108,7 @@ describe('splitProject / assembleProject', () => {
 });
 
 describe('Ruling C: programMeta owns program data; orphans; edge branches', () => {
-  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions);
+  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid);
 
   it('ignores the frozen meta.programs / meta.actionItems on assemble', () => {
     const s = run();
@@ -133,27 +134,74 @@ describe('Ruling C: programMeta owns program data; orphans; edge branches', () =
   });
   it('new-after-switch program, workstream and task appear in the assembled tree', () => {
     const s = run();
-    s.meta.programMeta.pgNew = { id: 'pgNew', name: 'New', raid: [], order: 2, pmUid: 'u9', deputyUid: null, start: null, end: null };
+    s.meta.programMeta.pgNew = { id: 'pgNew', name: 'New', order: 2, pmUid: 'u9', deputyUid: null, start: null, end: null };
+    s.raid.push({ id: 'pgNew', data: { programId: 'pgNew', items: [], version: 1 } });
     s.workstreams.push({ id: 'wNew', data: { id: 'wNew', name: 'WS New', programId: 'pgNew', order: 0, version: 1 } });
     s.tasks.push({ id: 'tNew', data: { id: 'tNew', name: 'T new', programId: 'pgNew', workstreamId: 'wNew', order: 0, version: 1 } });
     const { project, orphans } = asm(s);
     const pg = project.programs.find((x) => x.id === 'pgNew');
     expect(project.programs.map((x) => x.id)).toEqual(['pg1', 'pg2', 'pgNew']);
     expect(pg).toStrictEqual({ id: 'pgNew', name: 'New', raid: [], workstreams: [{ id: 'wNew', name: 'WS New', tasks: [{ id: 'tNew', name: 'T new' }] }] });
-    expect(orphans).toEqual({ workstreams: [], tasks: [], actions: [] });
+    expect(orphans).toEqual({ workstreams: [], tasks: [], actions: [], raid: [], missingRaid: [] });
   });
   it('programs without an id in a new entry take the programMeta key', () => {
     const s = run();
     s.meta.programMeta.pgX = { name: 'X', order: 5 };
-    expect(asm(s).project.programs.at(-1)).toStrictEqual({ id: 'pgX', name: 'X', workstreams: [] });
+    expect(asm(s).project.programs.at(-1)).toStrictEqual({ id: 'pgX', name: 'X', raid: [], workstreams: [] });
   });
   it('returns orphan ws and task docs instead of dropping them', () => {
     const s = run();
     s.workstreams.push({ id: 'wOrph', data: { id: 'wOrph', programId: 'nope', order: 0 } });
     s.tasks.push({ id: 'tOrph', data: { id: 'tOrph', workstreamId: 'nope', order: 0 } });
     const { project, orphans } = asm(s);
-    expect(orphans).toEqual({ workstreams: ['wOrph'], tasks: ['tOrph'], actions: [] });
+    expect(orphans).toEqual({ workstreams: ['wOrph'], tasks: ['tOrph'], actions: [], raid: [], missingRaid: [] });
     expect(JSON.stringify(project)).not.toContain('Orph');
+  });
+  it('programMeta has no raid; split makes one raid doc per program with items as-is', () => {
+    const s = run();
+    for (const m of Object.values(s.meta.programMeta)) expect(m.raid).toBeUndefined();
+    expect(s.raid.map((r) => r.id)).toEqual(['pg1', 'pg2']);
+    expect(s.raid[0].data).toEqual({ workspaceId: 'main', projectId: 'proj_fx', programId: 'pg1', items: fixture.programs[0].raid, version: 1 });
+    expect(s.raid[1].data.items).toEqual([]);
+  });
+  it('program without a raid key: no raid doc, stays absent', () => {
+    const p = clone(fixture);
+    delete p.programs[0].raid;
+    const s = run(p);
+    expect(s.raid.map((r) => r.id)).toEqual(['pg2']);
+    expect(s.meta.programMeta.pg1.__absent).toContain('raid');
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('duplicate programs keep separate raid docs', () => {
+    const p = clone(fixture);
+    p.programs.push(clone(p.programs[0]));
+    p.programs[2].workstreams = [];
+    p.programs[2].raid[0].title = 'second';
+    const s = run(p);
+    expect(s.raid.map((r) => r.id)).toEqual(['pg1', 'pg2', 'pg1__dup2']);
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('raid doc with an unknown program is an orphan and is not attached', () => {
+    const s = run();
+    s.raid.push({ id: 'nope', data: { programId: 'nope', items: [{ id: 'x' }], version: 1 } });
+    const { project, orphans } = asm(s);
+    expect(orphans.raid).toEqual(['nope']);
+    expect(JSON.stringify(project)).not.toContain('"x"');
+  });
+  it('missing raid doc for a program that had raid: raid [] + orphans.missingRaid', () => {
+    const s = run();
+    const { project, orphans } = assembleProject(s.meta, s.workstreams, s.tasks, s.actions);
+    expect(project.programs[0].raid).toEqual([]);
+    expect(orphans.missingRaid).toEqual(['pg1', 'pg2']);
+  });
+  it('a task under an orphan workstream is an orphan task', () => {
+    const s = run();
+    s.workstreams.push({ id: 'wOrph', data: { id: 'wOrph', programId: 'nope', order: 0 } });
+    s.tasks.push({ id: 'tUnder', data: { id: 'tUnder', workstreamId: 'wOrph', order: 0 } });
+    const { project, orphans } = asm(s);
+    expect(orphans.workstreams).toEqual(['wOrph']);
+    expect(orphans.tasks).toEqual(['tUnder']);
+    expect(JSON.stringify(project)).not.toContain('tUnder');
   });
   it('ws without tasks key, program without workstreams key, project without actionItems/programs', () => {
     const p = clone(fixture);
