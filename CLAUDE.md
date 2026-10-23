@@ -109,9 +109,9 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 ## Current Status
 
 - Phase (vibe-code): **4 — Iterate & Debug**, có loop-back về Phase 1–2 (spec phân quyền v2 đã viết và đã đối chiếu code)
-- Last updated: 22/10/2026
-- Commit production: `ef0dcc6` (22/10/2026, merge PR #7), Vercel tự deploy từ `main`
-- Firestore rules production: **bản B1** (`firestore.rules` tại commit `9c7024d`), HOD publish qua Console 22/10/2026 12:15. Bản trước: 29/4/2026 1:00 PM; hoàn tác = chọn lại bản đó trong lịch sử Rules trên Console
+- Last updated: 23/10/2026
+- Commit production: `eac99b5` (23/10/2026, merge PR #11 P1), Vercel tự deploy từ `main`
+- Firestore rules production: **bản P1** (B1 + `members`/`invites`), HOD publish qua Console 23/10/2026 6:35. Bản trước: B1 22/10/2026 12:15; hoàn tác = chọn lại bản đó trong lịch sử Rules trên Console
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
@@ -119,8 +119,12 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong: B0 merged (PR #2)
 - Đã xong (22/10): đợt B merged + deploy. PR #3 B1 owner lock; #4 B2/B3 save banner + `rev` stale-write guard + ghi tuần tự theo project; #5 B4 task panel resize/expand, Drop thay xóa, Undo, owner-only Restore/Delete project, contrast AA, Esc modal; #7 follow-ups; #8 tay kéo panel nhìn thấy được. Plan: `docs/superpowers/plans/2026-10-14-b2-b4-save-safety-and-task-panel.md`
 - Nợ kỹ thuật từ review đợt B: (1) kiểm `rev` chưa nguyên tử → đổi sang `runTransaction` trước khi onboard cả phòng; (2) helper thành viên trong `data.ts` tính `memberIds`/`roles` từ snapshot → dùng `arrayUnion`/`arrayRemove`/`roles.<uid>`; (3) Esc đóng Modal kể cả form đang sửa dở
-- P1: code trên draft PR #11 (`feat/p1-directory`), chờ dữ liệu HOD (Backup JSON, roster) + duyệt bản xem trước; dry-run từ PR #6 (`npm run p1:dryrun`)
+- Đã xong (23/10): **P1** merged (PR #11) + danh bạ ghi lên production 23/10 06:47 (7 `members`, 2 `invites`; manifest `p1-directory-manifest-2026-10-22T23-47-22-726Z.json` ở máy HOD, gitignored). HOD đã đối chiếu Credit/Activity. Tên hiển thị = username (HOD chọn); tên cũ là alias. Còn: HOD deactivate **Vannh** (đã nghỉ) trong People directory; HOD thu hồi service-account key đã dùng (file local đã xóa)
+- Nợ kỹ thuật P1 (Ruling S, T): My Work bỏ sót item lưu dưới tên Google của người thêm sau apply → `isMe` nhận cả `meKey` lẫn `personKey(author)`; lỗi trùng tên Google chặn `--apply` nhưng không nói nguồn → ghi nguồn trong thông báo
+- Đã đo (23/10, backup 22/10): doc lớn nhất CRP = 77 KB / 187 task (giới hạn 1 MiB) → rủi ro #4 thấp
+- Q4 (22/10): roster do HOD lập, chỉ Owner thêm người. Q5: `pmoTag` để sau P2
 - Ghi nhớ: project doc có trường `rev` (B3). Mọi đường ghi project phải đi qua `storage-shim.ts`; MembersModal chỉ `updateDoc` field thay đổi. Restore JSON bỏ qua stale guard nhưng không đụng trường owner
-- Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Còn kiểm: kích thước doc CRP (DESIGN 6.9)
-- Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q6 trong spec v2
+- Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Kích thước doc CRP đã kiểm (xem trên)
+- Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q3, Q6 trong spec v2
+- Tiếp theo: PR nhỏ cho Ruling S/T + `runTransaction` cho kiểm `rev`; rồi plan P2
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
