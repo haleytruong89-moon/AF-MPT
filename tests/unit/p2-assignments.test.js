@@ -4,7 +4,7 @@ import fixture from '../fixtures/v1-project.json';
 import { buildDirectoryIndex } from '../../src/directory.js';
 import { planPilotCopy, defaultNewPid } from '../../scripts/p2-pilot-copy.mjs';
 import { buildAssignmentTemplate } from '../../scripts/p2-migrate-dryrun.mjs';
-import { parseAssignmentsWorkbook, formatPreview } from '../../scripts/lib/assignments.mjs';
+import { parseAssignmentsWorkbook, formatPreview, applyAssignments } from '../../scripts/lib/assignments.mjs';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const dirIndex = buildDirectoryIndex([
@@ -40,10 +40,13 @@ describe('pilot copy assignments', () => {
     expect(meta.memberUids).toEqual(expect.arrayContaining([HOD, 'uid1', 'uid2', 'uid3']));
     expect(meta.memberIds).toEqual(expect.arrayContaining([HOD, 'uid1', 'uid2', 'uid3']));
     expect(new Set(meta.memberIds).size).toBe(meta.memberIds.length);
-    expect(report.assignments.programs).toEqual([{ id: 'pg1', name: 'Program One', PM: 'Alice Nguyen', Deputy: 'Dan Le' }]);
+    expect(report.assignments.programs[0].fields).toEqual([
+      { label: 'PM', old: null, new: 'Alice Nguyen' },
+      { label: 'Deputy', old: null, new: 'Dan Le' },
+    ]);
     expect(formatPreview(report.assignments)).toEqual([
-      'program pg1 (Program One): PM Alice Nguyen, Deputy Dan Le',
-      'workstream w1 (Program One / WS One): Sub-PM Bob, 2026-01-01 to 2026-06-30',
+      'program pg1 (Program One): PM - -> Alice Nguyen, Deputy - -> Dan Le',
+      'workstream w1 (Program One / WS One): Sub-PM - -> Bob, Start - -> 2026-01-01, End - -> 2026-06-30',
     ]);
   });
 
@@ -108,5 +111,35 @@ describe('pilot copy assignments', () => {
     expect(doc(writes, '/workstreams/w1').leadUid).toBe('uid2');
     // Template prefilled Start/End from tasks (w1: 2026-01-01..2026-01-31).
     expect(doc(writes, '/workstreams/w1')).toMatchObject({ start: '2026-01-01', end: '2026-01-31' });
+  });
+
+  it('preview shows old -> new where a value changes and (unchanged) where it does not', () => {
+    const base = plan(null).writes.map((w) => (w.path.endsWith('/workstreams/w1')
+      ? { ...w, data: { ...w.data, start: '2026-01-01', end: '2026-03-31', leadUid: 'uid1' } } : w));
+    const dir = { dirIndex, uidByEmail };
+    const r = applyAssignments(base, rows([], [
+      W({ 'Workstream id': 'w1', 'Sub-PM email': 'bob@smartosc.com', Start: '2026-02-01', End: '2026-03-31' }),
+    ]), dir, { projectNames: ['Fixture Project'] });
+    expect(r.errors).toEqual([]);
+    expect(formatPreview(r.preview)).toEqual([
+      'workstream w1 (Program One / WS One): Sub-PM Alice Nguyen -> Bob, Start 2026-01-01 -> 2026-02-01, End 2026-03-31 (unchanged)',
+    ]);
+  });
+
+  it('reports an ambiguous alias as ambiguous, not as unknown', () => {
+    const idx = buildDirectoryIndex([
+      { email: 'sam1@smartosc.com', displayName: 'Sam One', aliases: ['Sam'], status: 'active' },
+      { email: 'sam2@smartosc.com', displayName: 'Sam Two', aliases: ['Sam'], status: 'active' },
+    ]);
+    const dir = { dirIndex: idx, uidByEmail: new Map([['sam1@smartosc.com', 's1'], ['sam2@smartosc.com', 's2']]) };
+    const r = applyAssignments(plan(null).writes, rows([P({ 'Program id': 'pg1', 'PM email': 'Sam' })]), dir, { projectNames: ['Fixture Project'] });
+    expect(r.errors).toEqual(['Programs row 2: PM "Sam" is ambiguous: matches more than one person']);
+  });
+
+  it('accepts an Excel serial date and rejects a non-ISO string like 2026-1-5', () => {
+    const ok = plan(rows([], [W({ 'Workstream id': 'w1', Start: 46023, End: 46203 })]));
+    // 46023 = 2026-01-01, 46203 = 2026-06-30
+    expect(doc(ok.writes, '/workstreams/w1')).toMatchObject({ start: '2026-01-01', end: '2026-06-30' });
+    expect(() => plan(rows([], [W({ 'Workstream id': 'w1', Start: '2026-1-5' })]))).toThrow(/Start "2026-1-5" is not yyyy-mm-dd/);
   });
 });

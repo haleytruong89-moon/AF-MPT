@@ -3,6 +3,7 @@
 // p2-migrate-dryrun.mjs (sheet / column names are imported from there).
 import * as XLSX from 'xlsx';
 import { canonicalPerson } from '../../src/directory.js';
+import { foldName } from '../../src/identity.js';
 import { PROGRAMS_SHEET, WORKSTREAMS_SHEET } from '../p2-migrate-dryrun.mjs';
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -35,7 +36,13 @@ export function parseAssignmentsWorkbook(wb) {
 function resolveEmail(directory, raw) {
   const s = cell(raw);
   const p = canonicalPerson(directory.dirIndex, s);
-  if (!p.known) return { error: `"${s}" is not in the People directory` };
+  if (!p.known) {
+    const keys = [s.toLowerCase(), foldName(s)];
+    if ((directory.dirIndex?.conflicts || []).some((c) => keys.includes(c.alias))) {
+      return { error: `"${s}" is ambiguous: matches more than one person` };
+    }
+    return { error: `"${s}" is not in the People directory` };
+  }
   const uid = directory.uidByEmail.get(p.id);
   if (!uid) return { error: `"${s}" (${p.id}) is only invited and has no uid yet (the person must sign in first)` };
   return { uid, name: p.name };
@@ -65,13 +72,23 @@ export function applyAssignments(writes, rows, directory, { projectNames = [] } 
   const assigned = new Set();
   const preview = { programs: [], workstreams: [] };
   const seen = new Set();
-  const person = (raw, label, where, into) => {
-    if (!cell(raw)) return null;
-    const r = resolveEmail(directory, raw);
-    if (r.error) { errors.push(`${where}: ${label} ${r.error}`); return null; }
-    assigned.add(r.uid);
-    into[label] = r.name;
-    return r.uid;
+  const nameOfUid = (uid) => {
+    if (!uid) return null;
+    for (const [email, u] of directory.uidByEmail) {
+      if (u === uid) return canonicalPerson(directory.dirIndex, email).name;
+    }
+    return uid;
+  };
+  // Records { label, old, new } into `fields`; a blank cell keeps the current value.
+  const person = (raw, label, where, oldUid, fields) => {
+    let uid = null;
+    if (cell(raw)) {
+      const r = resolveEmail(directory, raw);
+      if (r.error) errors.push(`${where}: ${label} ${r.error}`);
+      else { assigned.add(r.uid); uid = r.uid; }
+    }
+    fields.push({ label, old: nameOfUid(oldUid), new: uid ? nameOfUid(uid) : nameOfUid(oldUid) });
+    return uid;
   };
 
   const progKeyFor = (r, where) => {
@@ -96,15 +113,15 @@ export function applyAssignments(writes, rows, directory, { projectNames = [] } 
     if (key === null) return;
     if (seen.has(`p:${key}`)) { errors.push(`${where}: program "${key}" is assigned twice`); return; }
     seen.add(`p:${key}`);
-    const who = {};
-    const pmUid = person(r['PM email'], 'PM', where, who);
-    const deputyUid = person(r['Deputy email'], 'Deputy', where, who);
+    const fields = [];
+    const pmUid = person(r['PM email'], 'PM', where, programMeta[key].pmUid, fields);
+    const deputyUid = person(r['Deputy email'], 'Deputy', where, programMeta[key].deputyUid, fields);
     programMeta[key] = {
       ...programMeta[key],
       ...(pmUid ? { pmUid } : {}),
       ...(deputyUid ? { deputyUid } : {}),
     };
-    preview.programs.push({ id: key, name: programMeta[key].name ?? key, ...who });
+    preview.programs.push({ id: key, name: programMeta[key].name ?? key, fields });
   });
 
   wsRows.forEach((r, i) => {
@@ -137,15 +154,17 @@ export function applyAssignments(writes, rows, directory, { projectNames = [] } 
     const wsId = doc.path.split('/')[5];
     if (seen.has(`w:${wsId}`)) { errors.push(`${where}: workstream "${wsId}" is assigned twice`); return; }
     seen.add(`w:${wsId}`);
-    const who = {};
-    const leadUid = person(r['Sub-PM email'], 'Sub-PM', where, who);
+    const fields = [];
+    const leadUid = person(r['Sub-PM email'], 'Sub-PM', where, doc.data.leadUid, fields);
+    const oldStart = doc.data.start ?? null;
+    const oldEnd = doc.data.end ?? null;
     if (leadUid) doc.data.leadUid = leadUid;
     if (ISO.test(start)) doc.data.start = start;
     if (ISO.test(end)) doc.data.end = end;
+    fields.push({ label: 'Start', old: oldStart, new: doc.data.start ?? null }, { label: 'End', old: oldEnd, new: doc.data.end ?? null });
     const pk = progOf.get(wsId);
     preview.workstreams.push({
-      id: wsId, program: programMeta[pk]?.name ?? pk, name: doc.data.name ?? wsId, ...who,
-      start: doc.data.start ?? null, end: doc.data.end ?? null,
+      id: wsId, program: programMeta[pk]?.name ?? pk, name: doc.data.name ?? wsId, fields,
     });
   });
 
@@ -164,14 +183,20 @@ export function applyAssignments(writes, rows, directory, { projectNames = [] } 
   return { writes: out, preview, errors };
 }
 
-// Printable preview: assigned names per program and workstream.
+// Printable preview: per program / workstream, `old -> new` where a value changes,
+// `value (unchanged)` otherwise ('-' = unset).
+const fmtField = (f) => {
+  const o = f.old ?? '-';
+  const n = f.new ?? '-';
+  return o === n ? `${f.label} ${n} (unchanged)` : `${f.label} ${o} -> ${n}`;
+};
 export function formatPreview(preview) {
   const lines = [];
   for (const p of preview.programs) {
-    lines.push(`program ${p.id} (${p.name}): PM ${p.PM ?? '-'}, Deputy ${p.Deputy ?? '-'}`);
+    lines.push(`program ${p.id} (${p.name}): ${p.fields.map(fmtField).join(', ')}`);
   }
   for (const w of preview.workstreams) {
-    lines.push(`workstream ${w.id} (${w.program} / ${w.name}): Sub-PM ${w['Sub-PM'] ?? '-'}, ${w.start ?? '?'} to ${w.end ?? '?'}`);
+    lines.push(`workstream ${w.id} (${w.program} / ${w.name}): ${w.fields.map(fmtField).join(', ')}`);
   }
   return lines;
 }
