@@ -1530,12 +1530,12 @@ async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
 // Only for owner-field changes (transfer, workspace default view); see metaForWrite().
 async function saveMetaOwnerFields(m) { return ssetShared(K.meta, JSON.stringify({ ...m, [OWNER_WRITE_FLAG]: true })); }
 async function loadProject(id) { const r = await sgetShared(K.project(id)); if (!r) return null; try { return JSON.parse(r); } catch { return null; } }
-// Returns 'ok' | 'conflict' | 'error' (B2/B3). Callers that ignore it keep working.
+// Returns 'ok' | 'conflict' | 'readonly' | 'error' (B2/B3, P2.2). Callers that ignore it keep working.
 async function saveProject(p) {
   try {
     const r = await window.storage.set(K.project(p.id), JSON.stringify(p), true);
     if (!r) return 'error';
-    return r.error === 'conflict' ? 'conflict' : 'ok';
+    return r.error === 'conflict' ? 'conflict' : r.error === 'readonly' ? 'readonly' : 'ok';
   } catch { return 'error'; }
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
@@ -2005,14 +2005,15 @@ function FieldLabel({ children }) {
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
 function SaveBanner({ saveState }) {
-  const { conflict: conflictNames, error: errorNames } = bannerGroups(saveState);
-  if (conflictNames.length + errorNames.length === 0) return null;
+  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames } = bannerGroups(saveState);
+  if (conflictNames.length + errorNames.length + readonlyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
   return (
     <div role="alert" style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 120, maxWidth: 'calc(100% - 40px)', background: TOK.blockerBg, color: TOK.blocker, border: '1px solid currentColor', borderRadius: 8, padding: '10px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
       <span>
         {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
+        {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
       </span>
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>

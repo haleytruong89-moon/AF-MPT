@@ -17,7 +17,8 @@ describe('buildDryRun', () => {
     const p = r.perProject[0];
     expect(p.before).toEqual(p.after);
     expect(p.roundTripOk).toBe(true);
-    expect(p.orphans).toEqual({ workstreams: 0, tasks: 0, actions: 0 });
+    expect(p.orphans).toEqual({ workstreams: 0, tasks: 0, actions: 0, raid: 0, missingRaid: 0 });
+    expect(p.after.raid).toBe(p.before.raid);
     expect(p.sizeKb).toBeGreaterThan(0);
     expect(p.maxTaskDocKb).toBeGreaterThan(0);
     expect(p.unresolved.length).toBeGreaterThan(0);
@@ -41,6 +42,19 @@ describe('buildDryRun', () => {
       },
     });
     expect(r.ok).toBe(false);
+  });
+  it('a missing raid doc or an orphan raid doc fails the round trip', () => {
+    const r = buildDryRun(fixture, entries, uidByEmail, {
+      assemble: (m, w, t, a, raid) => ({
+        project: clone(fixture.projects.p1),
+        orphans: { workstreams: [], tasks: [], actions: [], raid: [], missingRaid: ['pg1'] },
+      }),
+    });
+    expect(r.ok).toBe(false);
+  });
+  it('Summary has a RAID docs column', () => {
+    const wb = buildReportWorkbook(buildDryRun(fixture, entries, uidByEmail));
+    expect(rows(wb, 'Summary')[0]['RAID docs']).toMatch(/^[0-9]+ → [0-9]+$/);
   });
   it('rejects input that is not a backup', () => {
     expect(() => buildDryRun({}, [], new Map())).toThrow(/backup/);

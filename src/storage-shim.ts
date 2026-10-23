@@ -35,6 +35,7 @@ import {
 import { db } from './firebase';
 import { metaForWrite } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
+import { assembleFromSnapshots } from './readV2';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -51,6 +52,47 @@ const knownRev = new Map<string, number>();
 // Recent saves whose outcome is unknown (network error after commit was sent).
 const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a long outage may queue many autosaves)
 const projectWriteQueue = createKeyedQueue();
+
+// P2.2: a v2 project lives in sub-collections. One getDocs per sub-collection
+// (4 queries per load, never one per task); assembleProject sorts by `order`.
+// Any read failure returns null — never a partial tree. Saves are refused
+// upstream (buildProjectWrite → readonly), so __v2 is never persisted.
+const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'] as const;
+async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
+  let lists: Array<Array<{ id: string; data: Record<string, unknown> }>>;
+  try {
+    const snaps = await Promise.all(
+      V2_SUBCOLS.map((c) => getDocs(collection(db, 'workspaces', WORKSPACE, 'projects', pid, c))),
+    );
+    lists = snaps.map((s) => s.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> })));
+  } catch (e) {
+    console.warn('[storage] v2 sub-collection read failed:', key, e);
+    return null;
+  }
+  const [ws, tasks, actions, raid] = lists;
+  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid });
+  if (orphanCount > 0) {
+    console.warn('[storage] v2 project has orphans:', pid, {
+      workstreams: orphans.workstreams.length,
+      tasks: orphans.tasks.length,
+      actions: orphans.actions.length,
+      raid: orphans.raid.length,
+      missingRaid: orphans.missingRaid.length,
+    });
+  }
+  const {
+    memberIds: _mi, roles: _ro, deletedAt: _da, createdBy: _cb, createdAt: _ca, updatedAt: _ua, rev: _rv, writeId: _wi,
+    programMeta: _pm, memberUids: _mu, visibility: _vi, schemaVersion: _sv, v1Absent: _va,
+    ...rest
+  } = project as Record<string, unknown>;
+  void _mi; void _ro; void _da; void _cb; void _ca; void _ua; void _rv; void _wi;
+  void _pm; void _mu; void _vi; void _sv; void _va;
+  return {
+    key,
+    value: JSON.stringify({ id: pid, ...rest, __v2: { readOnly: true, orphans: orphanCount } }),
+    shared: true,
+  };
+}
 
 /** Per-user localStorage key for the "currently selected project". */
 function currentProjectKey(uid: string): string {
@@ -205,6 +247,7 @@ window.storage = {
         void createdBy;
         void createdAt;
         void updatedAt;
+        if (data.schemaVersion === 2) return await getV2Project(key, pid, data);
         return {
           key,
           value: JSON.stringify({ id: pid, ...rest }),
@@ -300,7 +343,7 @@ window.storage = {
         pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-50));
         // B3 debt: read, rev check and write in one transaction — Firestore re-runs
         // the function if another client writes in between, so no silent overwrite.
-        let result: { conflict: boolean; newRev?: number };
+        let result: { conflict?: boolean; readonly?: boolean; newRev?: number };
         try {
           result = await runTransaction(db, async (tx) => {
             let snap;
@@ -311,7 +354,7 @@ window.storage = {
             }
             const ex = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
             const plan = buildProjectWrite(ex, incoming, opts);
-            if (!plan.conflict && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
+            if (!plan.conflict && !plan.readonly && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
             return plan;
           });
         } catch (e) {
@@ -327,6 +370,12 @@ window.storage = {
           const plan = buildProjectWrite(null, incoming, opts);
           await setDoc(PROJECT_REF(pid), plan.doc);
           result = plan;
+        }
+        if (result.readonly) {
+          // v2 project: never written through the v1 path. Nothing reached the server.
+          pendingWriteIds.set(pid, (pendingWriteIds.get(pid) || []).filter((w) => w !== writeId));
+          console.warn('[storage] v2 project is read-only in this client; write skipped:', pid);
+          return { key, value, shared: true, error: 'readonly' };
         }
         if (result.conflict) {
           console.warn('[storage] project changed on server since load; write refused:', pid);

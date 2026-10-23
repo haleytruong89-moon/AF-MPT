@@ -145,7 +145,7 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
     await assertFails(up(LEAD2, `${P1}/tasks/t1`, { name: 'x' }));
     await assertFails(up(PM2, `${P1}/tasks/t1`, { name: 'x' }));
     await assertFails(up(VIEWER, `${P1}/tasks/t1`, { health: 'Red' }));
-    // contributorUids grants no write rights in P2 (LEAD2 is a contributor of t1).
+    // A contributor (LEAD2 on t1) may only append updates (P2.2), never change status.
     await assertFails(up(LEAD2, `${P1}/tasks/t1`, { status: 'Planned' }));
   });
 

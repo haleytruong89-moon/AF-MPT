@@ -55,6 +55,17 @@ describe('nextSaveState', () => {
     s = nextSaveState(s, 'p1', 'error', 'CRP');
     expect(s.p1.status).toBe('conflict');
   });
+  it('readonly is sticky: neither error nor ok clears it (only reload does)', () => {
+    let s = nextSaveState({}, 'p1', 'readonly', 'Pilot');
+    expect(s).toEqual({ p1: { status: 'readonly', name: 'Pilot' } });
+    const before = s;
+    s = nextSaveState(s, 'p1', 'error', 'Pilot');
+    expect(s).toBe(before);
+    s = nextSaveState(s, 'p1', 'ok', 'Pilot');
+    expect(s).toBe(before);
+    s = nextSaveState(s, 'p1', 'conflict', 'Pilot');
+    expect(s.p1.status).toBe('readonly');
+  });
 });
 
 describe('hasUnsavedWork', () => {
@@ -103,8 +114,13 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [] });
+    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [] });
+  });
+  it('lists readonly (v2 pilot) projects separately', () => {
+    expect(bannerGroups({
+      a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
+    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'] });
   });
 });
 
@@ -159,5 +175,44 @@ describe('buildProjectWrite — own write detection (review I1)', () => {
     expect(buildProjectWrite(null, inc, { uid: 'a', knownRev: 3, force: true, now: NOW }).newRev).toBe(1);
     const r = buildProjectWrite({ rev: 2, deletedAt: 'D', createdAt: 'C', memberIds: ['a'], roles: { a: 'owner' } }, inc, { uid: 'a', knownRev: 2, force: false, now: NOW });
     expect(r.doc).toMatchObject({ deletedAt: 'D', createdAt: 'C' });
+  });
+});
+
+describe('buildProjectWrite — v2 fields stay server-owned (P2.2 task 3)', () => {
+  const V2_KEYS = { programMeta: { p1: { x: 1 } }, memberUids: ['u1'], visibility: 'restricted', schemaVersion: 1 };
+  const opts = (o = {}) => ({ uid: 'a', knownRev: 5, force: false, now: 'TS', ...o });
+  it('ignores incoming v2 keys and keeps server values', () => {
+    const ex = { rev: 5, ...V2_KEYS };
+    const inc = { name: 'P', programMeta: { evil: 1 }, memberUids: ['x'], visibility: 'department', schemaVersion: 7 };
+    const { doc } = buildProjectWrite(ex, inc, opts());
+    expect(doc.programMeta).toEqual(V2_KEYS.programMeta);
+    expect(doc.memberUids).toEqual(['u1']);
+    expect(doc.visibility).toBe('restricted');
+    expect(doc.schemaVersion).toBe(1);
+  });
+  it.each(Object.keys(V2_KEYS))('preserves %s independently; omits it when absent on ex', (k) => {
+    const ex = { rev: 5, [k]: V2_KEYS[k] };
+    const inc = { name: 'P', ...V2_KEYS };
+    const { doc } = buildProjectWrite(ex, inc, opts());
+    for (const other of Object.keys(V2_KEYS)) {
+      if (other === k) expect(doc[other]).toEqual(V2_KEYS[k]);
+      else expect(other in doc).toBe(false);
+    }
+  });
+  it('omits all v2 keys on create even if incoming has them', () => {
+    const { doc } = buildProjectWrite(null, { name: 'P', ...V2_KEYS }, opts({ knownRev: undefined }));
+    for (const k of Object.keys(V2_KEYS)) expect(k in doc).toBe(false);
+  });
+  it('returns readonly for a v2 doc, even with force or stale rev', () => {
+    const ex = { rev: 9, schemaVersion: 2 };
+    expect(buildProjectWrite(ex, { name: 'P' }, opts())).toEqual({ readonly: true });
+    expect(buildProjectWrite(ex, { name: 'P' }, opts({ force: true }))).toEqual({ readonly: true });
+    expect(buildProjectWrite(ex, { name: 'P' }, opts({ knownRev: 9 }))).toEqual({ readonly: true });
+  });
+  it('never persists the client-only __v2 marker', () => {
+    const { doc } = buildProjectWrite({ rev: 5 }, { name: 'P', __v2: { readOnly: true, orphans: 0 } }, opts());
+    expect('__v2' in doc).toBe(false);
+    const created = buildProjectWrite(null, { name: 'P', __v2: { readOnly: true } }, opts({ knownRev: undefined }));
+    expect('__v2' in created.doc).toBe(false);
   });
 });

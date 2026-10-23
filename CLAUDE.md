@@ -110,8 +110,8 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 
 - Phase (vibe-code): **4 — Iterate & Debug**, có loop-back về Phase 1–2 (spec phân quyền v2 đã viết và đã đối chiếu code)
 - Last updated: 23/10/2026
-- Commit production: `eac99b5` (23/10/2026, merge PR #11 P1), Vercel tự deploy từ `main`
-- Firestore rules production: **bản P1** (B1 + `members`/`invites`), HOD publish qua Console 23/10/2026 6:35. Bản trước: B1 22/10/2026 12:15; hoàn tác = chọn lại bản đó trong lịch sử Rules trên Console
+- Commit production: `1e87bfb` (23/10/2026, merge PR #17; gồm P2.1 #16, #12–#14), Vercel tự deploy từ `main`
+- Firestore rules production: **bản P1** (B1 + `members`/`invites`), HOD publish qua Console 23/10/2026 6:35. Bản trước: B1 22/10/2026 12:15; hoàn tác = chọn lại bản đó trong lịch sử Rules trên Console. **Chưa publish** rules P2.1 (`ownerUids` + v2 sub-collections) dù đã merge — cần publish trước khi chạy `p2-set-owner-uids`
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
@@ -125,6 +125,11 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Q4 (22/10): roster do HOD lập, chỉ Owner thêm người. Q5: `pmoTag` để sau P2
 - Ghi nhớ: project doc có trường `rev` (B3). Mọi đường ghi project phải đi qua `storage-shim.ts`; MembersModal chỉ `updateDoc` field thay đổi. Restore JSON bỏ qua stale guard nhưng không đụng trường owner
 - Điều kiện B1 đã xong (14/10): HOD tự sửa `workspaces/main.workspaceOwner` từ tên → `hattt4@smartosc.com` trong Console; app vẫn nhận HOD là owner. Kích thước doc CRP đã kiểm (xem trên)
-- Câu hỏi mở chờ HOD: giả định A1–A4, Q1–Q3, Q6 trong spec v2
-- Tiếp theo: PR nhỏ cho Ruling S/T + `runTransaction` cho kiểm `rev`; rồi plan P2
+- Đã xong (23/10): Ruling S/T (#13), `runTransaction` + `writeId` cho kiểm `rev` (#14) → nợ kỹ thuật (1) đợt B đã đóng
+- **P2** (roadmap `docs/superpowers/plans/2026-10-23-p2-roadmap.md`, mục "Contract fixed by P2.1" là ràng buộc cho P2.2–P2.4):
+  - P2.1 merged (#16): split/assemble, dry-run, `ownerUids` (+ khóa Transfer ownership trong app khi đã set), rules v2 theo vai trò. Còn: HOD publish rules; chạy `p2-set-owner-uids` (preview → duyệt → apply); HOD điền `p2-assignments.xlsx`
+  - P2.2 đang làm trên `feat/p2-2` (PR #18): gate (trường v2 chỉ Owner, RAID docs `raid/{programId}` — Ruling K′, contributor chỉ thêm update), v1 save giữ trường v2 từ server, đọc project v2 (read-only), pilot copy + compare. Pilot: Treasury 2026, chỉ tạo copy SAU khi bản app P2.2 đã live và HOD hard-refresh
+- HOD quyết (23/10): Q1 Decisions/RAID do mọi PM/Sub-PM của project ghi; A2/A3 1 PM (+Deputy) / program, 1 Sub-PM / WS; A4 Assignee không tự Completed/Dropped; contributor chỉ thêm update
+- Câu hỏi mở chờ HOD: giả định A1, Q2, Q3, Q6 trong spec v2
+- Tiếp theo: xong P2.2 → plan P2.3 (adapter ghi)
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
