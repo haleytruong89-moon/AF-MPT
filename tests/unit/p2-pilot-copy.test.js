@@ -32,8 +32,8 @@ const plan = (src = source(), extra = {}) =>
 // Rebuild the snapshot lists the read path would see from the planned writes.
 function snapshotsFrom(writes, pid) {
   const base = `workspaces/main/projects/${pid}`;
-  const out = { meta: null, ws: [], tasks: [], actions: [], raid: [] };
-  const col = { workstreams: 'ws', tasks: 'tasks', actions: 'actions', raid: 'raid' };
+  const out = { meta: null, ws: [], tasks: [], actions: [], raid: [], decisions: [] };
+  const col = { workstreams: 'ws', tasks: 'tasks', actions: 'actions', raid: 'raid', decisions: 'decisions' };
   for (const w of writes) {
     if (w.path === base) { out.meta = w.data; continue; }
     const [c, id] = w.path.slice(base.length + 1).split('/');
@@ -54,7 +54,7 @@ describe('planPilotCopy', () => {
       const segs = w.path.split('/');
       expect(segs.slice(0, 4)).toEqual(['workspaces', 'main', 'projects', NEW]);
       expect([4, 6]).toContain(segs.length);
-      if (segs.length === 6) expect(['workstreams', 'tasks', 'actions', 'raid']).toContain(segs[4]);
+      if (segs.length === 6) expect(['workstreams', 'tasks', 'actions', 'raid', 'decisions']).toContain(segs[4]);
       expect(segs).not.toContain(SRC);
       expect(w.merge).toBeFalsy();
     }
@@ -94,7 +94,7 @@ describe('planPilotCopy', () => {
       expect(w.data.version).toBe(1);
       expect(w.data.updatedBy).toBe('p2-pilot-copy');
     }
-    for (const kind of ['workstreams', 'tasks', 'actions', 'raid']) {
+    for (const kind of ['workstreams', 'tasks', 'actions', 'raid', 'decisions']) {
       expect(subs.some((w) => w.path.split('/')[4] === kind)).toBe(true);
     }
   });
@@ -108,7 +108,16 @@ describe('planPilotCopy', () => {
       tasks: writes.filter((w) => w.path.includes('/tasks/')).length,
       actions: writes.filter((w) => w.path.includes('/actions/')).length,
       raid: writes.filter((w) => w.path.includes('/raid/')).length,
+      decisions: writes.filter((w) => w.path.includes('/decisions/')).length,
     });
+  });
+
+  it('writes decision docs under decisions/ with the pilot stamp and projectId = newPid', () => {
+    const { writes } = plan();
+    const dec = writes.filter((w) => w.path.includes('/decisions/'));
+    expect(dec.length).toBeGreaterThan(0);
+    expect(dec[0].path).toBe('workspaces/main/projects/' + NEW + '/decisions/d1');
+    expect(dec[0].data).toMatchObject({ projectId: NEW, version: 1, updatedBy: 'p2-pilot-copy', title: 'Go' });
   });
 
   it('refuses newPid === sourcePid, a missing pid or a slash in a pid', () => {

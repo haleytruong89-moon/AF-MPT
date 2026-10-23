@@ -14,7 +14,7 @@ const uidByEmail = new Map([['alice@smartosc.com', 'uid1'], ['bob@smartosc.com',
 const run = (p = fixture) => splitProject(clone(p), { wid: 'main', dirIndex: dir, uidByEmail });
 const roundTrip = (p) => {
   const s = run(p);
-  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid).project;
+  return assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions).project;
 };
 
 describe('splitProject / assembleProject', () => {
@@ -24,7 +24,7 @@ describe('splitProject / assembleProject', () => {
   it('round-trips even when docs come back shuffled', () => {
     const s = run();
     const rev = (a) => [...a].reverse();
-    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions), rev(s.raid)).project).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, rev(s.workstreams), rev(s.tasks), rev(s.actions), rev(s.raid), rev(s.decisions)).project).toStrictEqual(fixture);
   });
   it('does not mutate its input', () => {
     const p = clone(fixture);
@@ -33,7 +33,7 @@ describe('splitProject / assembleProject', () => {
   });
   it('counts and programMeta', () => {
     const { report, meta } = run();
-    expect(report.counts).toEqual({ programs: 2, workstreams: 3, tasks: 4, actions: 2 });
+    expect(report.counts).toEqual({ programs: 2, workstreams: 3, tasks: 4, actions: 2, decisions: 1 });
     expect(meta.programMeta.pg2).toEqual({ id: 'pg2', name: 'Program Empty', order: 1, pmUid: null, deputyUid: null, start: null, end: null });
     expect(meta.programMeta.pg1.raid).toBeUndefined();
   });
@@ -78,7 +78,7 @@ describe('splitProject / assembleProject', () => {
     const s = splitProject(clone(fixture), { wid: 'main', dirIndex: null, uidByEmail: new Map() });
     expect(s.report.unresolved.length).toBeGreaterThan(0);
     expect(s.report.unresolved.some((u) => u.raw === 'BOD')).toBe(false);
-    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid).project).toStrictEqual(fixture);
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions).project).toStrictEqual(fixture);
   });
   it('action workstreamId from relatedTaskId, null otherwise', () => {
     const { actions } = run();
@@ -108,7 +108,7 @@ describe('splitProject / assembleProject', () => {
 });
 
 describe('Ruling C: programMeta owns program data; orphans; edge branches', () => {
-  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid);
+  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions);
 
   it('ignores the frozen meta.programs / meta.actionItems on assemble', () => {
     const s = run();
@@ -190,7 +190,7 @@ describe('Ruling C: programMeta owns program data; orphans; edge branches', () =
   });
   it('missing raid doc for a program that had raid: raid [] + orphans.missingRaid', () => {
     const s = run();
-    const { project, orphans } = assembleProject(s.meta, s.workstreams, s.tasks, s.actions);
+    const { project, orphans } = assembleProject(s.meta, s.workstreams, s.tasks, s.actions, [], s.decisions);
     expect(project.programs[0].raid).toEqual([]);
     expect(orphans.missingRaid).toEqual(['pg1', 'pg2']);
   });
@@ -254,5 +254,68 @@ describe('Ruling C: programMeta owns program data; orphans; edge branches', () =
   it('unresolved.where is the doc id', () => {
     const { report } = run();
     expect(report.unresolved[0].where).toBe('t1__dup2');
+  });
+});
+
+describe('P2.3 Task 2: decisions as docs; assemble strips write stamps', () => {
+  const asm = (s) => assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions);
+  it('splits decisions into docs (id = decision id, order = index, v2 fields)', () => {
+    const { decisions } = run();
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].id).toBe('d1');
+    expect(decisions[0].data).toEqual({
+      id: 'd1', title: 'Go', decidedBy: 'Alice Nguyen', workspaceId: 'main', projectId: 'proj_fx', order: 0, version: 1,
+    });
+  });
+  it('dup and id-less decisions get suffix / placeholder ids and round-trip', () => {
+    const p = clone(fixture);
+    p.decisions = [{ id: 'dx', title: 'A' }, { id: 'dx', title: 'B' }, { title: 'no id' }];
+    const s = run(p);
+    expect(s.decisions.map((d) => d.id)).toEqual(['dx', 'dx__dup2', '__decision_2']);
+    expect(s.report.duplicateIds).toContain('decision:dx');
+    expect(s.decisions[2].data.id).toBeUndefined();
+    expect(roundTrip(p)).toStrictEqual(p);
+    const rev = [...s.decisions].reverse();
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, rev).project).toStrictEqual(p);
+  });
+  it('absent decisions key stays absent; empty array stays empty', () => {
+    const p = clone(fixture);
+    delete p.decisions;
+    expect(run(p).meta.v1Absent).toContain('decisions');
+    expect(roundTrip(p)).toStrictEqual(p);
+    p.decisions = [];
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('rebuilds decisions from docs, ignoring the frozen meta copy', () => {
+    const s = run();
+    const docs = [{ id: 'd1', data: { ...s.decisions[0].data, title: 'Edited' } }];
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, docs).project.decisions[0].title).toBe('Edited');
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, []).project.decisions).toEqual([]);
+  });
+  it('strips version/updatedBy/updatedAt/viaProgramId/viaWorkstreamId from every item', () => {
+    const s = run();
+    const stamp = { version: 7, updatedBy: 'u9', updatedAt: 123, viaProgramId: 'pg1', viaWorkstreamId: 'w1' };
+    for (const list of [s.workstreams, s.tasks, s.actions, s.decisions]) for (const d of list) Object.assign(d.data, stamp);
+    expect(assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions).project).toStrictEqual(fixture);
+  });
+  it('keeps authorUid inside update entries (not stripped)', () => {
+    const p = clone(fixture);
+    p.programs[0].workstreams[0].tasks[0].updates = [{ text: 'x', authorUid: 'u1' }];
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+  it('restores v1 stamp-named values that were stashed at split time', () => {
+    const p = clone(fixture);
+    const task = p.programs[0].workstreams[0].tasks[0];
+    task.updatedBy = 'Legacy Person';
+    task.updatedAt = '2020-01-01';
+    p.decisions[0].version = 'v-old';
+    const s = run(p);
+    expect(s.report.collisions).toEqual(expect.arrayContaining([
+      { kind: 'task', id: task.id, key: 'updatedBy' },
+      { kind: 'decision', id: 'd1', key: 'version' },
+    ]));
+    // a writer then stamps the doc; assemble strips the stamp but restores the v1 value
+    s.tasks.find((t) => t.data.id === task.id && !t.id.includes('dup')).data.updatedBy = 'uid-writer';
+    expect(asm(s).project).toStrictEqual(p);
   });
 });

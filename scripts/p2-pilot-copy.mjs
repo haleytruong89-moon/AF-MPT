@@ -8,7 +8,7 @@
 //    visibility 'restricted', schemaVersion 2, rev 0, createdBy HOD.
 //    googleChatWebhook and deletedAt are dropped: a pilot must never post to the
 //    real Chat space.
-//  - workstreams / tasks / actions / raid sub-collections from splitProject, each
+//  - workstreams / tasks / actions / raid / decisions sub-collections from splitProject, each
 //    doc with projectId = newPid, version 1, updatedBy 'p2-pilot-copy'.
 //    The Admin SDK bypasses the rules; updatedBy is a script id (not a uid) BY
 //    DESIGN so the docs are traceable to this script. The first in-app write
@@ -38,7 +38,7 @@ import { buildDirectoryIndex } from '../src/directory.js';
 const WID = 'main';
 const WS = `workspaces/${WID}`;
 const PROJECTS = `${WS}/projects`;
-export const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'];
+export const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'];
 export const PILOT_STAMP = 'p2-pilot-copy';
 const norm = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -77,7 +77,7 @@ export function directoryFrom(memberDocs, inviteDocs) {
   return { dirIndex: buildDirectoryIndex(entries), uidByEmail };
 }
 
-// Every path must be the new project doc or a doc of one of its 4 sub-collections,
+// Every path must be the new project doc or a doc of one of its 5 sub-collections,
 // and no segment may be the source pid.
 function assertPathSafe(path, sourcePid, newPid) {
   const segs = path.split('/');
@@ -122,10 +122,10 @@ export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirI
 
   const base = `${PROJECTS}/${newPid}`;
   const writes = [{ path: base, data: meta }];
-  const lists = { workstreams: split.workstreams, tasks: split.tasks, actions: split.actions, raid: split.raid };
+  const lists = { workstreams: split.workstreams, tasks: split.tasks, actions: split.actions, raid: split.raid, decisions: split.decisions };
   for (const kind of SUBCOLS) {
     for (const d of lists[kind]) {
-      if (hasOwn(d.data, 'updatedBy')) {
+      if (hasOwn(d.data, 'updatedBy') || (d.data.__v1 && hasOwn(d.data.__v1, 'updatedBy'))) {
         throw new Error(`${kind}/${d.id} already has a v1 updatedBy; the pilot stamp would overwrite it`);
       }
       writes.push({
@@ -144,6 +144,7 @@ export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirI
       tasks: split.tasks.length,
       actions: split.actions.length,
       raid: split.raid.length,
+      decisions: split.decisions.length,
     },
     totalWrites: writes.length,
   };

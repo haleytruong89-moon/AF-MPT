@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { assembleFromSnapshots } from '../src/readV2.js';
 
 const PROJECTS = 'workspaces/main/projects';
-const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'];
+const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'];
 
 export const IGNORED_TOP = [
   'id', 'name', 'memberIds', 'roles', 'createdBy', 'createdAt', 'updatedAt', 'rev', 'writeId', 'deletedAt',
@@ -25,30 +25,6 @@ export const IGNORED_TOP = [
 function stripTop(project) {
   const out = { ...project };
   for (const k of IGNORED_TOP) delete out[k];
-  return out;
-}
-
-// The copy's workstream / task / action docs carry the script's updatedBy stamp,
-// which assemble keeps (it is not a v1 key; planPilotCopy refuses a source item
-// that already has one).
-function stripStamps(project) {
-  const drop = (o) => {
-    if (!o || typeof o !== 'object') return o;
-    const { updatedBy: _u, ...rest } = o;
-    void _u;
-    return rest;
-  };
-  const out = { ...project };
-  if (Array.isArray(out.programs)) {
-    out.programs = out.programs.map((p) => (p && Array.isArray(p.workstreams)
-      ? { ...p, workstreams: p.workstreams.map((w) => {
-        const ws = drop(w);
-        if (Array.isArray(ws.tasks)) ws.tasks = ws.tasks.map(drop);
-        return ws;
-      }) }
-      : p));
-  }
-  if (Array.isArray(out.actionItems)) out.actionItems = out.actionItems.map(drop);
   return out;
 }
 
@@ -77,7 +53,7 @@ export function diffPaths(a, b, limit = 10, path = '', out = []) {
 // Pure. source = v1 project doc data; assembled = assembleFromSnapshots(...).project.
 export function compareTrees(source, assembled, limit = 10) {
   const a = stripTop(source);
-  const b = stripStamps(stripTop(assembled));
+  const b = stripTop(assembled);
   if (isDeepStrictEqual(a, b)) return { equal: true, diffs: [] };
   return { equal: false, diffs: diffPaths(a, b, limit) };
 }
@@ -97,8 +73,8 @@ export async function comparePilot(db, sourcePid, copyPid) {
   if (!copy.exists) throw new Error(`Copy ${PROJECTS}/${copyPid} not found`);
   const meta = copy.data();
   if (meta.schemaVersion !== 2) throw new Error(`Copy ${copyPid} is not schemaVersion 2`);
-  const [ws, tasks, actions, raid] = await Promise.all(SUBCOLS.map((c) => docsOf(db, `${PROJECTS}/${copyPid}/${c}`)));
-  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid });
+  const [ws, tasks, actions, raid, decisions] = await Promise.all(SUBCOLS.map((c) => docsOf(db, `${PROJECTS}/${copyPid}/${c}`)));
+  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   const r = compareTrees(src.data(), project);
   return { ...r, orphanCount, orphans };
 }

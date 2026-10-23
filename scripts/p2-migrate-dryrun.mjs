@@ -33,7 +33,7 @@ export function buildDryRun(backup, directoryEntries, uidByEmail, opts = {}) {
   for (const [key, project] of Object.entries(backup.projects)) {
     const name = project?.name || key;
     const s = splitProject(project, { wid: 'main', dirIndex, uidByEmail });
-    const back = assemble(s.meta, s.workstreams, s.tasks, s.actions, s.raid);
+    const back = assemble(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions);
     const orphans = {
       workstreams: back?.orphans?.workstreams?.length ?? 0,
       tasks: back?.orphans?.tasks?.length ?? 0,
@@ -43,7 +43,7 @@ export function buildDryRun(backup, directoryEntries, uidByEmail, opts = {}) {
     };
     const orphanTotal = orphans.workstreams + orphans.tasks + orphans.actions + orphans.raid + orphans.missingRaid;
     const roundTripOk = isDeepStrictEqual(back?.project, project) && orphanTotal === 0;
-    const v1Counts = { programs: 0, workstreams: 0, tasks: 0, actions: (project.actionItems || []).length, raid: 0 };
+    const v1Counts = { programs: 0, workstreams: 0, tasks: 0, actions: (project.actionItems || []).length, decisions: (project.decisions || []).length, raid: 0 };
     for (const p of project.programs || []) {
       v1Counts.programs++;
       if (p && Object.prototype.hasOwnProperty.call(p, 'raid')) v1Counts.raid++;
@@ -52,7 +52,7 @@ export function buildDryRun(backup, directoryEntries, uidByEmail, opts = {}) {
     perProject.push({
       name,
       before: v1Counts,
-      after: { ...s.report.counts, raid: s.raid.length },
+      after: { ...s.report.counts, decisions: s.decisions.length, raid: s.raid.length },
       roundTripOk,
       orphans,
       sizeKb: kb(s.meta), // largest single doc after the split
@@ -75,6 +75,7 @@ export function buildReportWorkbook(result) {
     Workstreams: arrow(p.before, p.after, 'workstreams'),
     Tasks: arrow(p.before, p.after, 'tasks'),
     Actions: arrow(p.before, p.after, 'actions'),
+    Decisions: arrow(p.before, p.after, 'decisions'),
     'RAID docs': arrow(p.before, p.after, 'raid'),
     'Round trip OK': p.roundTripOk ? 'yes' : 'NO',
     Orphans: p.orphans.workstreams + p.orphans.tasks + p.orphans.actions + p.orphans.raid + p.orphans.missingRaid,

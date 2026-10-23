@@ -54,10 +54,10 @@ const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a 
 const projectWriteQueue = createKeyedQueue();
 
 // P2.2: a v2 project lives in sub-collections. One getDocs per sub-collection
-// (4 queries per load, never one per task); assembleProject sorts by `order`.
+// (5 queries per load, never one per task); assembleProject sorts by `order`.
 // Any read failure returns null — never a partial tree. Saves are refused
 // upstream (buildProjectWrite → readonly), so __v2 is never persisted.
-const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'] as const;
+const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'] as const;
 async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
   let lists: Array<Array<{ id: string; data: Record<string, unknown> }>>;
   try {
@@ -69,8 +69,8 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
     console.warn('[storage] v2 sub-collection read failed:', key, e);
     return null;
   }
-  const [ws, tasks, actions, raid] = lists;
-  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid });
+  const [ws, tasks, actions, raid, decisions] = lists;
+  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   if (orphanCount > 0) {
     console.warn('[storage] v2 project has orphans:', pid, {
       workstreams: orphans.workstreams.length,
