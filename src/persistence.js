@@ -20,7 +20,8 @@ export function nextRev(serverRev) {
 }
 
 // One banner entry per project. 'ok' clears it; 'conflict' is sticky until reload.
-// 'readonly' (v2 pilot project) is stickier: a v2 project never saves, so even 'ok' keeps it.
+// 'readonly' (a v2 doc reaching the v1 write path; unreachable since P2.3) is stickier:
+// even 'ok' keeps it. 'denied' / 'refused' (P2.3) are per attempt, like 'error'.
 export function nextSaveState(prev, pid, status, name) {
   const cur = prev[pid];
   if (cur && cur.status === 'readonly') return prev;
@@ -63,10 +64,12 @@ export function failedRestores(results) {
 }
 
 // Banner wording per failure kind (a mixed state must not call an error a conflict).
+// P2.3: 'denied' (rules refused part of a v2 save) and 'refused' (the planner refused
+// a task delete / history wipe) are per attempt: nextSaveState lets a later 'ok' clear them.
 export function bannerGroups(saveState) {
-  const out = { conflict: [], error: [], readonly: [] };
+  const out = { conflict: [], error: [], readonly: [], denied: [], refused: [] };
   for (const v of Object.values(saveState || {})) {
-    (v.status === 'conflict' ? out.conflict : v.status === 'readonly' ? out.readonly : out.error).push(v.name);
+    (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }
   return out;
 }
