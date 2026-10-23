@@ -4,6 +4,7 @@ import { buildDirectoryIndex } from '../../src/directory.js';
 import { assembleFromSnapshots } from '../../src/readV2.js';
 import {
   planPilotCopy, defaultNewPid, resolveOwnerUid, assertPilotManifest, targetIsEmpty,
+  rollbackPilotCopy, applyPilotCopy,
 } from '../../scripts/p2-pilot-copy.mjs';
 import { compareTrees } from '../../scripts/p2-compare.mjs';
 
@@ -175,17 +176,126 @@ describe('resolveOwnerUid', () => {
   });
 });
 
+const P = (rest = '') => `workspaces/main/projects/${NEW}${rest}`;
+const man = (extra = {}, entries = [{ path: P(), before: null }, { path: P('/tasks/t1'), before: null }]) =>
+  ({ kind: 'p2-pilot-copy', sourcePid: SRC, newPid: NEW, createdAt: 'x', entries, ...extra });
+
 describe('assertPilotManifest', () => {
-  const e = (path) => ({ path, before: null });
-  it('accepts a manifest of new docs under one project', () => {
-    expect(assertPilotManifest({ entries: [e(`workspaces/main/projects/${NEW}`), e(`workspaces/main/projects/${NEW}/tasks/t1`)] })).toBe(NEW);
+  it('accepts a tagged manifest of new docs under newPid', () => {
+    expect(assertPilotManifest(man())).toBe(NEW);
   });
-  it('rejects before-images, merges, mixed or foreign paths', () => {
-    expect(() => assertPilotManifest({ entries: [{ path: `workspaces/main/projects/${NEW}`, before: { a: 1 } }] })).toThrow();
-    expect(() => assertPilotManifest({ entries: [{ path: `workspaces/main/projects/${NEW}`, merge: true, fields: [], before: {} }] })).toThrow();
-    expect(() => assertPilotManifest({ entries: [e(`workspaces/main/projects/${NEW}`), e('workspaces/main/projects/other/tasks/t1')] })).toThrow();
-    expect(() => assertPilotManifest({ entries: [e('workspaces/main')] })).toThrow();
-    expect(() => assertPilotManifest({ entries: [] })).toThrow();
+  it('rejects a wrong or missing kind', () => {
+    expect(() => assertPilotManifest(man({ kind: 'p2-owner-uids' }))).toThrow(/kind/);
+    const { kind: _k, ...untagged } = man();
+    void _k;
+    expect(() => assertPilotManifest(untagged)).toThrow(/kind/);
+  });
+  it('rejects newPid === sourcePid or missing pids', () => {
+    expect(() => assertPilotManifest(man({ newPid: SRC }))).toThrow(/equals sourcePid/);
+    expect(() => assertPilotManifest(man({ newPid: undefined }))).toThrow(/sourcePid \/ newPid/);
+  });
+  it('rejects entries whose pid differs from newPid (e.g. the source)', () => {
+    const tampered = man({}, [{ path: `workspaces/main/projects/${SRC}`, before: null }]);
+    expect(() => assertPilotManifest(tampered)).toThrow(/not under newPid/);
+    expect(() => assertPilotManifest(man({}, [{ path: P(), before: null }, { path: 'workspaces/main/projects/other/tasks/t1', before: null }]))).toThrow(/not under newPid/);
+  });
+  it('rejects before-images, merges, odd shapes and empty manifests', () => {
+    expect(() => assertPilotManifest(man({}, [{ path: P(), before: { a: 1 } }]))).toThrow(/before-image/);
+    expect(() => assertPilotManifest(man({}, [{ path: P(), merge: true, fields: [], before: {} }]))).toThrow(/merge/);
+    expect(() => assertPilotManifest(man({}, [{ path: 'workspaces/main', before: null }]))).toThrow(/unexpected path/);
+    expect(() => assertPilotManifest(man({}, [{ path: P('/members/x'), before: null }]))).toThrow(/unexpected path/);
+    expect(() => assertPilotManifest(man({}, []))).toThrow(/no entries/);
+  });
+});
+
+// Minimal in-memory Admin-like Firestore: doc get/set/delete/listCollections,
+// collection get/listDocuments. `hideCollections` makes listCollections lie (to
+// simulate a doc appearing between the emptiness check and the write).
+function fakeStore(seed = {}, { hideCollections = false } = {}) {
+  const docs = new Map(Object.entries(seed));
+  const childCols = (path) => {
+    const n = path.split('/').length;
+    const ids = new Set();
+    for (const k of docs.keys()) if (k.startsWith(`${path}/`) && k.split('/').length >= n + 2) ids.add(k.split('/')[n]);
+    return [...ids];
+  };
+  const docsIn = (col) => [...docs.keys()].filter((k) => k.startsWith(`${col}/`) && k.split('/').length === col.split('/').length + 1);
+  const db = {
+    docs,
+    doc: (path) => ({
+      id: path.split('/').pop(),
+      get: async () => ({ exists: docs.has(path), data: () => docs.get(path) }),
+      set: async (data) => { docs.set(path, data); },
+      delete: async () => { docs.delete(path); },
+      listCollections: async () => (hideCollections ? [] : childCols(path).map((id) => ({
+        id,
+        listDocuments: async () => docsIn(`${path}/${id}`).map((k) => ({ id: k.split('/').pop() })),
+      }))),
+    }),
+    collection: (col) => ({
+      get: async () => ({ forEach: (fn) => docsIn(col).forEach((k) => fn({ id: k.split('/').pop(), data: () => docs.get(k) })) }),
+    }),
+  };
+  return db;
+}
+const pilotDoc = { name: '[v2 pilot] Fixture Project', schemaVersion: 2 };
+const noTs = { FieldValue: {}, Timestamp: class {} };
+
+describe('rollbackPilotCopy (fake db)', () => {
+  it('deletes the manifest paths when the live doc is a pilot copy', async () => {
+    const db = fakeStore({ [P()]: pilotDoc, [P('/tasks/t1')]: { x: 1 } });
+    const r = await rollbackPilotCopy(db, man(), noTs);
+    expect(r).toMatchObject({ deleted: 2, restored: 0, newPid: NEW, leftover: [] });
+    expect(db.docs.size).toBe(0);
+  });
+  it('refuses (deletes nothing) when the live doc at newPid is not a pilot copy', async () => {
+    for (const live of [
+      { name: 'Treasury 2026', schemaVersion: 2 },
+      { name: '[v2 pilot] X' },
+      { name: '[v2 pilot] X', schemaVersion: 1 },
+    ]) {
+      const db = fakeStore({ [P()]: live, [P('/tasks/t1')]: { x: 1 } });
+      await expect(rollbackPilotCopy(db, man(), noTs)).rejects.toThrow(/not a pilot copy/);
+      expect(db.docs.size).toBe(2);
+    }
+  });
+  it('refuses a wrong kind or a pid mismatch before reading anything', async () => {
+    const db = fakeStore({ [`workspaces/main/projects/${SRC}`]: { name: 'Real' } });
+    await expect(rollbackPilotCopy(db, man({ kind: 'other' }), noTs)).rejects.toThrow(/kind/);
+    await expect(rollbackPilotCopy(db, man({ newPid: SRC, sourcePid: 'x' }), noTs)).rejects.toThrow(/not under newPid/);
+    expect(db.docs.size).toBe(1);
+  });
+  it('project doc already gone: deletes only sub-doc entries and reports leftovers', async () => {
+    const db = fakeStore({ [P('/tasks/t1')]: { x: 1 }, [P('/tasks/stray')]: { y: 1 } });
+    const r = await rollbackPilotCopy(db, man(), noTs);
+    expect(r.deleted).toBe(1);
+    expect(r.leftover).toEqual(['tasks/stray']);
+    expect(db.docs.has(P('/tasks/stray'))).toBe(true);
+  });
+});
+
+describe('applyPilotCopy (fake db)', () => {
+  const seedBase = () => ({
+    'workspaces/main': { workspaceOwner: 'hattt4@smartosc.com' },
+    'workspaces/main/members/u_hod': { email: 'hattt4@smartosc.com', status: 'active' },
+    [`workspaces/main/projects/${SRC}`]: source(),
+  });
+  it('writes a tagged manifest before the first write', async () => {
+    const db = fakeStore(seedBase());
+    let m;
+    const r = await applyPilotCopy(db, { sourcePid: SRC, Timestamp: class {}, writeManifest: (x) => { m = x; } });
+    expect(m).toMatchObject({ kind: 'p2-pilot-copy', sourcePid: SRC, newPid: NEW });
+    expect(assertPilotManifest(m)).toBe(NEW);
+    expect(m.entries).toHaveLength(r.written);
+  });
+  it('refuses with no writes when a before-image is non-null (doc appeared after the check)', async () => {
+    const db = fakeStore({ ...seedBase(), [P('/tasks/t2')]: { stray: true } }, { hideCollections: true });
+    const before = new Map(db.docs);
+    let wrote = false;
+    await expect(applyPilotCopy(db, { sourcePid: SRC, Timestamp: class {}, writeManifest: () => { wrote = true; } }))
+      .rejects.toThrow(/already exist.*Nothing was written/);
+    expect(wrote).toBe(false);
+    expect(db.docs).toEqual(before);
   });
 });
 

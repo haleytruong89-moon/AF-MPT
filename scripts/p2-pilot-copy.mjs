@@ -17,8 +17,11 @@
 // Source safety: the source project is only READ. Every planned path is checked to
 // be under workspaces/main/projects/<newPid> with no segment equal to the source
 // pid; --apply refuses if anything already exists at <newPid> (doc or any
-// sub-collection). The manifest therefore holds only new docs (before = null) and
-// --rollback deletes exactly those paths. p2-*-manifest*.json is gitignored.
+// sub-collection), and again if any before-image captured just before writing is
+// non-null. The manifest (tagged kind p2-pilot-copy + sourcePid + newPid) holds only
+// new docs; --rollback deletes exactly those paths, and only after checking the LIVE
+// doc at newPid is a pilot copy (rollbackPilotCopy). Leftover docs are reported, never
+// deleted (exit 2). p2-*-manifest*.json is gitignored.
 //
 // Usage:
 //   node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--key service-account.json]            (preview, read-only)
@@ -178,44 +181,105 @@ export async function preparePilotCopy(db, { sourcePid, newPid = defaultNewPid(s
   return { writes, report, ownerUid: owner.uid, newPid };
 }
 
+export const MANIFEST_KIND = 'p2-pilot-copy';
+export const PILOT_NAME_PREFIX = '[v2 pilot] ';
+
 // Non-CLI core of --apply (used by the emulator test).
+// The manifest is tagged { kind, sourcePid, newPid } so --rollback can refuse
+// anything that is not this script's output. applyWrites captures the
+// before-images just before writing and calls writeManifest before the first
+// write: if any before-image is non-null (a doc appeared at newPid after the
+// emptiness check), we throw there and nothing is written.
 export async function applyPilotCopy(db, { sourcePid, newPid = defaultNewPid(sourcePid), now, Timestamp, writeManifest }) {
   const prepared = await preparePilotCopy(db, { sourcePid, newPid, now });
   const t = await targetIsEmpty(db, newPid);
   if (!t.empty) throw new Error(`Refusing to apply: ${t.reason}. Roll back or pick another --new-pid.`);
-  const r = await applyWrites(db, prepared.writes, { Timestamp, writeManifest });
+  const r = await applyWrites(db, prepared.writes, {
+    Timestamp,
+    writeManifest: (m) => {
+      const taken = m.entries.filter((e) => e.merge || e.before !== null).map((e) => e.path);
+      if (taken.length) throw new Error(`Refusing to apply: docs already exist at ${taken.slice(0, 5).join(', ')}. Nothing was written.`);
+      writeManifest({ kind: MANIFEST_KIND, sourcePid, newPid, ...m });
+    },
+  });
   return { ...prepared, written: r.written };
 }
 
-// A pilot manifest may only hold new docs (before null, no merge) under ONE
-// workspaces/main/projects/<pid>. Returns that pid.
+// A pilot manifest: kind 'p2-pilot-copy', newPid !== sourcePid, and only new docs
+// (before null, no merge) at workspaces/main/projects/<newPid> or its 4
+// sub-collections. Returns newPid. Pure: the live check is in rollbackPilotCopy.
 export function assertPilotManifest(manifest) {
-  const entries = manifest?.entries;
+  if (manifest?.kind !== MANIFEST_KIND) throw new Error(`Not a pilot-copy manifest (kind ${JSON.stringify(manifest?.kind ?? null)})`);
+  const { sourcePid, newPid } = manifest;
+  if (!validPid(sourcePid) || !validPid(newPid)) throw new Error('Manifest lacks sourcePid / newPid');
+  if (newPid === sourcePid) throw new Error('Manifest newPid equals sourcePid');
+  const entries = manifest.entries;
   if (!Array.isArray(entries) || !entries.length) throw new Error('Manifest has no entries');
-  let pid = null;
   for (const e of entries) {
     const segs = String(e.path || '').split('/');
     if (e.merge || e.before !== null) throw new Error(`Not a pilot-copy manifest: ${e.path} has a before-image or merge`);
     if (segs.length < 4 || segs[0] !== 'workspaces' || segs[1] !== WID || segs[2] !== 'projects') {
       throw new Error(`Not a pilot-copy manifest: unexpected path ${e.path}`);
     }
-    if (!(segs.length === 4 || (segs.length === 6 && SUBCOLS.includes(segs[4])))) {
+    if (!(segs.length === 4 || (segs.length === 6 && SUBCOLS.includes(segs[4]) && segs[5] !== ''))) {
       throw new Error(`Not a pilot-copy manifest: unexpected path ${e.path}`);
     }
-    if (pid === null) pid = segs[3];
-    else if (segs[3] !== pid) throw new Error(`Manifest spans several projects (${pid}, ${segs[3]})`);
+    if (segs[3] !== newPid) throw new Error(`Manifest entry ${e.path} is not under newPid ${newPid}`);
   }
-  return pid;
+  return newPid;
+}
+
+// Sub-collection docs still under the target: ['tasks/t1', ...] (at most `limit`).
+export async function leftoverUnder(db, pid, limit = 50) {
+  const ref = db.doc(`${PROJECTS}/${pid}`);
+  const out = [];
+  if ((await ref.get()).exists) out.push('(project doc)');
+  for (const c of await ref.listCollections()) {
+    for (const d of await c.listDocuments()) {
+      out.push(`${c.id}/${d.id}`);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
+// Rollback = delete every path in the manifest, after checking:
+//  - assertPilotManifest (kind, pids, paths all under newPid);
+//  - the LIVE project doc at newPid is a pilot copy (schemaVersion 2 and a name
+//    starting with '[v2 pilot] '), so a hand-edited manifest naming a real
+//    project cannot delete it.
+// If the project doc is already gone (e.g. a partial earlier rollback), only the
+// sub-doc entries are processed; they are still under newPid. Docs not in the
+// manifest are never deleted: they are returned in `leftover` for a human to look at.
+export async function rollbackPilotCopy(db, manifest, { FieldValue, Timestamp }) {
+  const newPid = assertPilotManifest(manifest);
+  const snap = await db.doc(`${PROJECTS}/${newPid}`).get();
+  let entries = manifest.entries;
+  if (snap.exists) {
+    const d = snap.data() || {};
+    if (d.schemaVersion !== 2 || typeof d.name !== 'string' || !d.name.startsWith(PILOT_NAME_PREFIX)) {
+      throw new Error(`Refusing rollback: ${PROJECTS}/${newPid} is not a pilot copy (needs schemaVersion 2 and a name starting "${PILOT_NAME_PREFIX}"). Nothing was deleted.`);
+    }
+  } else {
+    entries = entries.filter((e) => e.path.split('/').length === 6);
+  }
+  const r = await rollbackManifest(db, { ...manifest, entries }, { FieldValue, Timestamp });
+  return { ...r, newPid, leftover: await leftoverUnder(db, newPid) };
 }
 
 function parseArgs(argv) {
   const o = { pos: [], apply: false, key: 'service-account.json', rollback: null, newPid: null };
+  const value = (i, flag) => {
+    const v = argv[i];
+    if (v === undefined || v === '' || v.startsWith('--')) { console.error(`${flag} needs a value`); process.exit(1); }
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
-    else if (a === '--key') o.key = argv[++i];
-    else if (a === '--rollback') o.rollback = argv[++i];
-    else if (a === '--new-pid') o.newPid = argv[++i];
+    else if (a === '--key') o.key = value(++i, a);
+    else if (a === '--rollback') o.rollback = value(++i, a);
+    else if (a === '--new-pid') o.newPid = value(++i, a);
     else if (a.startsWith('--')) { console.error(`Unknown argument: ${a}`); process.exit(1); }
     else o.pos.push(a);
   }
@@ -239,10 +303,16 @@ async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.rollback) {
     const manifest = JSON.parse(fs.readFileSync(o.rollback, 'utf8'));
-    const pid = assertPilotManifest(manifest);
+    assertPilotManifest(manifest); // offline checks before any Firestore access
     const { db, FieldValue, Timestamp } = await openDb(o.key);
-    const r = await rollbackManifest(db, manifest, { FieldValue, Timestamp });
-    console.log(`Rollback of pilot ${pid} done: ${r.deleted} deleted, ${r.restored} restored.`);
+    const r = await rollbackPilotCopy(db, manifest, { FieldValue, Timestamp });
+    console.log(`Rollback of pilot ${r.newPid}: ${r.deleted} deleted, ${r.restored} restored.`);
+    if (r.leftover.length) {
+      console.error(`NOT EMPTY: docs remain under ${PROJECTS}/${r.newPid} (not in the manifest, left untouched):`);
+      for (const p of r.leftover) console.error(`  ${p}`);
+      process.exit(2);
+    }
+    console.log(`${PROJECTS}/${r.newPid} is empty.`);
     return;
   }
   const [sourcePid] = o.pos;

@@ -121,7 +121,10 @@ async function main() {
   const pos = [];
   let key = 'service-account.json';
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--key') key = argv[++i];
+    if (argv[i] === '--key') {
+      key = argv[++i];
+      if (key === undefined || key === '' || key.startsWith('--')) { console.error('--key needs a value'); process.exit(1); }
+    }
     else if (argv[i].startsWith('--')) { console.error(`Unknown argument: ${argv[i]}`); process.exit(1); }
     else pos.push(argv[i]);
   }

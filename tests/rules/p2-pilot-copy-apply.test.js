@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { initializeApp, deleteApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { rollbackManifest } from '../../scripts/lib/manifest.mjs';
-import { applyPilotCopy, assertPilotManifest, defaultNewPid } from '../../scripts/p2-pilot-copy.mjs';
+import { applyPilotCopy, assertPilotManifest, defaultNewPid, rollbackPilotCopy } from '../../scripts/p2-pilot-copy.mjs';
 import { comparePilot } from '../../scripts/p2-compare.mjs';
 import { resetData, cleanup } from './helpers.js';
 
@@ -88,9 +87,19 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
     // Source untouched by the apply.
     expect(await treeUnder(SRC)).toEqual(sourceBefore);
 
+    expect(manifest).toMatchObject({ kind: 'p2-pilot-copy', sourcePid: SRC, newPid: NEW });
+
+    // A tampered manifest naming the SOURCE pid is refused; the source stays identical.
+    const toSrc = (m) => ({ ...m, entries: m.entries.map((e) => ({ ...e, path: e.path.replace(`/projects/${NEW}`, `/projects/${SRC}`) })) });
+    await expect(rollbackPilotCopy(db, toSrc(manifest), { FieldValue, Timestamp })).rejects.toThrow(/not under newPid/);
+    await expect(rollbackPilotCopy(db, { ...toSrc(manifest), newPid: SRC, sourcePid: 'proj_other' }, { FieldValue, Timestamp }))
+      .rejects.toThrow(/not a pilot copy/);
+    expect(await treeUnder(SRC)).toEqual(sourceBefore);
+    expect((await treeUnder(NEW)).exists).toBe(true);
+
     // Rollback deletes everything under NEW.
-    const rb = await rollbackManifest(db, manifest, { FieldValue, Timestamp });
-    expect(rb).toEqual({ restored: 0, deleted: r.written });
+    const rb = await rollbackPilotCopy(db, manifest, { FieldValue, Timestamp });
+    expect(rb).toMatchObject({ restored: 0, deleted: r.written, newPid: NEW, leftover: [] });
     expect(await treeUnder(NEW)).toEqual({ exists: false, data: null, cols: [] });
     expect(await treeUnder(SRC)).toEqual(sourceBefore);
   });
