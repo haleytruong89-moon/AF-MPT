@@ -234,6 +234,274 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ═══════ v2 sub-collections (P2.1, 2026-10-23) ═══════
+    // Additive: these paths are not used by the client until P2.4 (switch).
+    // Nothing above changes behaviour. Role matrix: spec §4 (P2 scope; the
+    // approval flow / 'Submitted' status arrives in P3).
+    //   Owner    = isOwnerIn(workspaces/{wid})  (ownerUids OR legacy email)
+    //   PM       = project.programMeta[programId].pmUid / deputyUid
+    //   Sub-PM   = workstreams/{wsId}.leadUid (null/absent/'' => nobody)
+    //   Assignee = task.picUid / action.picUid
+    //   Viewer   = canReadProject (restricted: memberUids; department: any active member)
+    // Contributors (task.contributorUids) get NO write rights in P2 (the spec
+    // matrix has no contributor row); they read like any other reader.
+    // Every non-Owner writer must also be an active member (deactivated
+    // people keep their pmUid/leadUid/picUid but lose write access).
+    // wid always comes from the match path (no hard-coded 'main').
+    //
+    // get()/exists() budget (Ruling E, limit 10; same-path calls are counted
+    // per distinct document): workspace doc, members/{me}, project doc, and
+    // up to 2 workstream docs => at most 5 per evaluation.
+
+    function v2Workspace(wid) {
+      return get(/databases/$(database)/documents/workspaces/$(wid)).data;
+    }
+
+    function v2MemberPath(wid) {
+      return /databases/$(database)/documents/workspaces/$(wid)/members/$(request.auth.uid);
+    }
+
+    function v2Project(wid, pid) {
+      return get(/databases/$(database)/documents/workspaces/$(wid)/projects/$(pid)).data;
+    }
+
+    function v2WsPath(wid, pid, wsId) {
+      return /databases/$(database)/documents/workspaces/$(wid)/projects/$(pid)/workstreams/$(wsId);
+    }
+
+    function v2WsData(wid, pid, wsId) {
+      return get(v2WsPath(wid, pid, wsId)).data;
+    }
+
+    // Named isWsOwner (not isOwner) because isOwner(p) is the v1 project role.
+    function isWsOwner(wid) {
+      return isOwnerIn(v2Workspace(wid));
+    }
+
+    function isActiveMember(wid) {
+      return isSmartOSC()
+        && exists(v2MemberPath(wid))
+        && get(v2MemberPath(wid)).data.get('status', null) == 'active';
+    }
+
+    function isPMIn(p, prg) {
+      return prg is string
+        && (p.get('programMeta', {}).get(prg, {}).get('pmUid', null) == request.auth.uid
+          || p.get('programMeta', {}).get(prg, {}).get('deputyUid', null) == request.auth.uid);
+    }
+
+    function isPM(wid, pid, prg) {
+      return isActiveMember(wid) && isPMIn(v2Project(wid, pid), prg);
+    }
+
+    function wsExists(wid, pid, wsId) {
+      return wsId is string && exists(v2WsPath(wid, pid, wsId));
+    }
+
+    // Empty leadUid (null / absent / '') means no Sub-PM.
+    function isLead(wid, pid, wsId) {
+      return isActiveMember(wid)
+        && wsExists(wid, pid, wsId)
+        && v2WsData(wid, pid, wsId).get('leadUid', null) == request.auth.uid;
+    }
+
+    // The workstream exists and belongs to program prg.
+    function wsInProgram(wid, pid, wsId, prg) {
+      return prg is string
+        && wsExists(wid, pid, wsId)
+        && v2WsData(wid, pid, wsId).get('programId', null) == prg;
+    }
+
+    // Dates are ISO 'yyyy-mm-dd' strings or null; compared as strings.
+    // Null WS bound = no limit; null task date passes.
+    function withinWs(t, w) {
+      return (t.get('start', null) == null || w.get('start', null) == null || t.start >= w.start)
+        && (t.get('end', null) == null || w.get('end', null) == null || t.end <= w.end);
+    }
+
+    function onlyKeys(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    function changedAny(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(keys);
+    }
+
+    // Written doc must name the path's workspace and project (anti-spoof).
+    function pathFieldsOk(wid, pid) {
+      return request.resource.data.get('workspaceId', null) == wid
+        && request.resource.data.get('projectId', null) == pid;
+    }
+
+    // Restricted (default when visibility is absent): Owner + memberUids.
+    // Department: any active member. While memberUids is absent (pre-P2.4)
+    // fall back to the v1 memberIds list.
+    // get(): workspace, members/{me}, project = 3.
+    function canReadProject(wid, pid) {
+      let p = v2Project(wid, pid);
+      return isSmartOSC() && (
+        isWsOwner(wid)
+        || (isActiveMember(wid) && (
+          p.get('visibility', 'restricted') == 'department'
+          || (p.get('memberUids', null) is list
+            ? request.auth.uid in p.memberUids
+            : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds))))
+      );
+    }
+
+    // ─────── v2: workstreams ───────
+    // Create/delete and set leadUid: Owner or PM of the program. Sub-PM has
+    // no workstream writes in P2. Changing WS dates (start/end) or moving a
+    // WS to another program is Owner-only (matrix: PM must request -> Owner).
+    // get(): workspace, members/{me}, project = 3 (read: 3).
+    match /workspaces/{wid}/projects/{pid}/workstreams/{wsId} {
+      allow read: if canReadProject(wid, pid);
+
+      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || isPM(wid, pid, request.resource.data.get('programId', null))
+      );
+
+      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || (isPM(wid, pid, resource.data.get('programId', null))
+          && !changedAny(['programId', 'start', 'end']))
+      );
+
+      allow delete: if isSmartOSC() && (
+        isWsOwner(wid)
+        || isPM(wid, pid, resource.data.get('programId', null))
+      );
+    }
+
+    // ─────── v2: tasks ───────
+    // Create: Owner; PM of the program (WS must belong to that program);
+    //   Sub-PM of the WS, within WS dates.
+    // Update: Owner; PM of the task's program (moving to another WS/program
+    //   requires PM of the target program too, and a consistent WS);
+    //   Sub-PM of the task's WS, no move, within WS dates;
+    //   Assignee (picUid == me): only progress keys, status stays in
+    //   Planned/InProgress (A4: never Completed/Dropped; P3 adds Submitted),
+    //   and only while the task is still open.
+    // Delete: Owner, PM (Sub-PM must set Dropped instead).
+    // Owner writes skip the WS checks (avoids batch-ordering issues in P2.4).
+    // get(): create = workspace, members/{me}, project, ws = 4;
+    //        update = workspace, members/{me}, project, old ws, new ws = 5;
+    //        delete = 3; read = 3.
+    function assigneeKeys() {
+      return ['status', 'health', 'healthNote', 'updates', 'checkIns', 'updatedAt', 'updatedBy', 'version'];
+    }
+
+    function taskPMUpdate(wid, pid) {
+      let n = request.resource.data;
+      return isPM(wid, pid, resource.data.get('programId', null))
+        && (!changedAny(['programId', 'workstreamId'])
+          || (isPMIn(v2Project(wid, pid), n.get('programId', null))
+            && wsInProgram(wid, pid, n.get('workstreamId', null), n.get('programId', null))));
+    }
+
+    function taskLeadUpdate(wid, pid) {
+      return isLead(wid, pid, resource.data.get('workstreamId', null))
+        && !changedAny(['programId', 'workstreamId'])
+        && withinWs(request.resource.data, v2WsData(wid, pid, resource.data.workstreamId));
+    }
+
+    function taskAssigneeUpdate(wid) {
+      return isActiveMember(wid)
+        && resource.data.get('picUid', null) == request.auth.uid
+        && onlyKeys(assigneeKeys())
+        && resource.data.get('status', 'Planned') in ['Planned', 'InProgress']
+        && request.resource.data.get('status', 'Planned') in ['Planned', 'InProgress'];
+    }
+
+    match /workspaces/{wid}/projects/{pid}/tasks/{tid} {
+      allow read: if canReadProject(wid, pid);
+
+      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || (isPM(wid, pid, request.resource.data.get('programId', null))
+          && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
+                         request.resource.data.get('programId', null)))
+        || (isLead(wid, pid, request.resource.data.get('workstreamId', null))
+          && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
+                         request.resource.data.get('programId', null))
+          && withinWs(request.resource.data,
+                      v2WsData(wid, pid, request.resource.data.workstreamId)))
+      );
+
+      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || taskPMUpdate(wid, pid)
+        || taskLeadUpdate(wid, pid)
+        || taskAssigneeUpdate(wid)
+      );
+
+      allow delete: if isSmartOSC() && (
+        isWsOwner(wid)
+        || isPM(wid, pid, resource.data.get('programId', null))
+      );
+    }
+
+    // ─────── v2: actions ───────
+    // Create/update/delete: Owner, or PM / Sub-PM of the action's workstream.
+    // Rules cannot iterate programMeta, so an action with workstreamId null
+    // is Owner-only (documented limitation).
+    // Changing workstreamId requires the manager role on both sides.
+    // Action PIC (picUid == me) may update it and close it as Done, but may
+    // not change picUid/picEmail/pic/workstreamId, cancel it, or touch a
+    // Cancelled action.
+    // get(): create/delete = workspace, members/{me}, ws, project = 4;
+    //        update = + new ws = 5; read = 3.
+    function actionManager(wid, pid, d) {
+      return wsExists(wid, pid, d.get('workstreamId', null))
+        && (isPM(wid, pid, v2WsData(wid, pid, d.workstreamId).get('programId', null))
+          || isLead(wid, pid, d.workstreamId));
+    }
+
+    function actionPicUpdate(wid) {
+      return isActiveMember(wid)
+        && resource.data.get('picUid', null) == request.auth.uid
+        && !changedAny(['picUid', 'picEmail', 'pic', 'workstreamId'])
+        && resource.data.get('status', 'Pending') != 'Cancelled'
+        && request.resource.data.get('status', 'Pending') != 'Cancelled';
+    }
+
+    match /workspaces/{wid}/projects/{pid}/actions/{aid} {
+      allow read: if canReadProject(wid, pid);
+
+      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || actionManager(wid, pid, request.resource.data)
+      );
+
+      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && (
+        isWsOwner(wid)
+        || (actionManager(wid, pid, resource.data)
+          && (!changedAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
+        || actionPicUpdate(wid)
+      );
+
+      allow delete: if isSmartOSC() && (
+        isWsOwner(wid)
+        || actionManager(wid, pid, resource.data)
+      );
+    }
+
+    // ─────── v2: activity (one event per doc, append-only) ───────
+    // Any reader may append an event authored by themselves.
+    // projectId/workspaceId are optional on events but must match when set.
+    // get(): workspace, members/{me}, project = 3.
+    match /workspaces/{wid}/projects/{pid}/activity/{eid} {
+      allow read: if canReadProject(wid, pid);
+
+      allow create: if canReadProject(wid, pid)
+        && request.resource.data.get('authorUid', null) == request.auth.uid
+        && request.resource.data.get('projectId', pid) == pid
+        && request.resource.data.get('workspaceId', wid) == wid;
+
+      allow update, delete: if false;
+    }
+
     // ─────── User directory (so owners can pick teammates by email) ───────
     // Each user upserts their own entry on sign-in; everyone in the workspace
     // can read it to populate the member-picker.
