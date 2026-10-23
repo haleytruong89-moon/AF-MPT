@@ -30,10 +30,11 @@ import {
   getDocs,
   setDoc,
   serverTimestamp,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite } from './ownership';
-import { classifyReadError, checkRevision, nextRev, createKeyedQueue, FORCE_WRITE_FLAG } from './persistence';
+import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -47,6 +48,8 @@ const ACTIVITY_CAP = 500;
 
 // B3: rev of each project as last read/written by this client.
 const knownRev = new Map<string, number>();
+// Recent saves whose outcome is unknown (network error after commit was sent).
+const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a long outage may queue many autosaves)
 const projectWriteQueue = createKeyedQueue();
 
 /** Per-user localStorage key for the "currently selected project". */
@@ -190,9 +193,11 @@ window.storage = {
         // Strip RBAC-internal fields from the value so the new App.jsx isn't
         // confused by extra members/roles fields. (Member management uses the
         // separate MembersModal which reads them via the data.ts hooks.)
-        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, ...rest } =
+        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, writeId: _writeId, ...rest } =
           data as Record<string, unknown>;
+        void _writeId;
         knownRev.set(pid, typeof rev === 'number' ? rev : 0);
+        pendingWriteIds.delete(pid);
         // Suppress unused warnings — these are intentional drops:
         void memberIds;
         void roles;
@@ -285,57 +290,50 @@ window.storage = {
         const force = parsed[FORCE_WRITE_FLAG] === true;
         const { [FORCE_WRITE_FLAG]: _force, ...incoming } = parsed;
         void _force;
-        // Read existing to preserve RBAC + lifecycle fields. For non-existent
-        // docs, Firestore evaluates the read rule against null resource, which
-        // denies (isMember(null) = false) and getDoc throws permission_denied.
-        // Treat that as "doc doesn't exist" so create path can proceed.
-        let ex: Record<string, unknown> | null = null;
+        // randomUUID needs a secure context (https/localhost); fall back for dev over LAN http.
+        const writeId = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        const opts = {
+          uid: user.uid, knownRev: knownRev.get(pid), force, now: serverTimestamp(),
+          writeId, pendingWriteIds: pendingWriteIds.get(pid) || [],
+        };
+        // If this save ends in an error, the commit may still have landed: remember it.
+        pendingWriteIds.set(pid, [...(pendingWriteIds.get(pid) || []), writeId].slice(-50));
+        // B3 debt: read, rev check and write in one transaction — Firestore re-runs
+        // the function if another client writes in between, so no silent overwrite.
+        let result: { conflict: boolean; newRev?: number };
         try {
-          const existing = await getDoc(PROJECT_REF(pid));
-          if (existing.exists()) {
-            ex = existing.data() as Record<string, unknown>;
-          }
+          result = await runTransaction(db, async (tx) => {
+            let snap;
+            try {
+              snap = await tx.get(PROJECT_REF(pid));
+            } catch (e) {
+              throw Object.assign(new Error('project pre-read failed'), { preRead: true, code: (e as { code?: string })?.code, cause: e });
+            }
+            const ex = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+            const plan = buildProjectWrite(ex, incoming, opts);
+            if (!plan.conflict && plan.doc) tx.set(PROJECT_REF(pid), plan.doc);
+            return plan;
+          });
         } catch (e) {
-          // B2: only "doc does not exist" may fall through to the create path.
-          // Any other read failure (network, quota…) aborts — never rebuild the ACL.
-          if (classifyReadError((e as { code?: string })?.code) === 'fatal') {
+          const err = e as { preRead?: boolean; code?: string };
+          if (!err.preRead) throw e;
+          // A doc that does not exist reads as permission-denied under our rules
+          // (isMember(null) = false). B2: only that may fall through to create;
+          // any other read failure (network, quota…) aborts — never rebuild the ACL.
+          if (classifyReadError(err.code) === 'fatal') {
             console.warn('[storage] project pre-read failed; write aborted:', pid, e);
             return null;
           }
-          ex = null;
+          const plan = buildProjectWrite(null, incoming, opts);
+          await setDoc(PROJECT_REF(pid), plan.doc);
+          result = plan;
         }
-        // B3: refuse to overwrite a newer server version.
-        if (!force && checkRevision(ex?.rev as number | undefined, knownRev.get(pid), ex !== null) === 'conflict') {
+        if (result.conflict) {
           console.warn('[storage] project changed on server since load; write refused:', pid);
           return { key, value, shared: true, error: 'conflict' };
         }
-        const newRev = nextRev(ex?.rev as number | undefined);
-        const memberIds = (ex?.memberIds as string[] | undefined) || [user.uid];
-        const roles = (ex?.roles as Record<string, string> | undefined) || {
-          [user.uid]: 'owner',
-        };
-        const createdBy = (ex?.createdBy as string | undefined) || user.uid;
-        const createdAt = ex?.createdAt || serverTimestamp();
-        const deletedAt = ex?.deletedAt ?? null;
-        const { id: _id, rev: _rev, ...body } = incoming;
-        void _id;
-        void _rev;
-        // B3 fix: relatedParties is edited only by MembersModal (data.ts), so —
-        // like memberIds/roles — the server value wins over App's possibly
-        // stale in-memory copy.
-        const relatedParties = ex ? (ex.relatedParties ?? []) : (body.relatedParties ?? []);
-        await setDoc(PROJECT_REF(pid), {
-          ...body,
-          relatedParties,
-          memberIds,
-          roles,
-          createdBy,
-          createdAt,
-          deletedAt,
-          rev: newRev,
-          updatedAt: serverTimestamp(),
-        });
-        knownRev.set(pid, newRev);
+        pendingWriteIds.delete(pid);
+        knownRev.set(pid, result.newRev as number);
         return { key, value, shared: true };
         });
       }

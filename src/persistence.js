@@ -66,3 +66,31 @@ export function bannerGroups(saveState) {
   for (const v of Object.values(saveState || {})) (v.status === 'conflict' ? out.conflict : out.error).push(v.name);
   return out;
 }
+
+// B3 debt: the full write decision for one project save, pure so it can run
+// inside a Firestore transaction (re-run on contention) and be unit-tested.
+// ex = server doc or null (new project); now = the serverTimestamp() sentinel.
+// writeId tags each save. A transaction retry that finds its own writeId on the
+// server already landed (a lost commit response); pendingWriteIds are earlier saves
+// of this client whose result was lost — their rev bump is ours, not a conflict.
+export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, writeId, pendingWriteIds = /** @type {string[]} */ ([]) }) {
+  if (ex && writeId && ex.writeId === writeId) return { conflict: false, newRev: ex.rev, doc: null };
+  const baseRev = ex && ex.writeId && pendingWriteIds.includes(ex.writeId) ? ex.rev : knownRev;
+  if (!force && checkRevision(ex?.rev, baseRev, ex !== null) === 'conflict') return { conflict: true };
+  const newRev = nextRev(ex?.rev);
+  const { id: _id, rev: _rev, writeId: _w, ...body } = incoming;
+  // memberIds/roles/relatedParties are edited only via MembersModal: server value wins.
+  const doc = {
+    ...body,
+    relatedParties: ex ? (ex.relatedParties ?? []) : (body.relatedParties ?? []),
+    memberIds: ex?.memberIds || [uid],
+    roles: ex?.roles || { [uid]: 'owner' },
+    createdBy: ex?.createdBy || uid,
+    createdAt: ex?.createdAt || now,
+    deletedAt: ex?.deletedAt ?? null,
+    rev: newRev,
+    updatedAt: now,
+  };
+  if (writeId) doc.writeId = writeId;
+  return { conflict: false, newRev, doc };
+}
