@@ -346,13 +346,11 @@ service cloud.firestore {
       return request.resource.data.get('version', null) == resource.data.get('version', 0) + 1;
     }
 
-    // updatedBy, when written, must be the caller's uid.
-    function updatedByOnCreate() {
-      return request.resource.data.get('updatedBy', request.auth.uid) == request.auth.uid;
-    }
-
-    function updatedByOnUpdate(ch) {
-      return !ch.hasAny(['updatedBy']) || request.resource.data.get('updatedBy', null) == request.auth.uid;
+    // Ruling I: every create/update of a task, action or workstream stamps
+    // the writer (Owner included). Not "if affected": an unchanged stale
+    // updatedBy would attribute the edit to the previous writer.
+    function stampedByMe() {
+      return request.resource.data.get('updatedBy', null) == request.auth.uid;
     }
 
     // List field k is append-only: the old items stay as a prefix (missing = []).
@@ -389,7 +387,7 @@ service cloud.firestore {
     // no workstream writes in P2. WS dates (start/end) and moving a WS to
     // another program are Owner-only (matrix: PM must request -> Owner), so a
     // PM-created WS must have null start/end.
-    // version: create = 1, update = +1.
+    // version: create = 1, update = +1; updatedBy = caller uid on every write.
     // get(): workspace, members/{me}, project = 3 (read: 3).
     function wsUpdateOk(wid, pid) {
       let ch = changedKeys();
@@ -401,7 +399,7 @@ service cloud.firestore {
     match /workspaces/{wid}/projects/{pid}/workstreams/{wsId} {
       allow read: if canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && versionOnCreate() && (
+      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || (isPM(wid, pid, request.resource.data.get('programId', null))
           && request.resource.data.get('start', null) == null
@@ -409,7 +407,7 @@ service cloud.firestore {
       );
 
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && versionBumped()
-        && wsUpdateOk(wid, pid);
+        && stampedByMe() && wsUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)
@@ -429,8 +427,8 @@ service cloud.firestore {
     //   and stay in Planned/InProgress (A4: never Completed/Dropped; P3 adds
     //   Submitted), and only while the task is still open; updates/checkIns
     //   are append-only for the Assignee.
-    // All writers: version create = 1 / update = +1; updatedBy, if written,
-    //   must be the caller's uid.
+    // All writers: version create = 1 / update = +1; updatedBy must equal
+    //   the caller uid on every write (Ruling I).
     // Delete: Owner, PM (Sub-PM must set Dropped instead).
     // Owner writes skip the WS checks (avoids batch-ordering issues in P2.4).
     // get(): create = workspace, members/{me}, project, ws = 4;
@@ -479,7 +477,7 @@ service cloud.firestore {
 
     function taskUpdateOk(wid, pid) {
       let ch = changedKeys();
-      return updatedByOnUpdate(ch) && (
+      return (
         isWsOwner(wid)
         || taskAssigneeUpdate(wid, ch)
         || taskPMUpdate(wid, pid, ch)
@@ -491,7 +489,7 @@ service cloud.firestore {
       allow read: if canReadProject(wid, pid);
 
       allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionOnCreate() && updatedByOnCreate() && (
+        && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || ((isPM(wid, pid, request.resource.data.get('programId', null))
             || isLead(wid, pid, request.resource.data.get('workstreamId', null)))
@@ -501,7 +499,7 @@ service cloud.firestore {
       );
 
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionBumped() && taskUpdateOk(wid, pid);
+        && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)
@@ -517,8 +515,8 @@ service cloud.firestore {
     // Action PIC (picUid == me) may update it and close it as Done, but may
     // not change picUid/picEmail/pic/workstreamId, cancel it, or touch a
     // Cancelled action.
-    // All writers: version create = 1 / update = +1; updatedBy, if written,
-    // must be the caller's uid.
+    // All writers: version create = 1 / update = +1; updatedBy must equal
+    // the caller uid on every write (Ruling I).
     // get(): create/delete = workspace, members/{me}, ws, project = 4;
     //        update = + new ws = 5; read = 3.
     function actionManager(wid, pid, d) {
@@ -537,7 +535,7 @@ service cloud.firestore {
 
     function actionUpdateOk(wid, pid) {
       let ch = changedKeys();
-      return updatedByOnUpdate(ch) && (
+      return (
         isWsOwner(wid)
         || actionPicUpdate(wid, ch)
         || (actionManager(wid, pid, resource.data)
@@ -549,13 +547,13 @@ service cloud.firestore {
       allow read: if canReadProject(wid, pid);
 
       allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionOnCreate() && updatedByOnCreate() && (
+        && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || actionManager(wid, pid, request.resource.data)
       );
 
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
-        && versionBumped() && actionUpdateOk(wid, pid);
+        && versionBumped() && stampedByMe() && actionUpdateOk(wid, pid);
 
       allow delete: if isSmartOSC() && (
         isWsOwner(wid)
