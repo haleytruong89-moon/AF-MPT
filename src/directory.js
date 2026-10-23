@@ -61,6 +61,14 @@ export function meKey(index, author, authorEmail) {
   }
   return personKey(index, author);
 }
+// "Is this raw person string me?" With an index, matches the directory identity
+// (meKey) or the signed-in name itself — the Google name of someone added after
+// the directory was built is not an alias yet. Without an index: exact match.
+export function isMeFor(index, author, authorEmail) {
+  if (!index) return (raw) => raw === author;
+  const keys = new Set([meKey(index, author, authorEmail), personKey(index, author)]);
+  return (raw) => !!raw && keys.has(personKey(index, raw));
+}
 export function personLabel(index, raw) {
   return index ? canonicalPerson(index, raw).name : raw;
 }

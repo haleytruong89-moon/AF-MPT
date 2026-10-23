@@ -51,14 +51,18 @@ export function planDirectory(rosterRows, mappingRows, uidByEmail, userNamesByEm
     if (!p) { errors.push(`${value} → ${email}: email not in roster`); continue; }
     addAlias(p, value);
   }
+  const googleNameOf = new Map(); // folded name -> email it came from (for error messages)
   for (const [rawEmail, name] of userNamesByEmail || []) {
-    const p = people.get(String(rawEmail || '').toLowerCase());
-    if (p && str(name)) addAlias(p, str(name));
+    const email = String(rawEmail || '').toLowerCase();
+    const p = people.get(email);
+    if (p && str(name)) { addAlias(p, str(name)); googleNameOf.set(foldName(str(name)), email); }
   }
   const entries = [...people].map(([email, p]) => ({ email, displayName: p.displayName, aliases: p.aliases }));
   const index = buildDirectoryIndex(entries);
   for (const c of index.conflicts) {
-    errors.push(`alias conflict "${c.alias}": ${c.emails.join(', ')}`);
+    const src = googleNameOf.get(c.alias);
+    errors.push(`alias conflict "${c.alias}": ${c.emails.join(', ')}` +
+      (src ? ` (from the Google account name of ${src} — change a display name in the roster)` : ''));
   }
   // A group value that resolves to a person would be merged into that person.
   for (const value of groups) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember, canonicalName, meKey } from '../../src/directory.js';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, findMember, canonicalName, meKey, isMeFor } from '../../src/directory.js';
 
 describe('directory index', () => {
   const idx = buildDirectoryIndex([
@@ -147,5 +147,25 @@ describe('final-review fixes', () => {
     expect(meKey(idx, 'Someone', 'x@smartosc.com')).toBe('n:someone');
     // No index: legacy raw author.
     expect(meKey(null, 'Lan', 'lan@smartosc.com')).toBe('Lan');
+  });
+});
+
+describe('isMeFor (P1 follow-up S)', () => {
+  // Hattt4 is in the directory; 'Thu HT (AF)' is her Google name, added after apply (not an alias).
+  const idx = buildDirectoryIndex([{ email: 'hattt4@smartosc.com', displayName: 'Hattt4', aliases: ['Hà Trương Thị Thu'] }]);
+  it('matches items stored under the directory identity and under the raw Google name', () => {
+    const isMe = isMeFor(idx, 'Thu HT (AF)', 'hattt4@smartosc.com');
+    expect(isMe('Hà Trương Thị Thu')).toBe(true);
+    expect(isMe('hattt4')).toBe(true);
+    expect(isMe('Thu HT (AF)')).toBe(true);
+    expect(isMe('thu ht (af)')).toBe(true);
+    expect(isMe('Someone else')).toBe(false);
+    expect(isMe('')).toBe(false);
+    expect(isMe(null)).toBe(false);
+  });
+  it('keeps the legacy exact match without an index', () => {
+    const isMe = isMeFor(null, 'Lan', 'lan@smartosc.com');
+    expect(isMe('Lan')).toBe(true);
+    expect(isMe('lan')).toBe(false);
   });
 });

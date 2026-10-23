@@ -15,7 +15,7 @@ import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey } from './directory';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
@@ -852,8 +852,10 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
   const authorLc = author.toLowerCase();
   // P1: with dirIndex, any alias of the same person matches; without it, exact string (legacy).
   // authorEmail (signed-in user only, never for View as) wins when the directory knows it.
+  // The signed-in name also counts: a Google name added after the directory was built is not an alias yet.
   const meId = meKey(dirIndex, author, authorEmail);
-  const isMe = (raw) => (dirIndex ? !!raw && personKey(dirIndex, raw) === meId : raw === author);
+  const isMe = isMeFor(dirIndex, author, authorEmail);
+  const myCreditKeys = dirIndex ? [...new Set([meId, personKey(dirIndex, author)])] : [meId];
 
   for (const proj of Object.values(projects || {})) {
     for (const pg of (proj.programs || [])) {
@@ -1006,8 +1008,9 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
     }
 
     const credits = computeProjectCredits(proj, dirIndex);
-    const myCredit = credits.perPic.get(meId);
-    if (myCredit && (myCredit.earned > 0 || myCredit.projected > 0)) {
+    const myCredit = myCreditKeys.map((k) => credits.perPic.get(k)).filter(Boolean)
+      .reduce((s, c) => ({ earned: s.earned + c.earned, projected: s.projected + c.projected }), { earned: 0, projected: 0 });
+    if (myCredit.earned > 0 || myCredit.projected > 0) {
       out.credit.earned += myCredit.earned;
       out.credit.projected += myCredit.projected;
       out.credit.perProject.push({ project: proj, earned: myCredit.earned, projected: myCredit.projected });

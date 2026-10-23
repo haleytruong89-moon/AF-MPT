@@ -138,3 +138,24 @@ describe('planDirectory final-review fixes', () => {
     expect(ok.errors).toEqual([]);
   });
 });
+
+describe('alias conflict message names the Google-name source (P1 follow-up T)', () => {
+  it('says which users-doc name caused the conflict', () => {
+    const roster = [
+      { Email: 'a@smartosc.com', 'Display name': 'Minh Le' },
+      { Email: 'b@smartosc.com', 'Display name': 'Binh' },
+    ];
+    const plan = planDirectory(roster, [], new Map(), new Map([['b@smartosc.com', 'Minh Lê']]));
+    expect(plan.errors).toHaveLength(1);
+    expect(plan.errors[0]).toMatch(/alias conflict "minh le": a@smartosc.com, b@smartosc.com/);
+    expect(plan.errors[0]).toMatch(/Google account name of b@smartosc.com/);
+  });
+  it('keeps the plain message when the alias came from the roster or mapping', () => {
+    const roster = [
+      { Email: 'a@smartosc.com', 'Display name': 'Minh Le' },
+      { Email: 'b@smartosc.com', 'Display name': 'Minh Lê' },
+    ];
+    const plan = planDirectory(roster, [], new Map());
+    expect(plan.errors).toEqual(['alias conflict "minh le": a@smartosc.com, b@smartosc.com']);
+  });
+});
