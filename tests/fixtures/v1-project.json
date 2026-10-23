@@ -1,0 +1,33 @@
+{
+  "id": "proj_fx",
+  "name": "Fixture Project",
+  "projectLead": "Alice Nguyen",
+  "memberIds": ["uidZ"],
+  "contributorRegistry": [{ "name": "BOD" }, { "name": "FIN" }],
+  "teamMembers": [{ "name": "Alice Nguyen", "email": "alice@smartosc.com" }],
+  "decisions": [{ "id": "d1", "title": "Go", "decidedBy": "Alice Nguyen" }],
+  "programs": [
+    {
+      "id": "pg1",
+      "name": "Program One",
+      "raid": [{ "id": "r1", "type": "Risk", "title": "Delay", "owner": "Bob", "mitigations": [{ "id": "m1", "text": "Buffer", "pic": "Bob" }] }],
+      "workstreams": [
+        {
+          "id": "w1", "name": "WS One", "difficultyPreset": "high", "difficultyMultiplier": 1.5, "weight": 40,
+          "tasks": [
+            { "id": "t1", "name": "Task 1", "pic": "Alice Nguyen", "contributors": ["Carol Tran", "BOD", "Alice Nguyen"], "start": "2026-01-01", "end": "2026-01-31", "duration": 31, "status": "Not Started" },
+            { "id": "t2", "name": "Task 2", "pic": "Bob", "contributors": [], "start": null, "end": null, "duration": null, "status": "In Progress", "subtasks": [{ "id": "s1", "pic": "Bob" }] },
+            { "name": "No id task", "pic": "", "status": "Not Started" }
+          ]
+        },
+        { "id": "w2", "name": "WS Empty", "tasks": [] },
+        { "id": "w3", "name": "WS Two", "tasks": [{ "id": "t1", "name": "Dup of t1", "pic": "Zed Unknown", "status": "Not Started" }] }
+      ]
+    },
+    { "id": "pg2", "name": "Program Empty", "raid": [], "workstreams": [] }
+  ],
+  "actionItems": [
+    { "id": "a1", "title": "Follow up", "pic": "Carol Tran", "relatedTaskId": "t2", "status": "Open" },
+    { "id": "a2", "title": "Loose", "pic": "Bob", "status": "Open" }
+  ]
+}
