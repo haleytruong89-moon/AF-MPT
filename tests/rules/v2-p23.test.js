@@ -320,6 +320,40 @@ describe('P2.3 rules completion', () => {
   });
 });
 
+describe('P2.3 final-review rules fixes', () => {
+  beforeEach(async () => {
+    await resetData();
+    await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
+    for (const u of ALL) await seedDoc(`${WS}/members/${u.uid}`, member(u.email));
+    await seedDoc(P1, project());
+    await seedDoc(`${P1}/workstreams/w1`, ws('p1', 'prg1', LEAD.uid));
+    await seedDoc(`${P1}/tasks/t1`, task({ end: '2026-11-30', references: [], deadlineRequestHistory: [] }));
+  });
+
+  // Ruling AE: references + deadline request flow are Assignee keys (App.jsx
+  // TaskReferences addRef, submitDeadlineRequest, cancelDeadlineRequest).
+  it('P23-AE Assignee adds a reference and requests / cancels a deadline change; end / dueDate / Completed still denied', async () => {
+    const ref = { id: 'ref_1', url: 'https://x', title: 'Doc', addedAt: '2026-10-23T00:00:00Z', addedBy: 'asg' };
+    const req = { newDate: '2026-12-15', reason: 'late input', requestedBy: 'asg', requestedAt: '2026-10-23T00:00:00Z' };
+    await assertSucceeds(up(ASG, `${P1}/tasks/t1`, { references: [ref], updatedAt: 'now' }));
+    await assertSucceeds(up(ASG, `${P1}/tasks/t1`, { deadlineRequest: req, version: 3 }));
+    await assertSucceeds(up(ASG, `${P1}/tasks/t1`, {
+      deadlineRequest: null, deadlineRequestHistory: [{ ...req, status: 'cancelled' }], version: 4,
+    }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { end: '2026-12-15', version: 5 }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { dueDate: '2026-12-15', version: 5 }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { status: 'Completed', version: 5 }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { references: [], end: '2026-12-15', version: 5 }));
+  });
+
+  // Ruling AF: task delete is workspace-Owner-only.
+  it('P23-AF task delete: PM and Sub-PM denied, workspace Owner allowed', async () => {
+    await assertFails(del(PM, `${P1}/tasks/t1`));
+    await assertFails(del(LEAD, `${P1}/tasks/t1`));
+    await assertSucceeds(del(OWNER, `${P1}/tasks/t1`));
+  });
+});
+
 describe('P2.3 Task 5: memberUids patch on a v2 project', () => {
   beforeEach(async () => {
     await resetData();

@@ -118,9 +118,11 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   });
 
   // ── Task delete ──
-  it('V2-3 task delete: Owner and PM allowed', async () => {
+  // Ruling AF (P2.3 final review): task delete is workspace-Owner-only (was Owner
+  // and PM); tasks are never hard-deleted by the app (Dropped instead).
+  it('V2-3 task delete: Owner allowed; PM denied (Ruling AF)', async () => {
+    await assertFails(deleteDoc(doc(await as(PM), `${P1}/tasks/t2`)));
     await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/tasks/t1`)));
-    await assertSucceeds(deleteDoc(doc(await as(PM), `${P1}/tasks/t2`)));
   });
 
   it('V2-4 task delete: Sub-PM (must use Dropped), Assignee, PM of another program denied', async () => {

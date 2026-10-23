@@ -500,13 +500,18 @@ service cloud.firestore {
     //   the caller uid on every write (Ruling I); an entry added to updates
     //   or checkIns (at most one per write) carries authorUid == caller
     //   (Ruling R, P2.3, newEntryOk - Owner included). Not checked on create.
-    // Delete: Owner, PM (Sub-PM must set Dropped instead).
+    // Delete: workspace Owner only (Ruling AF; others set Dropped instead).
     // Owner writes skip the WS checks (avoids batch-ordering issues in P2.4).
     // get(): create = workspace, members/{me}, project, ws = 4;
     //        update = workspace, members/{me}, project, old ws, new ws = 5;
-    //        delete = 3; read = 3.
+    //        delete = 1; read = 3.
+    // Ruling AE (P2.3): + references and the deadline request flow
+    // (deadlineRequest, deadlineRequestHistory). The due date itself (end)
+    // stays out: it changes only when an approver applies the request.
     function assigneeKeys() {
-      return ['status', 'health', 'healthNote', 'updates', 'checkIns', 'updatedAt', 'updatedBy', 'version'];
+      return ['status', 'health', 'healthNote', 'updates', 'checkIns',
+        'references', 'deadlineRequest', 'deadlineRequestHistory',
+        'updatedAt', 'updatedBy', 'version'];
     }
 
     // The new task data is within its (new) WS's dates.
@@ -590,10 +595,9 @@ service cloud.firestore {
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 
-      allow delete: if isSmartOSC() && (
-        isWsOwner(wid)
-        || isPM(wid, pid, resource.data.get('programId', null))
-      );
+      // Ruling AF (P2.3): workspace Owner only (tasks are never hard-deleted;
+      // PM / Sub-PM set Dropped).
+      allow delete: if isSmartOSC() && isWsOwner(wid);
     }
 
     // ─────── v2: actions ───────
