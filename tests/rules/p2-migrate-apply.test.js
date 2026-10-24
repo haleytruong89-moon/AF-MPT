@@ -4,7 +4,9 @@ import { initializeApp, deleteApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, getDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
-import { applyMigration, prepareMigration, exitCodeFor } from '../../scripts/p2-migrate.mjs';
+import {
+  applyMigration, prepareMigration, exitCodeFor, rollbackMigration, prepareRollback, formatRollbackPreview,
+} from '../../scripts/p2-migrate.mjs';
 import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { SUBCOLS, RECORD_PATH, MIGRATE_STAMP } from '../../scripts/lib/migrate-plan.mjs';
 import { loadV2Lists, assembleFromSnapshots, appValueFromV1, appValueFromV2 } from '../../src/readV2.js';
@@ -45,7 +47,7 @@ const record = async () => (await db.doc(RECORD_PATH(PID)).get());
 
 describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
   beforeEach(async () => { await resetData(); await seed(); manifests = []; });
-  afterAll(async () => { await cleanup(); await deleteApp(app); });
+  afterAll(async () => { await cleanup(); });
 
   it('MIG-1: fresh apply flips the project, keeps v1 arrays frozen, copies activity, verifies', async () => {
     const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
@@ -265,3 +267,188 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     expect((await record()).data().status).toBe('switched');
   });
 });
+
+// P2.4 Task 6: rollback (Ruling P4-7, hash gate P4-16).
+describe('P2.4 migration rollback (p2-migrate --rollback) against the emulator', () => {
+  beforeEach(async () => { await resetData(); await seed(); manifests = []; });
+
+  let lost = [];
+  const rb = (extra = {}) => rollbackMigration(db, {
+    pid: PID, force: false, deleteDocs: false, FieldValue, Timestamp,
+    writeLostReport: (o) => { lost.push(JSON.parse(JSON.stringify(o))); },
+    ...extra,
+  });
+  const ALL = [...SUBCOLS, 'activity'];
+  // Everything rollback could touch, with update times: equal dumps = nothing written.
+  const dump = async () => {
+    const snap = async (path) => { const s = await db.doc(path).get(); return s.exists ? { t: s.updateTime.toMillis(), d: s.data() } : null; };
+    const out = { project: await snap(BASE), record: await snap(RECORD_PATH(PID)) };
+    for (const k of ALL) {
+      const docs = (await db.collection(`${BASE}/${k}`).get()).docs;
+      out[k] = docs.map((d) => `${d.id}@${d.updateTime.toMillis()}`).sort();
+    }
+    return JSON.stringify(out);
+  };
+  const V2_FIELDS = ['schemaVersion', 'programMeta', 'memberUids', 'visibility'];
+  beforeEach(() => { lost = []; });
+
+  it('RB-1: rollback after a clean apply restores v1 fields, keeps memberIds and v2 docs; a re-apply verifies', async () => {
+    await run();
+    const afterApply = (await db.doc(BASE).get()).data();
+    const r = await rb();
+    expect(r.edits.clean).toBe(true);
+    expect(r.flippedBack).toBe(true);
+    expect(r.deleted).toBe(0);
+    expect(lost).toEqual([]);
+    const live = (await db.doc(BASE).get()).data();
+    for (const k of V2_FIELDS) expect(k in live).toBe(false);
+    expect(live.memberIds).toEqual(afterApply.memberIds);
+    expect(live.programs).toEqual(seedProject.programs);
+    expect(appValueFromV1(live, PID)).toEqual(appValueFromV1(seedProject, PID));
+    const rec = (await record()).data();
+    expect(rec.status).toBe('rolled-back');
+    expect(rec.history.map((h) => h.status)).toEqual(['prepared', 'switched', 'verified', 'rolled-back']);
+    expect(rec.history.at(-1).at instanceof Timestamp).toBe(true);
+    // v2 docs stay (no --delete-v2-docs), invisible again.
+    expect(await countOf(`${BASE}/tasks`)).toBeGreaterThan(0);
+    expect(r.leftover.length).toBeGreaterThan(0);
+
+    // A second apply reuses the stamped docs and verifies.
+    const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(prep.mode).toBe('fresh');
+    expect(prep.reconcile.toWrite).toEqual([]);
+    expect(prep.reconcile.foreign).toEqual([]);
+    const r2 = await run({ expectHash: prep.planHash });
+    expect(r2.verify.ok).toBe(true);
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+    expect((await record()).data().status).toBe('verified');
+  });
+
+  it('RB-2: a v2 edit refuses rollback (EDITS_FOUND, nothing written); forced, the lost-data report comes before any write', async () => {
+    await run();
+    await db.doc(`${BASE}/tasks/t2`).update({ version: 2, updatedBy: 'uidZ', name: 'Edited in v2' });
+    const before = await dump();
+    const err = await rb().catch((e) => e);
+    expect(err).toMatchObject({ code: 'EDITS_FOUND' });
+    expect(err.edits.edited).toEqual([{ kind: 'tasks', id: 't2', version: 2, updatedBy: 'uidZ' }]);
+    expect(lost).toEqual([]);
+    expect(await dump()).toBe(before);
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+
+    let seenVersion = 'not called';
+    const calls = [];
+    const r = await rollbackMigration(db, {
+      pid: PID, force: true, deleteDocs: false, FieldValue, Timestamp,
+      writeLostReport: async (o) => {
+        calls.push(JSON.parse(JSON.stringify(o)));
+        seenVersion = (await db.doc(BASE).get()).data().schemaVersion;
+        expect(await dump()).toBe(before);
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(seenVersion).toBe(2);
+    expect(calls[0].docs.tasks.t2).toMatchObject({ version: 2, updatedBy: 'uidZ', name: 'Edited in v2' });
+    expect(calls[0].edits.edited).toEqual([{ kind: 'tasks', id: 't2', version: 2, updatedBy: 'uidZ' }]);
+    expect(r.flippedBack).toBe(true);
+    expect('schemaVersion' in (await db.doc(BASE).get()).data()).toBe(false);
+    // No --delete-v2-docs: the edited doc is kept.
+    expect((await db.doc(`${BASE}/tasks/t2`).get()).exists).toBe(true);
+    expect((await record()).data().status).toBe('rolled-back');
+  });
+
+  it('RB-3: --delete-v2-docs empties the sub-collections and copied activity; a client event refuses without force', async () => {
+    await run();
+    const r = await rb({ deleteDocs: true });
+    for (const k of ALL) expect(await countOf(`${BASE}/${k}`)).toBe(0);
+    expect(r.leftover).toEqual([]);
+    expect(r.deleted).toBeGreaterThan(0);
+
+    await resetData();
+    await seed();
+    await run();
+    await db.doc(`${BASE}/activity/evt_client`).set({ action: 'Commented', author: 'Zara Pham', createdAt: Timestamp.now() });
+    const before = await dump();
+    await expect(rb({ deleteDocs: true })).rejects.toMatchObject({ code: 'EDITS_FOUND' });
+    expect(await dump()).toBe(before);
+
+    const r2 = await rb({ deleteDocs: true, force: true });
+    expect(lost).toHaveLength(1);
+    expect(lost[0].newActivity.map((a) => a.id)).toEqual(['evt_client']);
+    expect(r2.leftover).toEqual([]);
+    for (const k of ALL) expect(await countOf(`${BASE}/${k}`)).toBe(0);
+  });
+
+  it('RB-4: no record (or already rolled back) -> NOT_MIGRATED, nothing written', async () => {
+    const before = await dump();
+    await expect(rb()).rejects.toMatchObject({ code: 'NOT_MIGRATED' });
+    expect(await dump()).toBe(before);
+    expect((await record()).exists).toBe(false);
+
+    await run();
+    await rb();
+    const after = await dump();
+    await expect(rb()).rejects.toMatchObject({ code: 'NOT_MIGRATED' });
+    expect(await dump()).toBe(after);
+  });
+
+  it('RB-5: the preview writes nothing; the hash gate refuses a changed or wrong plan; the restore re-checks in its transaction', async () => {
+    await run();
+    const before = await dump();
+    const p = await prepareRollback(db, { pid: PID, force: false, deleteDocs: false });
+    expect(p.hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(p.blocked).toEqual([]);
+    const text = formatRollbackPreview(p, { pid: PID }).join('\n');
+    expect(text).toMatch(/schemaVersion +\(absent\) <- 2/);
+    expect(text).toMatch(/visibility +\(absent\) <- "restricted"/);
+    expect(text).toContain(`--expect ${p.hash}`);
+    expect(await dump()).toBe(before);
+    // Flags are part of the approved plan.
+    expect((await prepareRollback(db, { pid: PID, force: false, deleteDocs: true })).hash).not.toBe(p.hash);
+    expect((await prepareRollback(db, { pid: PID, force: true, deleteDocs: false })).hash).not.toBe(p.hash);
+    // Stable across re-reads.
+    expect((await prepareRollback(db, { pid: PID, force: false, deleteDocs: false })).hash).toBe(p.hash);
+
+    await expect(rb({ expectHash: '0000000000000000' })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    expect(await dump()).toBe(before);
+
+    // An edit after the forced preview: refused before the lost-data report.
+    const pf = await prepareRollback(db, { pid: PID, force: true, deleteDocs: false });
+    await db.doc(`${BASE}/tasks/t1`).update({ version: 2, updatedBy: 'uidZ' });
+    await expect(rb({ force: true, expectHash: pf.hash })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    expect(lost).toEqual([]);
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+
+    // An edit after the lost-data report (inside the window): the transaction refuses.
+    const pf2 = await prepareRollback(db, { pid: PID, force: true, deleteDocs: false });
+    await expect(rb({
+      force: true, expectHash: pf2.hash,
+      hooks: { beforeFlipBack: async () => { await db.doc(`${BASE}/tasks/t2`).update({ version: 2, updatedBy: 'uidZ' }); } },
+    })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+    expect((await record()).data().status).toBe('verified');
+
+    const pf3 = await prepareRollback(db, { pid: PID, force: true, deleteDocs: false });
+    const r = await rb({ force: true, expectHash: pf3.hash });
+    expect(r.flippedBack).toBe(true);
+  });
+
+  it('RB-6: migrate -> rollback -> migrate re-takes the before-image; a second rollback restores it', async () => {
+    await run();
+    await rb();
+    await db.doc(BASE).update({ visibility: 'department' }); // Owner changed it while back on v1
+    const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(prep.record.before).toEqual({ visibility: 'department' });
+    const r = await run({ expectHash: prep.planHash });
+    expect(r.verify.ok).toBe(true);
+    const rec = (await record()).data();
+    expect(rec.before).toEqual({ visibility: 'department' });
+    expect(rec.history.map((h) => h.status)).toEqual(['prepared', 'switched', 'verified', 'rolled-back', 'prepared', 'switched', 'verified']);
+    await rb();
+    const live = (await db.doc(BASE).get()).data();
+    expect(live.visibility).toBe('department');
+    expect('schemaVersion' in live).toBe(false);
+    expect('programMeta' in live).toBe(false);
+  });
+});
+
+afterAll(async () => { await cleanup(); await deleteApp(app); });
