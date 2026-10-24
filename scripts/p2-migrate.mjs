@@ -22,9 +22,12 @@
 //   node scripts/p2-migrate.mjs <pid> [--assignments p2-assignments.xlsx | --no-assignments] [--key service-account.json]          (preview, read-only; prints the plan hash)
 //   node scripts/p2-migrate.mjs <pid> (--assignments p2-assignments.xlsx | --no-assignments) --apply --expect <plan hash> [--key service-account.json]
 //   (after the switch, a top-up run uses --expect post-flip)
-// Exit codes: 0 ok; 1 usage / blocked / refused; 2 verification mismatch after the flip.
+//   node scripts/p2-migrate.mjs --rollback <pid> [--force-with-report] [--delete-v2-docs] [--key ...]                    (rollback preview, read-only; prints the rollback hash)
+//   node scripts/p2-migrate.mjs --rollback <pid> [same flags] --apply --expect <rollback hash>
+// Exit codes: 0 ok; 1 usage / blocked / refused / PLAN_CHANGED; 2 verification mismatch after
+// the flip; 3 rollback refused because v2 edits were found (see the rollback section).
 // Outputs (gitignored, contain people names): p2-migrate-preview-<pid>.xlsx,
-// p2-migrate-manifest-<pid>-<stamp>.json.
+// p2-migrate-manifest-<pid>-<stamp>.json, p2-rollback-lost-<pid>-<stamp>.json.
 
 import * as fs from 'node:fs';
 import * as XLSX from 'xlsx';
@@ -431,10 +434,222 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
   return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify, edits, wasVerified };
 }
 
+// ---------------------------------------------------------------- rollback (Ruling P4-7)
+//
+// The record (Ruling P4-4) is the source of truth. Order:
+//  0. refuse (nothing written) when there is no record / it is rolled back (NOT_MIGRATED),
+//     the project is not schemaVersion 2 (NOT_SWITCHED), the plan hash differs from
+//     --expect (PLAN_CHANGED), or v2 edits exist without --force-with-report (EDITS_FOUND);
+//  1. with force and edits: the lost-data report (writeLostReport) BEFORE any write;
+//  2. ONE transaction re-reads everything, requires the same plan (hash) as the preview,
+//     restores programMeta / memberUids / visibility / v1Absent / schemaVersion from
+//     record.before (absent -> field delete), keeps memberIds, and sets the record
+//     'rolled-back' with a history entry;
+//  3. only with --delete-v2-docs: deletes record-listed stamped docs and copied activity
+//     (plus the edited / client-created docs listed in the lost report when forced), each
+//     guarded by its read update time. Anything else is left and reported.
+
+const ROLLBACK_FROM = new Set(['prepared', 'switched', 'verified']);
+const stripDocs = (list) => (Array.isArray(list) ? list : []).map(({ id, data }) => ({ id, data }));
+
+// Pure. doc = live project | null; record | null; docs = { kind: [{ id, path, data, updateTime? }] };
+// activity = [{ id, path, data, updateTime? }] under projects/<pid>/activity.
+export function decideRollback({ pid, doc, record, docs = {}, activity = [], force = false, deleteDocs = false }) {
+  const out = {
+    pid, blocked: [], recordStatus: record?.status ?? null, edits: null, restore: [], lost: null,
+    refused: false, deletes: [], keep: [], memberIds: doc?.memberIds ?? null, hash: null, force, deleteDocs,
+  };
+  const block = (code, detail) => ({ ...out, blocked: [{ code, detail }] });
+  if (!record) return block('NOT_MIGRATED', `no migration record at ${RECORD_PATH(pid)}`);
+  if (record.status === 'rolled-back') return block('NOT_MIGRATED', 'the migration record is already rolled-back');
+  if (!doc) return block('NOT_FOUND', `${PROJECTS}/${pid} not found`);
+  if (doc.schemaVersion !== 2) return block('NOT_SWITCHED', `schemaVersion is ${doc.schemaVersion ?? '(absent)'}: the project is still v1 (record '${record.status}')`);
+  if (!ROLLBACK_FROM.has(record.status)) return block('NOT_SWITCHED', `unexpected record status '${record.status}'`);
+
+  const edits = detectV2Edits(record, {
+    meta: doc,
+    docs: Object.fromEntries(SUBCOLS.map((k) => [k, stripDocs(docs[k])])),
+    activity: stripDocs(activity),
+  });
+  const before = record.before || {};
+  const restore = BEFORE_KEYS.map((field) => ({
+    field, present: hasOwn(before, field), old: before[field], nowPresent: hasOwn(doc, field), now: doc[field],
+  }));
+  const editedKey = new Set(edits.edited.map((e) => `${e.kind}/${e.id}`));
+  const newEvents = new Set(edits.newActivity);
+  let lost = null;
+  if (!edits.clean) {
+    lost = {
+      docs: Object.fromEntries(SUBCOLS.map((k) => [k, Object.fromEntries((docs[k] || [])
+        .filter((d) => editedKey.has(`${k}/${d.id}`)).map((d) => [d.id, d.data]))])),
+      programMeta: edits.programMetaChanged ? { live: doc.programMeta ?? null, written: record.written?.programMeta ?? null } : null,
+      newActivity: activity.filter((a) => newEvents.has(a.id)).map(({ id, data }) => ({ id, data })),
+      deleted: edits.deleted,
+    };
+  }
+  // Delete plan: never a doc the record does not list (or a client doc) unless forced
+  // and therefore in the lost report.
+  const deletes = [];
+  const keep = [];
+  for (const k of SUBCOLS) {
+    const listed = new Set(Array.isArray(record.docIds?.[k]) ? record.docIds[k] : []);
+    for (const d of docs[k] || []) {
+      const ok = editedKey.has(`${k}/${d.id}`) ? force : listed.has(d.id);
+      (deleteDocs && ok ? deletes : keep).push({ path: d.path, updateTime: d.updateTime ?? null });
+    }
+  }
+  for (const a of activity) {
+    const ok = a.data?.copiedBy === MIGRATE_STAMP ? true : force;
+    (deleteDocs && ok ? deletes : keep).push({ path: a.path, updateTime: a.updateTime ?? null });
+  }
+  const res = { ...out, edits, restore, lost, refused: !edits.clean && !force, deletes, keep };
+  const hash = createHash('sha256').update(stableJson({
+    kind: 'rollback', pid, status: record.status, history: Array.isArray(record.history) ? record.history.length : 0,
+    v1Rev: record.v1Rev ?? null, restore, memberIds: doc.memberIds ?? null, edits, lost,
+    deletes: deletes.map((d) => d.path), force, deleteDocs,
+  })).digest('hex').slice(0, 16);
+  return { ...res, hash };
+}
+
+export const rollbackExitCode = (e) => (e && e.code === 'EDITS_FOUND' ? 3 : 1);
+
+const fmtVal = (present, v) => {
+  if (!present) return '(absent)';
+  if (Array.isArray(v)) return `[${v.length} item(s)]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).length} key(s)}`;
+  return JSON.stringify(v);
+};
+
+export function editLines(e) {
+  const L = [`v2 edits:    edited ${e.edited.length}, deleted ${e.deleted.length}, programMeta ${e.programMetaChanged ? 'changed' : 'unchanged'}, new events ${e.newActivity.length}`];
+  for (const d of e.edited.slice(0, 50)) L.push(`  edited ${d.kind}/${d.id} (version ${d.version}, updatedBy ${d.updatedBy})`);
+  if (e.edited.length > 50) L.push(`  ... ${e.edited.length - 50} more edited`);
+  for (const d of e.deleted.slice(0, 50)) L.push(`  deleted ${d.kind}/${d.id}`);
+  for (const id of e.newActivity.slice(0, 50)) L.push(`  new event activity/${id}`);
+  return L;
+}
+
+// prep = prepareRollback result -> string[].
+export function formatRollbackPreview(prep, { pid } = {}) {
+  const L = [`Rollback:    ${PROJECTS}/${pid}`];
+  if (prep.blocked.length) {
+    L.push(...issueLines('BLOCKING', prep.blocked));
+    return L;
+  }
+  L.push(`Record:      status ${prep.recordStatus}`);
+  L.push('Restore (old <- now):');
+  for (const r of prep.restore) {
+    const same = r.present === r.nowPresent && isDeepStrictEqual(r.old, r.now);
+    L.push(`  ${r.field.padEnd(14)} ${fmtVal(r.present, r.old)} <- ${fmtVal(r.nowPresent, r.now)}${same ? '  (unchanged)' : ''}`);
+  }
+  L.push(`  ${'memberIds'.padEnd(14)} kept ${fmtVal(prep.memberIds != null, prep.memberIds)} (grants are not revoked)`);
+  L.push(...editLines(prep.edits));
+  if (prep.lost) {
+    const n = SUBCOLS.reduce((s, k) => s + Object.keys(prep.lost.docs[k]).length, 0);
+    L.push(`Lost data:   ${n} edited/created doc(s), programMeta ${prep.lost.programMeta ? 'changed' : 'unchanged'}, ${prep.lost.newActivity.length} new event(s), ${prep.lost.deleted.length} deleted doc(s)`);
+    L.push(prep.force
+      ? '  --force-with-report: p2-rollback-lost-<pid>-<stamp>.json is written BEFORE any Firestore write'
+      : '  REFUSED (exit 3): re-run the preview with --force-with-report to keep a lost-data file and proceed');
+  } else {
+    L.push('Lost data:   none (no v2 edits)');
+  }
+  if (prep.deleteDocs) {
+    L.push(`Delete:      ${prep.deletes.length} v2 doc(s); left in place ${prep.keep.length}`);
+    for (const d of prep.keep.slice(0, 20)) L.push(`  keep ${d.path}`);
+  } else {
+    L.push(`Delete:      none (${prep.keep.length} v2 doc(s) stay, invisible; add --delete-v2-docs to delete)`);
+  }
+  const flags = `${prep.force ? ' --force-with-report' : ''}${prep.deleteDocs ? ' --delete-v2-docs' : ''}`;
+  L.push(`Plan hash:   ${prep.hash}  (apply with --rollback ${pid}${flags} --apply --expect ${prep.hash})`);
+  return L;
+}
+
+async function readRollbackState(db, pid, tx = null) {
+  const get = (ref) => (tx ? tx.get(ref) : ref.get());
+  const ps = await get(db.doc(`${PROJECTS}/${pid}`));
+  const rs = await get(db.doc(RECORD_PATH(pid)));
+  const list = async (path) => (await get(db.collection(path))).docs
+    .map((d) => ({ id: d.id, path: `${path}/${d.id}`, data: d.data(), updateTime: d.updateTime }));
+  const docs = {};
+  for (const k of SUBCOLS) docs[k] = await list(`${PROJECTS}/${pid}/${k}`);
+  const activity = await list(`${PROJECTS}/${pid}/${ACTIVITY_SUBCOL}`);
+  return { doc: ps.exists ? ps.data() : null, record: rs.exists ? rs.data() : null, docs, activity };
+}
+
+// Reads only.
+export async function prepareRollback(db, { pid, force = false, deleteDocs = false }) {
+  return decideRollback({ pid, ...(await readRollbackState(db, pid)), force, deleteDocs });
+}
+
+// See the section header. Throws NOT_MIGRATED / NOT_FOUND / NOT_SWITCHED / PLAN_CHANGED /
+// EDITS_FOUND with nothing written (PLAN_CHANGED from inside the transaction can follow a
+// lost-data report, but no Firestore write).
+export async function rollbackMigration(db, { pid, force = false, deleteDocs = false, FieldValue, Timestamp, writeLostReport, expectHash, hooks = {} }) {
+  const stepTime = () => (Timestamp ? Timestamp.now() : new Date());
+  const prep = await prepareRollback(db, { pid, force, deleteDocs });
+  if (prep.blocked.length) {
+    const b = prep.blocked[0];
+    throw fail(b.code, `Rollback refused: ${b.detail}. Nothing was written.`);
+  }
+  if (expectHash !== undefined && expectHash !== prep.hash) {
+    throw fail('PLAN_CHANGED', `Rollback plan changed since the approved preview (expected ${expectHash}, now ${prep.hash}). Re-run the preview. Nothing was written.`, { hash: prep.hash });
+  }
+  if (prep.refused) {
+    throw fail('EDITS_FOUND', 'Rollback refused: the v2 data was edited (see the list). Re-run with --force-with-report to keep a lost-data file and proceed. Nothing was written.', { edits: prep.edits });
+  }
+  if (prep.lost) {
+    const jsonable = (v) => (Timestamp ? toJsonable(v, Timestamp) : v);
+    await writeLostReport({
+      kind: 'p2-rollback-lost', pid, createdAt: new Date().toISOString(), recordStatus: prep.recordStatus,
+      edits: prep.edits, docs: jsonable(prep.lost.docs), programMeta: jsonable(prep.lost.programMeta),
+      newActivity: jsonable(prep.lost.newActivity), deleted: prep.lost.deleted,
+    });
+  }
+  if (hooks.beforeFlipBack) await hooks.beforeFlipBack();
+
+  const projRef = db.doc(`${PROJECTS}/${pid}`);
+  const recRef = db.doc(RECORD_PATH(pid));
+  let deletes = [];
+  await db.runTransaction(async (tx) => {
+    const s = await readRollbackState(db, pid, tx);
+    const cur = decideRollback({ pid, ...s, force, deleteDocs });
+    if (cur.blocked.length || cur.hash !== prep.hash) {
+      throw fail('PLAN_CHANGED', 'Rollback refused: the project, its record or its v2 data changed after the preview / lost-data report. Nothing was written; re-run the preview.');
+    }
+    const fields = Object.fromEntries(cur.restore.map((r) => [r.field, r.present ? r.old : FieldValue.delete()]));
+    tx.update(projRef, fields);
+    tx.update(recRef, {
+      status: 'rolled-back',
+      history: [...(Array.isArray(s.record.history) ? s.record.history : []), { status: 'rolled-back', at: stepTime(), forced: Boolean(cur.lost), deleteDocs }],
+    });
+    deletes = cur.deletes;
+  });
+
+  // Deletes only on request, each guarded by the update time read in the transaction.
+  let deleted = 0;
+  for (let i = 0; i < deletes.length; i += BATCH_OPS) {
+    const chunk = deletes.slice(i, i + BATCH_OPS);
+    const batch = db.batch();
+    for (const d of chunk) batch.delete(db.doc(d.path), d.updateTime ? { lastUpdateTime: d.updateTime } : undefined);
+    try {
+      await batch.commit();
+      deleted += chunk.length;
+    } catch (e) {
+      if (hooks.onDeleteError) hooks.onDeleteError(e);
+    }
+  }
+  const after = await readRollbackState(db, pid);
+  const leftover = [...SUBCOLS.flatMap((k) => after.docs[k]), ...after.activity].map((d) => d.path);
+  return { edits: prep.edits, flippedBack: true, deleted, leftover, lostReport: Boolean(prep.lost) };
+}
+
 // ---------------------------------------------------------------- CLI
 
 export function parseArgs(argv) {
-  const o = { pos: [], apply: false, key: 'service-account.json', assignments: null, noAssignments: false, expect: null, error: null };
+  const o = {
+    pos: [], apply: false, key: 'service-account.json', assignments: null, noAssignments: false, expect: null,
+    rollback: null, force: false, deleteDocs: false, error: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -447,9 +662,23 @@ export function parseArgs(argv) {
     else if (a === '--assignments') o.assignments = value();
     else if (a === '--no-assignments') o.noAssignments = true;
     else if (a === '--expect') o.expect = value();
+    else if (a === '--rollback') o.rollback = value();
+    else if (a === '--force-with-report') o.force = true;
+    else if (a === '--delete-v2-docs') o.deleteDocs = true;
     else if (a.startsWith('--')) o.error = o.error || `Unknown argument: ${a}`;
     else o.pos.push(a);
   }
+  if (o.error) return o;
+  if (o.rollback != null) {
+    // Ruling P4-7 / P4-16: --rollback <pid> [--force-with-report] [--delete-v2-docs] [--apply --expect <hash>].
+    if (o.pos.length) o.error = `--rollback takes exactly one project id; unexpected: ${o.pos.join(' ')}`;
+    else if (o.rollback.includes('/')) o.error = 'Invalid project id (no "/" allowed)';
+    else if (o.assignments || o.noAssignments) o.error = '--assignments / --no-assignments do not apply to --rollback';
+    else if (o.apply && !o.expect) o.error = '--apply needs --expect <rollback plan hash> from the approved rollback preview (Ruling P4-16)';
+    else if (o.expect && !/^[0-9a-f]{16}$/.test(o.expect)) o.error = `--expect must be the 16-hex rollback plan hash, got "${o.expect}"`;
+    return o;
+  }
+  if (o.force || o.deleteDocs) o.error = '--force-with-report / --delete-v2-docs are allowed only with --rollback';
   if (!o.error && (o.pos.length !== 1 || o.pos[0].includes('/'))) o.error = 'Exactly one project id (no "/") is required';
   if (!o.error && o.assignments && o.noAssignments) o.error = 'Use either --assignments or --no-assignments, not both';
   // Ruling P4-9: --apply needs an explicit assignments choice.
@@ -461,7 +690,44 @@ export function parseArgs(argv) {
   return o;
 }
 
-const USAGE = 'Usage: node scripts/p2-migrate.mjs <pid> [--assignments x.xlsx | --no-assignments] [--apply --expect <plan hash>] [--key service-account.json]';
+const USAGE = [
+  'Usage: node scripts/p2-migrate.mjs <pid> [--assignments x.xlsx | --no-assignments] [--apply --expect <plan hash>] [--key service-account.json]',
+  '       node scripts/p2-migrate.mjs --rollback <pid> [--force-with-report] [--delete-v2-docs] [--apply --expect <rollback hash>] [--key service-account.json]',
+].join('\n');
+
+async function rollbackMain(o) {
+  const pid = o.rollback;
+  // Key check first: nothing below touches Firestore without it.
+  const { db, FieldValue, Timestamp } = await openDb(o.key);
+  const prep = await prepareRollback(db, { pid, force: o.force, deleteDocs: o.deleteDocs });
+  for (const l of formatRollbackPreview(prep, { pid })) console.log(l);
+  if (prep.blocked.length) { console.error('Rollback refused (see above). Nothing was written.'); process.exit(1); }
+  if (!o.apply) {
+    console.log('Dry run: Firestore untouched. Re-run with the same flags plus --apply --expect <hash> to roll back.');
+    process.exit(prep.refused ? 3 : 0);
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const lostPath = `p2-rollback-lost-${pid}-${stamp}.json`;
+  let r;
+  try {
+    r = await rollbackMigration(db, {
+      pid, force: o.force, deleteDocs: o.deleteDocs, FieldValue, Timestamp, expectHash: o.expect,
+      writeLostReport: (obj) => {
+        fs.writeFileSync(lostPath, JSON.stringify(obj, null, 2));
+        console.log(`Lost data:   written to ${lostPath}`);
+      },
+    });
+  } catch (e) {
+    console.error(`${e.code ? `[${e.code}] ` : ''}${e.message || e}`);
+    if (e.edits) for (const l of editLines(e.edits)) console.error(l);
+    process.exit(rollbackExitCode(e));
+  }
+  console.log(`Rolled back: project fields restored from the record's before-image; record 'rolled-back'.`);
+  console.log(`Deleted:     ${r.deleted} v2 doc(s); left in place ${r.leftover.length}`);
+  for (const p of r.leftover.slice(0, 20)) console.log(`  left ${p}`);
+  if (r.leftover.length > 20) console.log(`  ... ${r.leftover.length - 20} more`);
+  process.exit(0);
+}
 
 async function openDb(keyPath) {
   if (!fs.existsSync(keyPath)) {
@@ -504,6 +770,7 @@ function printVerify(v) {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.error) { console.error(o.error); console.error(USAGE); process.exit(1); }
+  if (o.rollback != null) return rollbackMain(o);
   const [pid] = o.pos;
   let assignments = null;
   if (o.assignments) {
@@ -556,9 +823,7 @@ async function main() {
 }
 
 function printEdits(e) {
-  console.log(`v2 edits:    edited ${e.edited.length}, deleted ${e.deleted.length}, programMeta ${e.programMetaChanged ? 'changed' : 'unchanged'}, new events ${e.newActivity.length}`);
-  for (const d of e.edited.slice(0, 50)) console.log(`  edited ${d.kind}/${d.id} (version ${d.version}, updatedBy ${d.updatedBy})`);
-  for (const d of e.deleted.slice(0, 50)) console.log(`  deleted ${d.kind}/${d.id}`);
+  for (const l of editLines(e)) console.log(l);
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
