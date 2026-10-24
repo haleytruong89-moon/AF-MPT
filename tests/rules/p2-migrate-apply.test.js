@@ -249,4 +249,19 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
       expect((await record()).data().status).toBe('prepared');
     }
   });
+
+  it('MIG-10: a switch that never verified exits 2 on any mismatch, even with v2 edits present', async () => {
+    const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
+    await expect(run({ hooks: { afterFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });
+    expect((await record()).data().status).toBe('switched');
+    await db.doc(`${BASE}/tasks/t2`).update({ version: 2, updatedBy: 'uidZ', name: 'Edited' });
+    await db.doc(`${BASE}/tasks/t1`).delete(); // a real missing sub-doc
+    const r = await run();
+    expect(r.mode).toBe('post-flip');
+    expect(r.wasVerified).toBe(false);
+    expect(r.verify.ok).toBe(false);
+    expect(r.edits.edited.length).toBeGreaterThan(0);
+    expect(exitCodeFor(r)).toBe(2);
+    expect((await record()).data().status).toBe('switched');
+  });
 });

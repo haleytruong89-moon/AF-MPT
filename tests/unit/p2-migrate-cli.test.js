@@ -83,13 +83,22 @@ describe('p2-migrate pure core', () => {
     expect(formatMigrationPreview(a, { pid: PID }).join('\n')).toContain(`Plan hash:   ${a.planHash}`);
   });
 
-  it('a prepared record with a v2 doc at the planned rev recovers as post-flip', () => {
-    const v2 = { ...doc, schemaVersion: 2 };
-    const p = decide({ doc: v2, record: { status: 'prepared', v1Rev: 9 } });
+  it('a prepared record with a v2 doc at the planned rev / writeId / programMeta recovers as post-flip', () => {
+    const programMeta = decide().plan.flip.fields.programMeta;
+    const v2 = { ...doc, schemaVersion: 2, programMeta };
+    const rec = { status: 'prepared', v1Rev: 9, v1WriteId: 'w9', written: { programMeta } };
+    const p = decide({ doc: v2, record: rec });
     expect(p.mode).toBe('post-flip');
     expect(p.planHash).toBe(POST_FLIP_HASH);
     expect(formatMigrationPreview(p, { pid: PID, assignmentsGiven: true }).join('\n')).toContain('Assignments: ignored (post-flip)');
-    expect(decide({ doc: v2, record: { status: 'prepared', v1Rev: 8 } }).mode).toBe('blocked');
+    // Negative cases: each mismatch stays blocked.
+    expect(decide({ doc: v2, record: { ...rec, v1Rev: 8 } }).mode).toBe('blocked');
+    expect(decide({ doc: v2, record: { ...rec, v1WriteId: 'w8' } }).mode).toBe('blocked');
+    expect(decide({ doc: { ...v2, writeId: undefined }, record: rec }).mode).toBe('blocked');
+    expect(decide({ doc: { ...v2, rev: null }, record: { ...rec, v1Rev: null } }).mode).toBe('blocked');
+    expect(decide({ doc: { ...v2, rev: undefined }, record: { ...rec, v1Rev: undefined } }).mode).toBe('blocked');
+    expect(decide({ doc: { ...v2, programMeta: {} }, record: rec }).mode).toBe('blocked');
+    expect(decide({ doc: v2, record: { ...rec, written: undefined } }).mode).toBe('blocked');
   });
 
   it('exitCodeFor: drift from v2 edits after the switch is expected; other mismatches exit 2', () => {
@@ -98,8 +107,11 @@ describe('p2-migrate pure core', () => {
     const none = { edited: [], deleted: [], programMetaChanged: false, newActivity: ['x'] };
     expect(exitCodeFor({ mode: 'fresh', verify: { ok: true }, edits: null })).toBe(0);
     expect(exitCodeFor({ mode: 'fresh', verify: bad, edits: null })).toBe(2);
-    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits })).toBe(0);
-    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits: none })).toBe(2);
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits, wasVerified: true })).toBe(0);
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits: none, wasVerified: true })).toBe(2);
+    // Switched but never verified: any mismatch exits 2, even with v2 edits.
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits, wasVerified: false })).toBe(2);
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits })).toBe(2);
   });
 
   it('CLI args: --apply needs an assignments choice (P4-9) and --expect (P4-16)', () => {

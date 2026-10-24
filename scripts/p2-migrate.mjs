@@ -79,9 +79,13 @@ export function decideMigration({ pid, doc, record, existing = [], v2ActivityIds
 
   if (!doc) return { ...base, mode: 'blocked', blocked: [{ code: 'not-found', detail: `${PROJECTS}/${pid}` }] };
   if (doc.schemaVersion === 2) {
-    // 'prepared' + v2 with the planned rev = a flip whose status write was lost
-    // (before the status moved into the flip transaction): recover as post-flip.
-    const stuck = record && record.status === 'prepared' && (record.v1Rev ?? null) === (doc.rev ?? null);
+    // 'prepared' + v2 with the planned rev / writeId and the programMeta this run wrote
+    // = a flip whose status write was lost (before the status moved into the flip
+    // transaction): recover as post-flip. Anything less exact stays blocked.
+    const stuck = Boolean(record) && record.status === 'prepared'
+      && doc.rev != null && record.v1Rev === doc.rev
+      && (record.v1WriteId ?? null) === (doc.writeId ?? null)
+      && isDeepStrictEqual(doc.programMeta, record.written?.programMeta);
     if (record && (record.status === 'switched' || record.status === 'verified' || stuck)) {
       return { ...base, mode: 'post-flip', record, v1Rev: record.v1Rev ?? null, v1WriteId: record.v1WriteId ?? null, activity: activityOf(), planHash: POST_FLIP_HASH };
     }
@@ -135,14 +139,17 @@ export function planHash(prep, pid) {
   return createHash('sha256').update(stableJson(payload)).digest('hex').slice(0, 16);
 }
 
-// CLI exit code for an apply result: 0 ok; 0 for post-flip drift explained by v2 edits;
-// 2 for any other failed verify (Ruling P4-14).
+// CLI exit code for an apply result: 0 ok; 0 for post-flip drift explained by v2 edits,
+// but only when the record had already been 'verified' before this run (a switch that
+// never verified must verify clean first); 2 for any other failed verify (Ruling P4-14).
 export function exitCodeFor(r) {
   if (r.verify.ok) return 0;
   const e = r.edits;
-  if (r.mode === 'post-flip' && e && (e.edited.length || e.deleted.length || e.programMetaChanged)) return 0;
+  if (r.mode === 'post-flip' && r.wasVerified && e && (e.edited.length || e.deleted.length || e.programMetaChanged)) return 0;
   return 2;
 }
+
+const everVerified = (record) => Array.isArray(record?.history) && record.history.some((h) => h?.status === 'verified');
 
 const issueLines = (label, list) => (list.length ? [`${label}:`, ...list.map((i) => `  ${i.code}: ${i.detail}`)] : [`${label}: none`]);
 
@@ -419,7 +426,9 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
   const rec = (await recRef.get()).data();
   if (verify.ok && rec?.status !== 'verified') await setStatus(db, pid, 'verified', stepTime());
   const edits = prep.mode === 'post-flip' ? await detectEdits(db, pid, rec) : null;
-  return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify, edits };
+  // Verified at least once BEFORE this run (prep.record is the record as read up front).
+  const wasVerified = prep.mode === 'post-flip' && everVerified(prep.record);
+  return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify, edits, wasVerified };
 }
 
 // ---------------------------------------------------------------- CLI
