@@ -560,7 +560,9 @@ export function formatRollbackPreview(prep, { pid } = {}) {
     L.push(`Delete:      none (${prep.keep.length} v2 doc(s) stay, invisible; add --delete-v2-docs to delete)`);
   }
   const flags = `${prep.force ? ' --force-with-report' : ''}${prep.deleteDocs ? ' --delete-v2-docs' : ''}`;
-  L.push(`Plan hash:   ${prep.hash}  (apply with --rollback ${pid}${flags} --apply --expect ${prep.hash})`);
+  L.push(prep.refused
+    ? `Plan hash:   ${prep.hash}  (not applicable: refused without --force-with-report)`
+    : `Plan hash:   ${prep.hash}  (apply with --rollback ${pid}${flags} --apply --expect ${prep.hash})`);
   return L;
 }
 
