@@ -92,3 +92,43 @@ describe('normaliseForV2', () => {
     expect(idMap.some((m) => m.newId === `${hash}_2`)).toBe(true);
   });
 });
+
+describe('normaliseForV2 review fixes', () => {
+  it('N-8: null lists become [] in memory only', () => {
+    const f = fixture();
+    f.decisions = null;
+    f.programs[0].workstreams[0].tasks = null;
+    f.programs[1].workstreams = null;
+    const before = structuredClone(f);
+    const { project } = normaliseForV2(f, { pid: PID });
+    expect(project.decisions).toEqual([]);
+    expect(project.programs[0].workstreams[0].tasks).toEqual([]);
+    expect(project.programs[1].workstreams).toEqual([]);
+    expect(f).toEqual(before);
+    const a = fixture();
+    a.actionItems = null;
+    expect(normaliseForV2(a, { pid: PID }).project.actionItems).toEqual([]);
+    const p = fixture();
+    p.programs = null;
+    expect(normaliseForV2(p, { pid: PID }).project.programs).toEqual([]);
+  });
+
+  it('N-5b: drops nulls in RAID history, mitigationActions and their comments', () => {
+    const f = fixture();
+    f.programs[0].raid = [{
+      id: 'r1', title: 'x',
+      history: [null, { at: 1 }],
+      mitigationActions: [{ id: 'm1', comments: [null, { t: 1 }] }, null],
+    }];
+    const { project, removedNulls } = normaliseForV2(f, { pid: PID });
+    expect(removedNulls).toEqual([
+      'programs[0].raid[0].history[0]',
+      'programs[0].raid[0].mitigationActions[1]',
+      'programs[0].raid[0].mitigationActions[0].comments[0]',
+    ]);
+    const r = project.programs[0].raid[0];
+    expect(r.history).toHaveLength(1);
+    expect(r.mitigationActions).toHaveLength(1);
+    expect(r.mitigationActions[0].comments).toHaveLength(1);
+  });
+});

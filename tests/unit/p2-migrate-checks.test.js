@@ -115,3 +115,40 @@ describe('detectV2Edits', () => {
     expect(detectV2Edits(record, l4).programMetaChanged).toBe(true);
   });
 });
+
+describe('precheck review fixes', () => {
+  it('null ws.tasks / decisions: not blocking, null-list warns', () => {
+    const f = fixture();
+    f.programs[0].workstreams[0].tasks = null;
+    f.decisions = null;
+    const r = precheckProject(f, { pid: PID });
+    expect(r.blocking).toEqual([]);
+    expect(r.warnings).toContainEqual({ code: 'null-list', detail: 'programs[0].workstreams[0].tasks' });
+    expect(r.warnings).toContainEqual({ code: 'null-list', detail: 'decisions' });
+  });
+
+  it('C-1b: pic-unresolved detail names the Zed task doc', () => {
+    const r = precheckProject(fixture(), { pid: PID });
+    const z = r.warnings.filter((w) => w.code === 'pic-unresolved');
+    const zedTask = r.split.tasks.find((t) => t.data.pic === 'Zed Unknown');
+    expect(z.map((w) => w.detail)).toContain(zedTask.id);
+  });
+
+  it('already-v2 blocks', () => {
+    const r = precheckProject({ ...fixture(), schemaVersion: 2 }, { pid: PID });
+    expect(codes(r.blocking)).toContain('already-v2');
+  });
+
+  it('ref-to-reid warns for references to an invalid id', () => {
+    const f = fixture();
+    f.programs[0].workstreams[0].tasks[1].id = 'a/b';
+    f.actionItems[0].relatedTaskId = 'a/b';
+    f.programs[0].workstreams[0].tasks[0].dependencies = ['a/b'];
+    const r = precheckProject(f, { pid: PID });
+    const w = r.warnings.filter((x) => x.code === 'ref-to-reid');
+    expect(w.map((x) => x.detail).sort()).toEqual([
+      'actionItems[0].relatedTaskId -> a/b',
+      'programs[0].workstreams[0].tasks[0].dependencies[0] -> a/b',
+    ]);
+  });
+});

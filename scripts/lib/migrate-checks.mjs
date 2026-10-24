@@ -37,6 +37,26 @@ function nullListPaths(doc) {
   return out;
 }
 
+// References (relatedTaskId, relatedTaskIds, dependencies) to an id re-assigned because it was invalid.
+function refsToReid(normalised) {
+  const bad = new Set(normalised.idMap.filter((m) => m.reason === 'invalid' && m.oldId != null).map((m) => String(m.oldId)));
+  const out = [];
+  if (!bad.size) return out;
+  const walk = (v, path) => {
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
+    if (!isObj(v)) return;
+    for (const [k, x] of Object.entries(v)) {
+      const p = path ? `${path}.${k}` : k;
+      if (k === 'relatedTaskId' && x != null && bad.has(String(x))) out.push(`${p} -> ${x}`);
+      else if ((k === 'relatedTaskIds' || k === 'dependencies') && Array.isArray(x)) {
+        x.forEach((y, i) => { if (y != null && typeof y !== 'object' && bad.has(String(y))) out.push(`${p}[${i}] -> ${y}`); });
+      } else walk(x, p);
+    }
+  };
+  walk(normalised.project, '');
+  return out;
+}
+
 export function precheckProject(doc, { pid, dirIndex = null, uidByEmail = new Map(), maxBytes = MAX_PROJECT_DOC_BYTES } = {}) {
   const blocking = [];
   const warnings = [];
@@ -48,7 +68,8 @@ export function precheckProject(doc, { pid, dirIndex = null, uidByEmail = new Ma
     return { blocking, warnings, normalised: null, split: null };
   }
   if (doc.deletedAt) block('deleted', String(doc.deletedAt));
-  if (doc.schemaVersion !== 2) {
+  if (doc.schemaVersion === 2) block('already-v2', pid);
+  else {
     const present = ['programMeta', 'memberUids', 'v1Absent'].filter((k) => hasOwn(doc, k));
     if (present.length) block('v2-fields-present', present.join(', '));
   }
@@ -94,6 +115,7 @@ export function precheckProject(doc, { pid, dirIndex = null, uidByEmail = new Ma
       if (d.data.picEmail && !d.data.picUid) warn('pic-invite-only', `${kind}/${d.id}`);
     }
   }
+  for (const r of refsToReid(normalised)) warn('ref-to-reid', r);
   if (split.report.collisions.length) warn('key-collisions', split.report.collisions.length);
   if (!Array.isArray(doc.memberIds) || !doc.memberIds.length) warn('no-members', pid);
   if (normalised.idMap.length) warn('ids-generated', normalised.idMap.length);

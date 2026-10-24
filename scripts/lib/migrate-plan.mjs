@@ -56,6 +56,7 @@ export function planMigration(doc, { pid, dirIndex = null, uidByEmail = new Map(
 
   const docIds = {};
   for (const kind of SUBCOLS) docIds[kind] = subWrites.filter((w) => w.path.split('/')[4] === kind).map((w) => w.path.split('/')[5]);
+  // idMap paths = v1 indices (frozen v1 doc / backup), not the post-drop indices.
   const record = {
     written: { programMeta: fields.programMeta, memberUids: fields.memberUids },
     docIds,
@@ -68,6 +69,10 @@ export function planMigration(doc, { pid, dirIndex = null, uidByEmail = new Map(
       ...Object.fromEntries(SUBCOLS.map((k) => [k, docIds[k].length])),
     },
     assignments: preview,
+    members: {
+      memberUidsAdded: fields.memberUids.filter((u) => !(Array.isArray(doc.memberUids) ? doc.memberUids : []).includes(u)),
+      memberIdsAdded: (fields.memberIds || []).filter((u) => !had.has(u)),
+    },
     docBytes: Buffer.byteLength(JSON.stringify({ ...doc, ...fields }), 'utf8'),
   };
   return { blocked: null, writes: subWrites, flip: { path: base, fields }, record, report };
@@ -106,6 +111,7 @@ export function planActivityCopy(entries, { uidByEmail = new Map(), now = new Da
   const n = list.length;
   const used = new Set();
   const docs = [];
+  let clamped = 0;
   let newer = null; // createdAt of the next-newer entry
   list.forEach((e, i) => {
     const entry = e && typeof e === 'object' ? e : {};
@@ -117,7 +123,12 @@ export function planActivityCopy(entries, { uidByEmail = new Map(), now = new Da
     used.add(id);
     const parsed = entry.timestamp == null ? null : new Date(entry.timestamp);
     const valid = parsed && !Number.isNaN(parsed.getTime());
-    const createdAt = valid ? parsed : (newer ? new Date(newer.getTime() - 1) : new Date(now.getTime()));
+    let createdAt = valid ? parsed : (newer ? new Date(newer.getTime() - 1) : new Date(now.getTime()));
+    // Keep the v1 order: never at or after the next-newer entry (skewed clock, same-ms tie).
+    if (valid && newer && createdAt.getTime() >= newer.getTime()) {
+      createdAt = new Date(newer.getTime() - 1);
+      clamped++;
+    }
     newer = createdAt;
     const email = typeof entry.author === 'string' ? entry.author : null;
     const key = email ? email.trim().toLowerCase() : null;
@@ -135,6 +146,7 @@ export function planActivityCopy(entries, { uidByEmail = new Map(), now = new Da
       },
     });
   });
+  docs.clamped = clamped; // entries whose createdAt was moved to keep the v1 order
   return docs;
 }
 

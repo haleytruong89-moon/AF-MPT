@@ -53,6 +53,14 @@ export function generatedId(pid, kind, item, n) {
 
 export function normaliseForV2(input, { pid } = {}) {
   const project = structuredClone(input);
+  // Null lists are read as [] by the app (Ruling Z): in memory only, the v1 doc stays frozen.
+  const nullToEmpty = (o, k) => { if (o && typeof o === 'object' && o[k] === null) o[k] = []; };
+  for (const k of ['programs', 'actionItems', 'decisions']) nullToEmpty(project, k);
+  for (const p of Array.isArray(project.programs) ? project.programs : []) {
+    if (!p || typeof p !== 'object') continue;
+    nullToEmpty(p, 'workstreams');
+    for (const w of Array.isArray(p.workstreams) ? p.workstreams : []) nullToEmpty(w, 'tasks');
+  }
   const idMap = [];
   const removedNulls = [];
 
@@ -117,7 +125,16 @@ export function normaliseForV2(input, { pid } = {}) {
     if (!isObj(prog)) return;
     const ppath = `programs[${progIdx[pk]}]`;
     fixId(prog, 'program', ppath, structuredClone(prog));
-    dropNulls(prog, 'raid', `${ppath}.raid`);
+    const raidIdx = dropNulls(prog, 'raid', `${ppath}.raid`);
+    arr(prog.raid).forEach((r, rk) => {
+      if (!isObj(r)) return;
+      const rpath = `${ppath}.raid[${raidIdx[rk]}]`;
+      dropNulls(r, 'history', `${rpath}.history`);
+      const mIdx = dropNulls(r, 'mitigationActions', `${rpath}.mitigationActions`);
+      arr(r.mitigationActions).forEach((m, mk) => {
+        if (isObj(m)) dropNulls(m, 'comments', `${rpath}.mitigationActions[${mIdx[mk]}].comments`);
+      });
+    });
     const wsIdx = dropNulls(prog, 'workstreams', `${ppath}.workstreams`);
     arr(prog.workstreams).forEach((ws, wk) => {
       if (!isObj(ws)) return;

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildDirectoryIndex } from '../../src/directory.js';
+import { assembleProject } from '../../src/migrateV2.js';
+import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { planMigration, reconcileExisting, planActivityCopy, MIGRATE_STAMP, RECORD_PATH } from '../../scripts/lib/migrate-plan.mjs';
 
 const fixture = () => JSON.parse(readFileSync(new URL('../fixtures/v1-project.json', import.meta.url), 'utf8'));
@@ -118,5 +120,48 @@ describe('planActivityCopy', () => {
     const sorted = [...docs].sort((a, b) => b.data.createdAt - a.data.createdAt);
     expect(sorted.map((d) => d.id)).toEqual(docs.map((d) => d.id));
     expect(docs[0].data.createdAt).toEqual(now);
+  });
+});
+
+describe('plan review fixes', () => {
+  it('report.members lists granted uids', () => {
+    const f = fixture();
+    const r = planMigration(f, opts(rows([P({ 'Program id': 'pg1', 'PM email': 'bob@smartosc.com' })])));
+    expect(r.report.members.memberUidsAdded).toEqual(expect.arrayContaining(['uid1', 'uid2']));
+    expect(r.report.members.memberUidsAdded).toContain('uidZ'); // v1 doc has no memberUids yet
+    expect(r.report.members.memberIdsAdded).toEqual(expect.arrayContaining(['uid2']));
+    expect(r.report.members.memberIdsAdded).not.toContain('uidZ');
+    const plain = planMigration(fixture(), opts());
+    expect(plain.report.members.memberIdsAdded).toEqual([]);
+  });
+
+  it('writes + flip assemble back to the normalised tree', () => {
+    const r = planMigration(fixture(), opts());
+    const meta = { ...fixture(), ...r.flip.fields };
+    const pick = (kind) => r.writes.filter((w) => w.path.split('/')[4] === kind)
+      .map((w) => ({ id: w.path.split('/')[5], data: w.data }));
+    const back = assembleProject(meta, pick('workstreams'), pick('tasks'), pick('actions'), pick('raid'), pick('decisions'));
+    const norm = normaliseForV2(fixture(), { pid: PID });
+    const { visibility: _v, schemaVersion: _s, ...got } = back.project;
+    void _v; void _s;
+    expect(got).toEqual(norm.project);
+    expect(back.orphans.tasks).toEqual([]);
+  });
+
+  it('A-4: skewed and tied timestamps are clamped to keep order', () => {
+    const E = (id, ts) => ({ id, timestamp: ts, author: 'a@smartosc.com' });
+    const entries = [
+      E('n', '2026-10-01T00:00:00.000Z'),
+      E('tie', '2026-10-01T00:00:00.000Z'),
+      E('skew', '2026-10-05T00:00:00.000Z'),
+      E('ok', '2026-09-01T00:00:00.000Z'),
+    ];
+    const docs = planActivityCopy(entries, { pid: PID, uidByEmail, now: new Date('2026-10-24T00:00:00Z'), existingIds: new Set() });
+    const ts = docs.map((d) => d.data.createdAt.getTime());
+    for (let i = 1; i < ts.length; i++) expect(ts[i]).toBeLessThan(ts[i - 1]);
+    expect(docs[1].data.createdAt.getTime()).toBe(Date.parse('2026-10-01T00:00:00.000Z') - 1);
+    expect(docs[1].data.timestamp).toBe('2026-10-01T00:00:00.000Z');
+    expect(docs.clamped).toBe(2);
+    expect(docs[3].data.createdAt).toEqual(new Date('2026-09-01T00:00:00.000Z'));
   });
 });
