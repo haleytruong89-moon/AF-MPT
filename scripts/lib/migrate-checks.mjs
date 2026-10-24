@@ -57,6 +57,25 @@ function refsToReid(normalised) {
   return out;
 }
 
+// Paths of nested values that are objects but not plain JSON (class instances such as
+// Firestore Timestamps or Dates). structuredClone in normaliseForV2 would drop their
+// prototype, so the round trip / verify could not compare them reliably.
+function nonPlainPaths(doc) {
+  const out = [];
+  const walk = (v, path) => {
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
+    if (!v || typeof v !== 'object') return;
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      out.push(`${path} (${v.constructor?.name || 'object'})`);
+      return;
+    }
+    for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+  };
+  for (const k of ['programs', 'actionItems', 'decisions']) if (doc && hasOwn(doc, k)) walk(doc[k], k);
+  return out;
+}
+
 export function precheckProject(doc, { pid, dirIndex = null, uidByEmail = new Map(), maxBytes = MAX_PROJECT_DOC_BYTES } = {}) {
   const blocking = [];
   const warnings = [];
@@ -76,6 +95,7 @@ export function precheckProject(doc, { pid, dirIndex = null, uidByEmail = new Ma
   arr(doc.programs).forEach((p, i) => {
     if (isObj(p) && hasOwn(p, 'raid') && !Array.isArray(p.raid)) block('raid-not-array', `programs[${i}].raid`);
   });
+  for (const p of nonPlainPaths(doc)) block('non-plain-value', p);
 
   const normalised = normaliseForV2(doc, { pid });
   const split = splitProject(normalised.project, { wid: 'main', dirIndex, uidByEmail });

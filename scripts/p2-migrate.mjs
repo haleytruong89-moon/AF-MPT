@@ -1,22 +1,27 @@
 // P2.4 Task 5: switch ONE real project in place from v1 to v2 (spec M4).
 //
-// Order of writes (plan "Architecture", Rulings P4-4..P4-8):
+// Order of writes (plan "Architecture", Rulings P4-4..P4-8, P4-16):
+//  0. refuse (nothing written) when blocked, when the plan hash differs from --expect
+//     (the hash of the preview HOD approved), or when foreign sub-docs exist;
 //  1. the migration record workspaces/main/migrations/<pid> (status 'prepared', before-image);
 //  2. the local manifest (audit copy of this run);
 //  3. the sub-collection docs (workstreams / tasks / actions / raid / decisions), batched,
 //     plus stale stamped docs deleted. They stay invisible while schemaVersion is not 2;
-//  4. THE FLIP, last: one transaction that requires the live project doc to still have
-//     rev === v1Rev, the same writeId, no deletedAt and schemaVersion !== 2 (else
-//     REV_CHANGED and nothing becomes visible), then sets programMeta / memberUids /
-//     visibility / v1Absent / schemaVersion 2 (+ memberIds when assignments add people);
-//  5. record 'switched'; 6. activity copy (top-up); 7. read-back verify; 8. record 'verified'.
+//  4. THE FLIP, last, in ONE transaction with the record status 'switched': requires the
+//     live project doc to still have rev === v1Rev, the same writeId, no deletedAt,
+//     schemaVersion !== 2 and unchanged memberIds / roles / visibility (else REV_CHANGED
+//     and nothing becomes visible), then sets programMeta / memberUids / visibility /
+//     v1Absent / schemaVersion 2 (+ memberIds when assignments add people);
+//  5. activity copy (top-up); 6. read-back verify; 7. record 'verified'.
 // The frozen v1 arrays (programs / actionItems / decisions) are never written.
-// A re-run after the flip only tops up the activity copy and re-verifies (Ruling P4-6).
-// A failed verify exits 2 and leaves the record 'switched' (Ruling P4-14): no auto-rollback.
+// A re-run after the flip only tops up the activity copy and re-verifies (Ruling P4-6);
+// it reports v2 edits, and verify drift explained by them is expected (exit 0).
+// A failed verify otherwise exits 2 and leaves the record 'switched' (Ruling P4-14).
 //
 // Usage:
-//   node scripts/p2-migrate.mjs <pid> [--assignments p2-assignments.xlsx | --no-assignments] [--key service-account.json]          (preview, read-only)
-//   node scripts/p2-migrate.mjs <pid> (--assignments p2-assignments.xlsx | --no-assignments) --apply [--key service-account.json]
+//   node scripts/p2-migrate.mjs <pid> [--assignments p2-assignments.xlsx | --no-assignments] [--key service-account.json]          (preview, read-only; prints the plan hash)
+//   node scripts/p2-migrate.mjs <pid> (--assignments p2-assignments.xlsx | --no-assignments) --apply --expect <plan hash> [--key service-account.json]
+//   (after the switch, a top-up run uses --expect post-flip)
 // Exit codes: 0 ok; 1 usage / blocked / refused; 2 verification mismatch after the flip.
 // Outputs (gitignored, contain people names): p2-migrate-preview-<pid>.xlsx,
 // p2-migrate-manifest-<pid>-<stamp>.json.
@@ -24,11 +29,13 @@
 import * as fs from 'node:fs';
 import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { toJsonable } from './lib/manifest.mjs';
 import { directoryFrom } from './p2-pilot-copy.mjs';
 import { parseAssignmentsWorkbook, formatPreview } from './lib/assignments.mjs';
-import { normaliseForV2 } from './lib/migrate-normalise.mjs';
-import { countReport } from './lib/migrate-checks.mjs';
+import { normaliseForV2, stableJson } from './lib/migrate-normalise.mjs';
+import { countReport, detectV2Edits } from './lib/migrate-checks.mjs';
 import {
   planMigration, reconcileExisting, planActivityCopy,
   RECORD_PATH, SUBCOLS, ACTIVITY_SUBCOL, MIGRATE_STAMP, MAX_PROJECT_DOC_BYTES,
@@ -46,6 +53,8 @@ const toDate = (t) => (t && typeof t.toDate === 'function' ? t.toDate() : t inst
 const fail = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
 
 export const MANIFEST_KIND = 'p2-migrate';
+// --expect value for a post-flip run: it only tops up activity, so there is no plan to approve.
+export const POST_FLIP_HASH = 'post-flip';
 
 // ---------------------------------------------------------------- pure core
 
@@ -70,8 +79,11 @@ export function decideMigration({ pid, doc, record, existing = [], v2ActivityIds
 
   if (!doc) return { ...base, mode: 'blocked', blocked: [{ code: 'not-found', detail: `${PROJECTS}/${pid}` }] };
   if (doc.schemaVersion === 2) {
-    if (record && (record.status === 'switched' || record.status === 'verified')) {
-      return { ...base, mode: 'post-flip', record, v1Rev: record.v1Rev ?? null, v1WriteId: record.v1WriteId ?? null, activity: activityOf() };
+    // 'prepared' + v2 with the planned rev = a flip whose status write was lost
+    // (before the status moved into the flip transaction): recover as post-flip.
+    const stuck = record && record.status === 'prepared' && (record.v1Rev ?? null) === (doc.rev ?? null);
+    if (record && (record.status === 'switched' || record.status === 'verified' || stuck)) {
+      return { ...base, mode: 'post-flip', record, v1Rev: record.v1Rev ?? null, v1WriteId: record.v1WriteId ?? null, activity: activityOf(), planHash: POST_FLIP_HASH };
     }
     const detail = record ? `schemaVersion 2 with migration record status '${record.status}'` : 'schemaVersion 2 and no migration record (pilot copy or manual edit?)';
     return { ...base, mode: 'blocked', blocked: [{ code: 'v2-not-migrated-here', detail }] };
@@ -100,13 +112,42 @@ export function decideMigration({ pid, doc, record, existing = [], v2ActivityIds
     live: { meta: { ...doc, ...plan.flip.fields }, ...byKind(plan.writes), activity: allActivity },
     v1ActivityCount: v1Entries.length,
   });
-  return { ...base, mode: 'fresh', plan, reconcile, record: newRecord, planned, activity: activityOf() };
+  // Access fields the flip guard re-checks (a revoke between preview and flip refuses it).
+  const guard = { memberIds: doc.memberIds, roles: doc.roles, visibility: doc.visibility };
+  const prep = { ...base, mode: 'fresh', plan, reconcile, record: newRecord, planned, guard, activity: activityOf() };
+  return { ...prep, planHash: planHash(prep, pid) };
+}
+
+// Ruling P4-16: hash of everything HOD approves in the preview. Excludes times
+// (history.at, now) and the activity copy (it is a top-up, re-run after the flip).
+export function planHash(prep, pid) {
+  const payload = {
+    pid,
+    v1Rev: prep.v1Rev,
+    v1WriteId: prep.v1WriteId,
+    writes: prep.plan.writes.map((w) => ({ path: w.path, data: w.data })),
+    staleDeletes: prep.reconcile.staleDeletes,
+    flip: prep.plan.flip.fields,
+    members: prep.plan.report.members,
+    assignments: prep.plan.report.assignments ?? null,
+    idMap: prep.record.idMap,
+  };
+  return createHash('sha256').update(stableJson(payload)).digest('hex').slice(0, 16);
+}
+
+// CLI exit code for an apply result: 0 ok; 0 for post-flip drift explained by v2 edits;
+// 2 for any other failed verify (Ruling P4-14).
+export function exitCodeFor(r) {
+  if (r.verify.ok) return 0;
+  const e = r.edits;
+  if (r.mode === 'post-flip' && e && (e.edited.length || e.deleted.length || e.programMetaChanged)) return 0;
+  return 2;
 }
 
 const issueLines = (label, list) => (list.length ? [`${label}:`, ...list.map((i) => `  ${i.code}: ${i.detail}`)] : [`${label}: none`]);
 
 // prep = prepareMigration result; nameOfUid(uid) -> display string. -> string[].
-export function formatMigrationPreview(prep, { pid, nameOfUid = (u) => u } = {}) {
+export function formatMigrationPreview(prep, { pid, nameOfUid = (u) => u, assignmentsGiven = false } = {}) {
   const L = [];
   L.push(`Project:     ${PROJECTS}/${pid}`);
   L.push(`Mode:        ${prep.mode}`);
@@ -119,6 +160,8 @@ export function formatMigrationPreview(prep, { pid, nameOfUid = (u) => u } = {})
   if (prep.mode === 'post-flip') {
     L.push(`Record:      status ${prep.record.status} (already switched: sub-docs are not rewritten)`);
     L.push(`Activity:    ${prep.activity.length} v1 entries to top up (of ${prep.v1ActivityCount}), clamped ${prep.activity.clamped ?? 0}`);
+    if (assignmentsGiven) L.push('Assignments: ignored (post-flip)');
+    L.push(`Plan hash:   ${prep.planHash}  (top-up only: apply with --expect ${prep.planHash})`);
     return L;
   }
   const { report } = prep.plan;
@@ -152,12 +195,13 @@ export function formatMigrationPreview(prep, { pid, nameOfUid = (u) => u } = {})
     L.push('Assignments: none');
   }
   L.push(`Activity:    ${prep.activity.length} entries to copy (of ${prep.v1ActivityCount}), clamped ${prep.activity.clamped ?? 0}`);
+  L.push(`Plan hash:   ${prep.planHash}  (apply with --expect ${prep.planHash})`);
   return L;
 }
 
 // -> { Summary, Checks, 'Id map', Assignments } as arrays of row objects.
-export function previewSheets(prep, { pid, nameOfUid = (u) => u } = {}) {
-  const Summary = formatMigrationPreview(prep, { pid, nameOfUid }).map((line) => ({ Line: line }));
+export function previewSheets(prep, { pid, nameOfUid = (u) => u, assignmentsGiven = false } = {}) {
+  const Summary = formatMigrationPreview(prep, { pid, nameOfUid, assignmentsGiven }).map((line) => ({ Line: line }));
   const issues = prep.plan?.report?.issues || { blocking: prep.blocked, warnings: [] };
   const Checks = [
     ...(prep.mode === 'blocked' ? prep.blocked : issues.blocking).map((i) => ({ Severity: 'blocking', Code: i.code, Detail: i.detail })),
@@ -261,24 +305,40 @@ async function copyActivity(db, pid, { uidByEmail, now, Timestamp }) {
   return { copied: docs.length, clamped: docs.clamped };
 }
 
+const historyWith = (cur, status, at) => [...(Array.isArray(cur?.history) ? cur.history : []), { status, at }];
+
 async function setStatus(db, pid, status, at) {
   const ref = db.doc(RECORD_PATH(pid));
   const cur = (await ref.get()).data() || {};
-  const history = [...(Array.isArray(cur.history) ? cur.history : []), { status, at }];
-  await ref.update({ status, history });
+  await ref.update({ status, history: historyWith(cur, status, at) });
 }
 
-// See the header for the order. Throws Error with code BLOCKED / FOREIGN_DOCS (nothing
-// written) or REV_CHANGED (record 'prepared' and invisible sub-docs written, v1 intact).
-export async function applyMigration(db, { pid, assignments = null, now = new Date(), Timestamp, FieldValue, writeManifest, hooks = {} }) {
+// Live sub-docs + activity in the shape detectV2Edits expects.
+async function detectEdits(db, pid, record) {
+  const meta = (await db.doc(`${PROJECTS}/${pid}`).get()).data() || {};
+  const sub = await readSubDocs(db, pid);
+  const docs = Object.fromEntries(SUBCOLS.map((k) => [k, sub[k].map(({ id, data }) => ({ id, data }))]));
+  const activity = (await docsOf(db, `${PROJECTS}/${pid}/${ACTIVITY_SUBCOL}`)).map(({ id, data }) => ({ id, data }));
+  return detectV2Edits(record, { meta, docs, activity });
+}
+
+// See the header for the order. Throws Error with code BLOCKED / PLAN_CHANGED /
+// FOREIGN_DOCS (nothing written) or REV_CHANGED (record 'prepared' and invisible
+// sub-docs written, v1 intact). expectHash (CLI --expect): when given, a fresh run
+// refuses unless the plan it is about to apply has exactly that hash (Ruling P4-16).
+export async function applyMigration(db, { pid, assignments = null, now = new Date(), Timestamp, FieldValue, writeManifest, expectHash, hooks = {} }) {
   void FieldValue; // part of the shared signature (rollback uses it)
+  const stepTime = () => (Timestamp ? Timestamp.now() : new Date());
   const prep = await prepareMigration(db, { pid, assignments, now });
   if (hooks.onPrepared) await hooks.onPrepared(prep);
   if (prep.mode === 'blocked') {
     throw fail('BLOCKED', `Blocked: ${prep.blocked.map((b) => `${b.code} (${b.detail})`).join('; ')}. Nothing was written.`, { blocked: prep.blocked });
   }
-  const at = now ?? new Date();
+  if (expectHash !== undefined && expectHash !== prep.planHash) {
+    throw fail('PLAN_CHANGED', `Plan changed since the approved preview (expected ${expectHash}, now ${prep.planHash}). Re-run the preview and get it approved. Nothing was written.`, { planHash: prep.planHash });
+  }
   const { uidByEmail } = prep.dir;
+  const recRef = db.doc(RECORD_PATH(pid));
   let written = 0;
   let deleted = 0;
 
@@ -295,12 +355,14 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
     const flipFields = prep.plan.flip.fields;
 
     // 1. record, 2. manifest (before any sub-doc write).
-    await db.doc(RECORD_PATH(pid)).set(prep.record);
+    const hist = prep.record.history.slice(0, -1);
+    await recRef.set({ ...prep.record, history: historyWith({ history: hist }, 'prepared', stepTime()) });
     writeManifest({
       kind: MANIFEST_KIND,
       pid,
       v1Rev: prep.v1Rev,
       v1WriteId: prep.v1WriteId,
+      planHash: prep.planHash,
       createdAt: new Date().toISOString(),
       entries: [
         ...rc.toWrite.map((w) => ({ op: 'set', path: w.path, before: before(w.path) })),
@@ -323,36 +385,47 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
 
     if (hooks.beforeFlip) await hooks.beforeFlip();
 
-    // 4. the flip (Ruling P4-5).
+    // 4. the flip (Ruling P4-5) and 5. status 'switched', in ONE transaction.
+    // Also refused when the access fields changed since the preview (a revoke).
     await db.runTransaction(async (tx) => {
       const s = await tx.get(db.doc(base));
+      const rs = await tx.get(recRef);
       const d = s.exists ? s.data() : null;
+      const r = rs.exists ? rs.data() : null;
+      const g = prep.guard;
       const why = !d ? 'project doc is gone'
         : (d.rev ?? null) !== prep.v1Rev ? `rev ${d.rev ?? null} !== planned ${prep.v1Rev}`
         : (d.writeId ?? null) !== prep.v1WriteId ? 'writeId changed'
         : d.deletedAt ? 'project was deleted'
         : d.schemaVersion === 2 ? 'already schemaVersion 2'
+        : !isDeepStrictEqual(d.memberIds, g.memberIds) ? 'memberIds changed'
+        : !isDeepStrictEqual(d.roles, g.roles) ? 'roles changed'
+        : !isDeepStrictEqual(d.visibility, g.visibility) ? 'visibility changed'
+        : !r || r.status !== 'prepared' ? 'migration record changed'
         : null;
-      if (why) throw fail('REV_CHANGED', `Flip refused: ${why}. The project stays v1; re-run the migration.`);
+      if (why) throw fail('REV_CHANGED', `Flip refused: ${why}. The project stays v1; re-run the preview.`);
       tx.update(db.doc(base), flipFields);
+      tx.update(recRef, { status: 'switched', history: historyWith(r, 'switched', stepTime()) });
     });
-
-    // 5. switched.
-    await setStatus(db, pid, 'switched', at);
+    if (hooks.afterFlip) await hooks.afterFlip();
+  } else if (prep.record.status === 'prepared') {
+    // Recovery of a flip whose status write was lost (see decideMigration).
+    await setStatus(db, pid, 'switched', stepTime());
   }
 
   // 6. activity copy (also the post-flip top-up), 7. verify, 8. verified.
   const act = await copyActivity(db, pid, { uidByEmail, now, Timestamp });
   const verify = await verifyMigration(db, pid);
-  const status = (await db.doc(RECORD_PATH(pid)).get()).data()?.status;
-  if (verify.ok && status !== 'verified') await setStatus(db, pid, 'verified', at);
-  return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify };
+  const rec = (await recRef.get()).data();
+  if (verify.ok && rec?.status !== 'verified') await setStatus(db, pid, 'verified', stepTime());
+  const edits = prep.mode === 'post-flip' ? await detectEdits(db, pid, rec) : null;
+  return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify, edits };
 }
 
 // ---------------------------------------------------------------- CLI
 
 export function parseArgs(argv) {
-  const o = { pos: [], apply: false, key: 'service-account.json', assignments: null, noAssignments: false, error: null };
+  const o = { pos: [], apply: false, key: 'service-account.json', assignments: null, noAssignments: false, expect: null, error: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -364,6 +437,7 @@ export function parseArgs(argv) {
     else if (a === '--key') o.key = value();
     else if (a === '--assignments') o.assignments = value();
     else if (a === '--no-assignments') o.noAssignments = true;
+    else if (a === '--expect') o.expect = value();
     else if (a.startsWith('--')) o.error = o.error || `Unknown argument: ${a}`;
     else o.pos.push(a);
   }
@@ -371,10 +445,14 @@ export function parseArgs(argv) {
   if (!o.error && o.assignments && o.noAssignments) o.error = 'Use either --assignments or --no-assignments, not both';
   // Ruling P4-9: --apply needs an explicit assignments choice.
   if (!o.error && o.apply && !o.assignments && !o.noAssignments) o.error = '--apply needs --assignments <xlsx> or --no-assignments (Ruling P4-9)';
+  // Ruling P4-16: --apply needs the plan hash printed by the approved preview
+  // ('post-flip' for a top-up run after the switch).
+  if (!o.error && o.apply && !o.expect) o.error = '--apply needs --expect <plan hash> from the approved preview (Ruling P4-16)';
+  if (!o.error && o.expect && !/^([0-9a-f]{16}|post-flip)$/.test(o.expect)) o.error = `--expect must be a 16-hex plan hash or "post-flip", got "${o.expect}"`;
   return o;
 }
 
-const USAGE = 'Usage: node scripts/p2-migrate.mjs <pid> [--assignments x.xlsx | --no-assignments] [--apply] [--key service-account.json]';
+const USAGE = 'Usage: node scripts/p2-migrate.mjs <pid> [--assignments x.xlsx | --no-assignments] [--apply --expect <plan hash>] [--key service-account.json]';
 
 async function openDb(keyPath) {
   if (!fs.existsSync(keyPath)) {
@@ -428,11 +506,15 @@ async function main() {
   const now = Timestamp.now();
   const prep = await prepareMigration(db, { pid, assignments, now });
   const nameOfUid = nameLookup(prep.dir.members);
-  for (const l of formatMigrationPreview(prep, { pid, nameOfUid })) console.log(l);
+  const assignmentsGiven = Boolean(o.assignments);
+  for (const l of formatMigrationPreview(prep, { pid, nameOfUid, assignmentsGiven })) console.log(l);
   const xlsxPath = `p2-migrate-preview-${pid}.xlsx`;
-  writePreviewXlsx(xlsxPath, previewSheets(prep, { pid, nameOfUid }));
+  writePreviewXlsx(xlsxPath, previewSheets(prep, { pid, nameOfUid, assignmentsGiven }));
   console.log(`Preview:     ${xlsxPath}`);
-  if (prep.mode === 'post-flip') printVerify(await verifyMigration(db, pid));
+  if (prep.mode === 'post-flip') {
+    printVerify(await verifyMigration(db, pid));
+    printEdits(await detectEdits(db, pid, prep.record));
+  }
   const refused = prep.mode === 'blocked' || (prep.reconcile?.foreign.length ?? 0) > 0;
   if (!o.apply) {
     console.log('Dry run: Firestore untouched. Re-run with --apply (and --assignments or --no-assignments) to write.');
@@ -445,7 +527,7 @@ async function main() {
   let r;
   try {
     r = await applyMigration(db, {
-      pid, assignments, now, Timestamp, FieldValue,
+      pid, assignments: prep.mode === 'post-flip' ? null : assignments, now, Timestamp, FieldValue, expectHash: o.expect,
       writeManifest: (m) => fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2)),
     });
   } catch (e) {
@@ -455,10 +537,19 @@ async function main() {
   console.log(`Applied (${r.mode}): ${r.written} sub-docs written, ${r.deleted} stale deleted, ${r.activityCopied} activity copied (clamped ${r.activityClamped}).`);
   if (r.mode === 'fresh') console.log(`Manifest:    ${manifestPath}`);
   printVerify(r.verify);
-  if (!r.verify.ok) {
+  if (r.edits) printEdits(r.edits);
+  const code = exitCodeFor(r);
+  if (!r.verify.ok && code === 0) console.log('Verify differences: drift from v2 edits (expected).');
+  if (code === 2) {
     console.error('Verification mismatch: the record stays "switched". No automatic rollback (Ruling P4-14): fix forward or run --rollback.');
-    process.exit(2);
   }
+  process.exit(code);
+}
+
+function printEdits(e) {
+  console.log(`v2 edits:    edited ${e.edited.length}, deleted ${e.deleted.length}, programMeta ${e.programMetaChanged ? 'changed' : 'unchanged'}, new events ${e.newActivity.length}`);
+  for (const d of e.edited.slice(0, 50)) console.log(`  edited ${d.kind}/${d.id} (version ${d.version}, updatedBy ${d.updatedBy})`);
+  for (const d of e.deleted.slice(0, 50)) console.log(`  deleted ${d.kind}/${d.id}`);
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

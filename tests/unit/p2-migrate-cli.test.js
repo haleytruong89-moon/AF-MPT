@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { decideMigration, formatMigrationPreview, previewSheets, parseArgs } from '../../scripts/p2-migrate.mjs';
+import { decideMigration, formatMigrationPreview, previewSheets, parseArgs, exitCodeFor, POST_FLIP_HASH } from '../../scripts/p2-migrate.mjs';
 import { directoryFrom } from '../../scripts/p2-pilot-copy.mjs';
 
 // Pure parts of scripts/p2-migrate.mjs (the I/O is covered by tests/rules/p2-migrate-apply.test.js).
@@ -69,10 +69,45 @@ describe('p2-migrate pure core', () => {
     expect(sheets['Id map']).toHaveLength(2);
   });
 
-  it('CLI args: --apply needs an assignments choice (Ruling P4-9)', () => {
-    expect(parseArgs(['p1', '--apply']).error).toMatch(/--no-assignments/);
-    expect(parseArgs(['p1', '--apply', '--no-assignments']).error).toBeNull();
-    expect(parseArgs(['p1', '--apply', '--assignments', 'a.xlsx']).error).toBeNull();
+  it('planHash: stable across re-reads and times, changes with the plan or v1 rev', () => {
+    const a = decide();
+    expect(a.planHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(decide({ now: new Date('2030-01-01T00:00:00Z'), record: { status: 'prepared', history: [{ status: 'prepared', at: 1 }] } }).planHash).toBe(a.planHash);
+    expect(decide({ v1Entries: [] }).planHash).toBe(a.planHash); // activity copy excluded
+    expect(decide({ doc: { ...doc, rev: 10 } }).planHash).not.toBe(a.planHash);
+    expect(decide({ doc: { ...doc, decisions: [{ id: 'd1', title: 'Changed' }] } }).planHash).not.toBe(a.planHash);
+    expect(decide({ doc: { ...doc, memberIds: ['uidZ', 'u_hod'] } }).planHash).not.toBe(a.planHash);
+    const stale = [{ path: 'workspaces/main/projects/proj_fx/tasks/old', data: { updatedBy: 'p2-migrate', version: 1 } }];
+    expect(decide({ existing: stale }).planHash).not.toBe(a.planHash);
+    expect(a.guard).toEqual({ memberIds: ['uidZ'], roles: { uidZ: 'owner' }, visibility: 'department' });
+    expect(formatMigrationPreview(a, { pid: PID }).join('\n')).toContain(`Plan hash:   ${a.planHash}`);
+  });
+
+  it('a prepared record with a v2 doc at the planned rev recovers as post-flip', () => {
+    const v2 = { ...doc, schemaVersion: 2 };
+    const p = decide({ doc: v2, record: { status: 'prepared', v1Rev: 9 } });
+    expect(p.mode).toBe('post-flip');
+    expect(p.planHash).toBe(POST_FLIP_HASH);
+    expect(formatMigrationPreview(p, { pid: PID, assignmentsGiven: true }).join('\n')).toContain('Assignments: ignored (post-flip)');
+    expect(decide({ doc: v2, record: { status: 'prepared', v1Rev: 8 } }).mode).toBe('blocked');
+  });
+
+  it('exitCodeFor: drift from v2 edits after the switch is expected; other mismatches exit 2', () => {
+    const bad = { ok: false };
+    const edits = { edited: [{ kind: 'tasks', id: 't2' }], deleted: [], programMetaChanged: false, newActivity: [] };
+    const none = { edited: [], deleted: [], programMetaChanged: false, newActivity: ['x'] };
+    expect(exitCodeFor({ mode: 'fresh', verify: { ok: true }, edits: null })).toBe(0);
+    expect(exitCodeFor({ mode: 'fresh', verify: bad, edits: null })).toBe(2);
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits })).toBe(0);
+    expect(exitCodeFor({ mode: 'post-flip', verify: bad, edits: none })).toBe(2);
+  });
+
+  it('CLI args: --apply needs an assignments choice (P4-9) and --expect (P4-16)', () => {
+    expect(parseArgs(['p1', '--apply', '--expect', 'post-flip']).error).toMatch(/--no-assignments/);
+    expect(parseArgs(['p1', '--apply', '--no-assignments']).error).toMatch(/--expect/);
+    expect(parseArgs(['p1', '--apply', '--no-assignments', '--expect', '0123456789abcdef']).error).toBeNull();
+    expect(parseArgs(['p1', '--apply', '--assignments', 'a.xlsx', '--expect', 'post-flip']).error).toBeNull();
+    expect(parseArgs(['p1', '--apply', '--no-assignments', '--expect', 'nope']).error).toMatch(/16-hex/);
     expect(parseArgs(['p1', '--assignments', 'a.xlsx', '--no-assignments']).error).toMatch(/either/);
     expect(parseArgs(['p1']).error).toBeNull();
     expect(parseArgs([]).error).toMatch(/project id/);

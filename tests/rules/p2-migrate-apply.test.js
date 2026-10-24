@@ -4,7 +4,7 @@ import { initializeApp, deleteApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, getDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
-import { applyMigration, prepareMigration } from '../../scripts/p2-migrate.mjs';
+import { applyMigration, prepareMigration, exitCodeFor } from '../../scripts/p2-migrate.mjs';
 import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { SUBCOLS, RECORD_PATH, MIGRATE_STAMP } from '../../scripts/lib/migrate-plan.mjs';
 import { loadV2Lists, assembleFromSnapshots, appValueFromV1, appValueFromV2 } from '../../src/readV2.js';
@@ -81,6 +81,9 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     expect(rec.idMap).toHaveLength(2);
     expect(rec.v1Rev).toBe(9);
     expect(rec.history.map((h) => h.status)).toEqual(['prepared', 'switched', 'verified']);
+    expect(rec.history.every((h) => h.at instanceof Timestamp)).toBe(true);
+    expect(r.edits).toBeNull();
+    expect(exitCodeFor(r)).toBe(0);
     expect(r.verify.ok).toBe(true);
 
     expect(manifests).toHaveLength(1);
@@ -105,6 +108,7 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
   });
 
   it('MIG-3: a v1 save between plan and flip -> REV_CHANGED, nothing visible; a re-run switches with no duplicates', async () => {
+    const firstHash = (await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() })).planHash;
     await expect(run({ hooks: { beforeFlip: async () => { await db.doc(BASE).update({ rev: 10 }); } } }))
       .rejects.toMatchObject({ code: 'REV_CHANGED' });
     const p = (await db.doc(BASE).get()).data();
@@ -119,7 +123,12 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     expect(prep.reconcile.toWrite).toEqual([]);
     expect(prep.reconcile.foreign).toEqual([]);
 
-    const r = await run();
+    // The hash HOD approved before the v1 save no longer matches: refused, record untouched.
+    expect(prep.planHash).not.toBe(firstHash);
+    await expect(run({ expectHash: firstHash })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    expect((await record()).data().history).toHaveLength(1);
+
+    const r = await run({ expectHash: prep.planHash });
     expect(r.written).toBe(0);
     expect(r.verify.ok).toBe(true);
     expect(await countOf(`${BASE}/tasks`)).toBe(prep.plan.report.docs.tasks);
@@ -139,6 +148,10 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     expect(r.written).toBe(0);
     expect(r.deleted).toBe(0);
     expect(r.activityCopied).toBe(1);
+    // Drift from the v2 edit is expected: reported, not an error.
+    expect(r.verify.ok).toBe(false);
+    expect(r.edits.edited).toEqual([{ kind: 'tasks', id: 't2', version: 2, updatedBy: 'uidZ' }]);
+    expect(exitCodeFor(r)).toBe(0);
     expect((await db.doc(`${BASE}/tasks/t2`).get()).data()).toMatchObject({ version: 2, updatedBy: 'uidZ', name: 'Edited' });
     expect(await countOf(`${BASE}/activity`)).toBe(4);
     expect((await db.doc(`${BASE}/activity/e4`).get()).data().copiedBy).toBe(MIGRATE_STAMP);
@@ -176,5 +189,64 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     expect(r.mode).toBe('post-flip');
     expect(r.activityCopied).toBe(1);
     expect((await db.doc(`${BASE}/activity/e_stale`).get()).data()).toMatchObject({ copiedBy: MIGRATE_STAMP, authorUid: 'uidZ' });
+  });
+
+  it('MIG-7: plan hash gate: a changed plan is refused before any write; a same-hash re-run is accepted', async () => {
+    const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(prep.planHash).toMatch(/^[0-9a-f]{16}$/);
+    const changed = seedProject.actionItems.map((a, i) => (i === 0 ? { ...a, title: 'Changed after preview' } : a));
+    await db.doc(BASE).update({ actionItems: changed, rev: 10, writeId: 'w10' });
+    let wrote = false;
+    await expect(run({ expectHash: prep.planHash, writeManifest: () => { wrote = true; } }))
+      .rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    expect(wrote).toBe(false);
+    expect((await record()).exists).toBe(false);
+    expect(await countOf(`${BASE}/tasks`)).toBe(0);
+    expect('schemaVersion' in (await db.doc(BASE).get()).data()).toBe(false);
+
+    // A crash before the flip: the re-run sees the same plan (same hash) and applies.
+    const p2 = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
+    await expect(run({ expectHash: p2.planHash, hooks: { beforeFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });
+    const p3 = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(p3.planHash).toBe(p2.planHash);
+    const r = await run({ expectHash: p2.planHash });
+    expect(r.verify.ok).toBe(true);
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+  });
+
+  it('MIG-8: the switched status commits with the flip; a stuck prepared + v2 project recovers post-flip', async () => {
+    const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
+    await expect(run({ hooks: { afterFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });
+    expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
+    expect((await record()).data().status).toBe('switched');
+    expect((await record()).data().history.map((h) => h.status)).toEqual(['prepared', 'switched']);
+    const r = await run();
+    expect(r.mode).toBe('post-flip');
+    expect(r.activityCopied).toBe(3);
+    expect(r.verify.ok).toBe(true);
+    expect((await record()).data().status).toBe('verified');
+
+    // Legacy stuck state (flip landed, status write did not).
+    await db.doc(RECORD_PATH(PID)).update({ status: 'prepared' });
+    expect((await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() })).mode).toBe('post-flip');
+    const r2 = await run();
+    expect(r2.mode).toBe('post-flip');
+    expect((await record()).data().status).toBe('verified');
+
+    // A prepared record for another v1 rev is not recovered.
+    await db.doc(RECORD_PATH(PID)).update({ status: 'prepared', v1Rev: 3 });
+    expect((await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() })).mode).toBe('blocked');
+  });
+
+  it('MIG-9: memberIds / roles / visibility changed between prepare and flip -> REV_CHANGED', async () => {
+    for (const change of [{ memberIds: [] }, { roles: { uidZ: 'owner', uid1: 'operator' } }, { visibility: 'department' }]) {
+      await resetData();
+      await seed();
+      await expect(run({ hooks: { beforeFlip: async () => { await db.doc(BASE).update(change); } } }))
+        .rejects.toMatchObject({ code: 'REV_CHANGED' });
+      expect('schemaVersion' in (await db.doc(BASE).get()).data()).toBe(false);
+      expect((await record()).data().status).toBe('prepared');
+    }
   });
 });

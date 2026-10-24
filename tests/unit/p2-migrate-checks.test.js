@@ -152,3 +152,25 @@ describe('precheck review fixes', () => {
     ]);
   });
 });
+
+describe('non-plain-value (Task 5 review)', () => {
+  it('blocks a class instance (e.g. a Timestamp) nested under programs / actionItems / decisions', () => {
+    class Ts { constructor(s) { this.seconds = s; this.nanoseconds = 0; } }
+    const f = fixture();
+    f.programs[0].workstreams[0].tasks[0].doneAt = new Ts(1);
+    f.actionItems[1].meta = { at: new Ts(2) };
+    f.decisions[0].when = new Date(0);
+    const r = precheckProject(f, { pid: PID });
+    expect(r.blocking.filter((b) => b.code === 'non-plain-value').map((b) => b.detail).sort()).toEqual([
+      'actionItems[1].meta.at (Ts)',
+      'decisions[0].when (Date)',
+      'programs[0].workstreams[0].tasks[0].doneAt (Ts)',
+    ]);
+  });
+
+  it('plain JSON and null-prototype objects pass', () => {
+    const f = fixture();
+    f.programs[0].extra = Object.assign(Object.create(null), { a: 1 });
+    expect(codes(precheckProject(f, { pid: PID }).blocking)).not.toContain('non-plain-value');
+  });
+});
