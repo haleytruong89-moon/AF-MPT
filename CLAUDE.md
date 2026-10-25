@@ -102,7 +102,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
 | Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
-| Chuyển đổi dữ liệu v2 lỗi | Document project cũ giữ nguyên tới M6; đặt lại `schemaVersion: 1` | HOD |
+| Chuyển một project sang v2 lỗi | Báo mọi người trước. `npm run p2:migrate -- --rollback <pid>` (xem trước, in mã hash) → HOD duyệt → thêm `--apply --expect <hash>`. Nếu từ chối vì đã có sửa trên v2: đọc danh sách, rồi dùng `--force-with-report --delete-v2-docs` (ghi file dữ liệu mất trước). Sau đó mọi người hard-refresh. Document v1 giữ nguyên tới P2.5 | HOD |
 | Project v2 cần restore | Restore trong app **từ chối** nếu bản backup làm mất task hoặc xóa sạch comment (P2.3, Ruling AA) → restore qua script Admin SDK (preview → HOD duyệt), hoặc đặt lại `schemaVersion: 1` rồi restore v1 | HOD |
 | Pilot copy P2 | `node scripts/p2-pilot-copy.mjs --rollback <manifest>` (chỉ xóa đúng các path đã ghi; từ chối nếu target không phải pilot) | HOD |
 
@@ -111,8 +111,8 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 ## Current Status
 
 - Phase (vibe-code): **4 — Iterate & Debug**, có loop-back về Phase 1–2 (spec phân quyền v2 đã viết và đã đối chiếu code)
-- Last updated: 23/10/2026
-- Commit production: `796e871` (23/10/2026, P2.2), Vercel tự deploy từ `main`
+- Last updated: 25/10/2026
+- Commit production: `2006675` (24/10/2026, P2.2 + plan P2.3 #19), Vercel tự deploy từ `main`
 - Firestore rules production: **bản P2.2** (gồm P2.1), HOD publish qua Console 23/10/2026. Hoàn tác = chọn lại bản trước trong lịch sử Rules trên Console
 - `workspaces/main.ownerUids` = [uid HOD], ghi 23/10 05:01 (manifest `p2-owner-uids-manifest-2026-10-23T05-01-27-009Z.json`, gitignored). Pilot copy Treasury 2026 (P2.2) đã tạo, so khớp, HOD xem, rồi rollback
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
@@ -133,8 +133,9 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
   - P2.1 merged (#16): split/assemble, dry-run, `ownerUids` (+ khóa Transfer ownership trong app khi đã set), rules v2 theo vai trò. Còn: HOD publish rules; chạy `p2-set-owner-uids` (preview → duyệt → apply); HOD điền `p2-assignments.xlsx`
   - P2.2 merged + deploy (#18): gate (trường v2 chỉ Owner, RAID docs `raid/{programId}` — Ruling K′, contributor chỉ thêm update), v1 save giữ trường v2 từ server, đọc project v2 (read-only), pilot copy + compare
   - P2.3 trên `feat/p2-3` (PR #20, plan `docs/superpowers/plans/2026-10-23-p2-3-write-path.md`): ghi v2 theo từng document trong transaction trên `version` (planner `src/planV2Save.js` + executor `src/execV2Save.js`), Decisions thành docs (Ruling Q), `authorUid` trên entry mới (Ruling R), activity v2 mỗi event 1 doc, MembersModal giữ `memberUids` đồng bộ, pilot copy nhận `--assignments`. Runbook trong PR #20
+  - P2.4 trên `feat/p2-4` (PR #21, xếp chồng trên #20; plan `docs/superpowers/plans/2026-10-24-p2-4-switch-real-projects.md`): CLI `scripts/p2-migrate.mjs` chuyển tại chỗ từng project (pre-check, xem trước có mã hash, `--apply --expect <hash>`, đổi `schemaVersion` cuối cùng trong 1 transaction, chép activity, verify), rollback có phát hiện sửa trên v2; rules chỉ cho đọc/ghi sub-collection v2 khi project đang v2. Dry-run offline trên backup 22/10: 7/7 project ráp đúng, 0 chặn. Runbook trong PR #21. Chưa ghi gì lên production
   - Giới hạn đã chấp nhận tới P3: Assignee không tự đóng task (A4) và không resolve blocker (Ruling W); PIC biện pháp RAID không tự đánh Done (Ruling AG); đổi tên/trọng số program chỉ Owner; sửa bị từ chối nằm lại trong trang → phải Reload; PM một program không chuyển task sang program khác; sửa `teamMembers`/`contributorRegistry` của project v2 chỉ Owner; restore v2 làm mất task bị từ chối
 - HOD quyết (23/10): Q1 Decisions/RAID do mọi PM/Sub-PM của project ghi; A2/A3 1 PM (+Deputy) / program, 1 Sub-PM / WS; A4 Assignee không tự Completed/Dropped; contributor chỉ thêm update
 - Câu hỏi mở chờ HOD: giả định A1, Q2, Q3, Q6 trong spec v2
-- Tiếp theo: merge P2.3 → pilot vai trò trên bản copy Treasury 2026 với 3 đồng nghiệp (1 PM, 1 Sub-PM, 1 Assignee) → plan P2.4 (chuyển dữ liệu thật) → onboard; P3 (Submit as done + Approvals) trước khi dùng dữ liệu chấm performance
+- Tiếp theo: HOD duyệt + merge #20 → #21 → P3 (đang code trên nhánh riêng, plan `docs/superpowers/plans/2026-10-24-p3-approvals.md`) → pilot vai trò trên bản copy Treasury 2026 → chuyển đợt 1 (AF 2026 Key Results, AF 2026 Operation, Treasury 2026) → 1–2 tuần → P2.4b script restore v2 → đợt 2 (MA, CRP, UBO, AF Lean) → onboard
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
