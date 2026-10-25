@@ -704,10 +704,7 @@ service cloud.firestore {
     // r = role map (see closeTransitionOk).
     function closeFromSubmitted(wid, pid, s1, c0, c1, r) {
       return c0 is map && (
-        (isOpenSt(s1) && c1 == null
-          && c0.get('requestedByUid', null) == request.auth.uid
-          && histOk('Withdrawn'))
-        || (isClosedSt(s1) && c1 == null
+        (isClosedSt(s1) && c1 == null
           && s1 == c0.get('outcome', null)
           && request.resource.data.get('approvedByUid', null) == request.auth.uid
           && histOk('Approved')
@@ -716,6 +713,9 @@ service cloud.firestore {
           && histOk('Rejected')
           && reasonOk(request.resource.data.closeRequestHistory[0])
           && canDecide(c0, r.pm, r.m))
+        || (isOpenSt(s1) && c1 == null
+          && c0.get('requestedByUid', null) == request.auth.uid
+          && histOk('Withdrawn'))
         || (r.pm && s1 == 'Submitted' && c1 is map
           && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
           && histOk('Reassigned')
@@ -782,6 +782,12 @@ service cloud.firestore {
         && isActiveMember(wid);
     }
 
+    // Active member without re-running isSmartOSC (the allow rule did).
+    function activeMemberDoc(wid) {
+      return exists(v2MemberPath(wid))
+        && get(v2MemberPath(wid)).data.get('status', null) == 'active';
+    }
+
     // PM / Sub-PM (non-Owner managers). Active-member check, project data,
     // programMeta entry and pm are each computed once (expression limit).
     // No self-credit: picUid may change only while the task is open (not
@@ -822,7 +828,7 @@ service cloud.firestore {
         isWsOwner(wid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl)
         || taskContributorUpdate(wid, ch)
-        || taskManagerUpdate(wid, pid, ch, s0, s1, isActiveMember(wid), v2Project(wid, pid))
+        || taskManagerUpdate(wid, pid, ch, s0, s1, activeMemberDoc(wid), v2Project(wid, pid))
       );
     }
 

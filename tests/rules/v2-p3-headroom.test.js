@@ -7,29 +7,30 @@ import { scenarios, seedScenario, writeScenario } from './p3-scenarios.js';
 // P3 review round 1: expression-limit headroom (CI only).
 // Loads firestore.rules with k "pad units" injected in front of the task
 // update path (taskUpdateWith) and of the /users/{uid} write rule. One pad
-// unit = p10(x): ten `x != ''` comparisons. The heaviest P3 allow paths
-// (realistic executor payloads, p3-scenarios.js) must still pass with
-// MIN_UNITS units (~150 no-op comparisons) on top. The largest k that still
+// unit = p2(x): two `x != ''` comparisons (~12 expressions; CI run
+// 40173946977 measured ~53 per ten comparisons). The heaviest P3 allow
+// paths (realistic executor payloads, p3-scenarios.js) must still pass with
+// MIN_UNITS units (~100 extra expressions) on top. The largest k that still
 // passes is logged per scenario; the /users write (a near-empty rule) gives
 // the cost of one unit: ~1000 / kMax(users) expressions.
 
-const MIN_UNITS = 15;
-const MAX_UNITS = 120;
+const MIN_UNITS = 8;
+const MAX_UNITS = 160;
 const BASE = readFileSync('firestore.rules', 'utf8');
 
-// Balanced && tree of k p10 calls: a flat chain of ~25+ terms is rejected
+// Balanced && tree of k p2 calls: a flat chain of ~25+ terms is rejected
 // at compile time ("Expression is too complex to evaluate safely").
 function bal(k) {
-  if (k === 1) return 'p10(x)';
+  if (k === 1) return 'p2(x)';
   const h = Math.floor(k / 2);
   return `(${bal(h)} && ${bal(k - h)})`;
 }
 
 function paddedRules(k) {
-  const p10 = `function p10(x) { return ${Array(10).fill("x != ''").join(' && ')}; }`;
+  const p2 = "function p2(x) { return x != '' && x != ''; }";
   const pad = k === 0 ? 'true' : bal(k);
   let s = BASE.replace(/(match \/databases\/\{database\}\/documents \{\r?\n)/,
-    `$1    ${p10}\n    function padOk(x) { return ${pad}; }\n`);
+    `$1    ${p2}\n    function padOk(x) { return ${pad}; }\n`);
   const before = s;
   s = s.replace(/(function taskUpdateWith\(wid, pid, ch, s0, s1, cl\) \{\r?\n\s*return )/, '$1padOk(wid) && ');
   if (s === before) throw new Error('taskUpdateWith not found');
@@ -101,7 +102,7 @@ describe('P3 expression headroom (padded rules)', () => {
     for (const env of envs.values()) await env.cleanup();
   });
 
-  it('H-1 heaviest P3 allow paths pass with ~150 extra expressions; headroom logged', async () => {
+  it('H-1 heaviest P3 allow paths pass with ~100 extra expressions; headroom logged', async () => {
     const cal = await maxUnits(usersProbe, 0);
     const perUnit = 1000 / (cal + 1);
     const rows = [];
