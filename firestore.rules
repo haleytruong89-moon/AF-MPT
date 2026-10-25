@@ -644,8 +644,12 @@ service cloud.firestore {
     // The Owner never reaches this (Owner branch first). pm = caller is
     // PM/Deputy of the task's program and m = that program's programMeta
     // entry (both computed once by the caller).
+    // Ruling P3-C4 (no self-credit): a manager in the task's contributorUids
+    // never decides its close request. The stored (old) list is checked, so
+    // dropping oneself from it in the deciding write does not help.
     function canDecide(cr, pm, m) {
       return cr.get('requestedByUid', null) != request.auth.uid
+        && !inList(resource.data.get('contributorUids', null), request.auth.uid)
         && (cr.get('approverUid', null) == request.auth.uid
           || (pm && !isPMOrDeputyUid(m, cr.get('requestedByUid', null))));
     }
