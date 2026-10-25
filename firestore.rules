@@ -530,9 +530,10 @@ service cloud.firestore {
     //   may change the credit fields (creditKeys) only while the task is
     //   open; a direct close keeps them and
     //   is denied to a manager in contributorUids (Ruling P3-C2); reopen
-    //   clears approvedByUid / approvedAt / closedByUid. Ruling P3-C6
-    //   (PROVISIONAL): the credit split (creditShares / creditSharesMode) is
-    //   Owner-only at every status.
+    //   clears approvedByUid / approvedAt / closedByUid. Ruling P3-C6′
+    //   (PROVISIONAL): a manager may change creditShares only in auto mode
+    //   (the App recomputes them from pic + contributors); manual mode (set,
+    //   edit, or leave it) is Owner-only.
     //   Nobody decides their own request. Every write that sets status to
     //   Completed / Dropped carries approvedByUid == caller (closeStampOk,
     //   Owner included). A non-Owner creates tasks Planned / InProgress only.
@@ -614,9 +615,8 @@ service cloud.firestore {
     // creditOf: pic / picUid, contributors, creditShares). A non-Owner
     // manager may change them only while the task is open, and never in a
     // direct-close write (no self-credit).
-    // Ruling P3-C6 (PROVISIONAL): of these, creditShares / creditSharesMode
-    // (the split) are Owner-only at every status, open tasks included. The
-    // Assignee / contributor key lists never had them.
+    // Ruling P3-C6′ (PROVISIONAL): see splitOk. The Assignee / contributor
+    // key lists never had creditShares / creditSharesMode.
     function creditKeys() {
       return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode'];
     }
@@ -861,14 +861,26 @@ service cloud.firestore {
       return get(v2MemberPath(wid)).data.get('status', null) == 'active';
     }
 
+    // Ruling P3-C6′ (PROVISIONAL), non-Owner managers: a write that touches
+    // creditShares / creditSharesMode must leave the mode auto (absent, null
+    // or 'auto', as App.jsx reads it) and the stored mode must not be
+    // 'manual'. Setting manual, editing shares while manual, and switching
+    // manual -> auto are Owner-only. Evaluated only when a credit key
+    // changed and the task is open (Ruling P3-C5 still applies on top).
+    function splitOk(ch) {
+      return !ch.hasAny(['creditShares', 'creditSharesMode'])
+        || (request.resource.data.get('creditSharesMode', null) in [null, 'auto']
+          && resource.data.get('creditSharesMode', null) != 'manual');
+    }
+
     // PM / Sub-PM (non-Owner managers). Active-member check (by the caller,
     // taskUpdateWith), project data, programMeta entry and pm are each
     // computed once (expression limit); cl (a close key changed) is reused
     // from taskUpdateCh instead of re-testing closeKeys().
     // No self-credit (Ruling P3-C5): the credit fields (creditKeys) may
     // change only while the task is open (not Submitted / Completed /
-    // Dropped). Ruling P3-C6 (PROVISIONAL): creditShares / creditSharesMode
-    // never (Owner-only). A status change keeps status present.
+    // Dropped); the split only in auto mode (splitOk, Ruling P3-C6′). A
+    // status change keeps status present.
     function taskManagerUpdate(wid, pid, ch, s0, s1, cl, p) {
       return taskManagerPm(wid, pid, ch, s0, s1, p,
         managerRole(cl, prgMetaOf(p, resource.data.get('programId', null))));
@@ -885,7 +897,7 @@ service cloud.firestore {
       return (r.pm ? (taskPMMoveOk(wid, pid, ch, p) && taskDatesOk(wid, pid, ch))
                    : taskLeadOk(wid, pid, ch, p))
         && (!ch.hasAny(creditKeys())
-          || (isOpenSt(s0) && !ch.hasAny(['creditShares', 'creditSharesMode'])))
+          || (isOpenSt(s0) && splitOk(ch)))
         && (!ch.hasAny(['status']) || request.resource.data.get('status', null) != null)
         && (!r.cl || closeTransitionOk(wid, pid, ch, s0, s1, r));
     }

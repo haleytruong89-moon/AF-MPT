@@ -396,9 +396,9 @@ describe('P3 task close transitions', () => {
     await assertFails(up(LEAD, T1, { creditSharesMode: 'manual' }));
     await seedDoc(T1, task({ status: 'Dropped', approvedByUid: LEAD.uid }));
     await assertFails(up(LEAD, T1, { creditShares: shares }));
-    // Follow-up, Ruling P3-C6: the PM allow on an open task became a deny
-    // (credit splits are Owner-only at every status; see P3-28). The Owner
-    // remains allowed.
+    // Follow-up, Ruling P3-C6′: this PM write sets manual mode, so the allow
+    // on an open task became a deny (manual mode is Owner-only; auto-mode
+    // shares stay allowed, see P3-28). The Owner remains allowed.
     await seedDoc(T1, task());
     await assertFails(up(PM, T1, { creditShares: shares, creditSharesMode: 'manual' }));
     await assertSucceeds(up(OWNER, T1, { creditShares: shares, creditSharesMode: 'manual' }));
@@ -410,22 +410,35 @@ describe('P3 task close transitions', () => {
     await assertSucceeds(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid }));
   });
 
-  // ── Ruling P3-C6 (PROVISIONAL): credit splits Owner-only on v2, every status ──
-  it('P3-28 P3-C6: LEAD / PM change creditShares or creditSharesMode on an open task: denied; OWNER: allowed', async () => {
-    const shares = { [LEAD.uid]: 30, [ASG.uid]: 70 };
-    await assertFails(up(LEAD, T1, { creditShares: shares }));
-    await assertFails(up(PM, T1, { creditShares: shares }));
-    await assertFails(up(LEAD, T1, { creditSharesMode: 'manual' }));
+  // ── Ruling P3-C6′ (PROVISIONAL): auto-mode shares by managers, manual mode Owner-only ──
+  it('P3-28 P3-C6′: auto shares with a contributor edit allowed; manual mode (set, edit, leave) Owner-only', async () => {
+    const auto = { [ASG.uid]: 70, [VIEWER.uid]: 30 };
+    const manual = { [ASG.uid]: 50, [VIEWER.uid]: 50 };
+    // Auto mode (absent or 'auto'): the App recomputes shares from pic + contributors.
+    await assertSucceeds(up(PM, T1, { contributorUids: [VIEWER.uid], contributors: ['viewer'], creditShares: auto }));
+    await seedDoc(T1, task({ creditSharesMode: 'auto' }));
+    await assertSucceeds(up(LEAD, T1, { contributorUids: [VIEWER.uid], creditShares: auto, creditSharesMode: 'auto' }));
+    // Switch to manual: PM / LEAD denied, Owner allowed (same write).
+    await seedDoc(T1, task());
     await assertFails(up(PM, T1, { creditSharesMode: 'manual' }));
-    await assertFails(up(ASG, T1, { creditShares: shares }));
-    // Also inside an otherwise allowed manager write (contributors + shares).
-    await assertFails(up(LEAD, T1, { contributorUids: [VIEWER.uid], creditShares: shares }));
-    // Paired allows: the Owner sets the split; managers still edit contributors.
-    await assertSucceeds(up(OWNER, T1, { creditShares: shares, creditSharesMode: 'manual' }));
-    await seedDoc(T1, task());
-    await assertSucceeds(up(LEAD, T1, { contributorUids: [VIEWER.uid] }));
-    await seedDoc(T1, task());
+    await assertFails(up(LEAD, T1, { creditShares: manual, creditSharesMode: 'manual' }));
+    await assertSucceeds(up(OWNER, T1, { creditShares: manual, creditSharesMode: 'manual' }));
+    // Shares edit on a manual task: PM denied (with or without restating the mode), Owner allowed.
+    await seedDoc(T1, task({ creditSharesMode: 'manual', creditShares: manual }));
+    await assertFails(up(PM, T1, { creditShares: auto }));
+    await assertFails(up(PM, T1, { creditShares: auto, creditSharesMode: 'manual' }));
+    await assertSucceeds(up(OWNER, T1, { creditShares: auto }));
+    // Switch manual -> auto is an Owner decision.
+    await seedDoc(T1, task({ creditSharesMode: 'manual', creditShares: manual }));
+    await assertFails(up(PM, T1, { creditSharesMode: 'auto', creditShares: auto }));
+    await assertFails(up(LEAD, T1, { creditSharesMode: 'auto' }));
+    await assertSucceeds(up(OWNER, T1, { creditSharesMode: 'auto', creditShares: auto }));
+    // A contributor edit on a manual task that leaves the split alone is not a split change.
+    await seedDoc(T1, task({ creditSharesMode: 'manual', creditShares: manual }));
     await assertSucceeds(up(PM, T1, { contributorUids: [VIEWER.uid] }));
+    // The Assignee never writes credit fields.
+    await seedDoc(T1, task());
+    await assertFails(up(ASG, T1, { creditShares: auto }));
   });
 
   // ── Follow-up: a contributor-manager is not an eligible approver (mirror of P3-C4) ──
