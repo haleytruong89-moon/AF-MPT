@@ -421,7 +421,7 @@ function computeActivityIndex(projectsMap, options = {}, dirIndex = null) {
               }
             }
 
-            if (!isComplete && new Date(task.end) < now) {
+            if (isLate) {
               const lateDays = daysBetween(task.end, now);
               m.recentFlags.push({
                 kind: deadlineType === 'hard' ? 'overdue_task_hard' : 'overdue_task_soft',
@@ -862,7 +862,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
     for (const pg of (proj.programs || [])) {
       for (const ws of (pg.workstreams || [])) {
         for (const t of (ws.tasks || [])) {
-          if (t.status === 'Dropped' || t.status === 'Completed') continue;
+          if (t.status === 'Dropped' || t.status === 'Completed' || t.status === 'Submitted') continue; // Submitted waits on the approver (P3)
           const enriched = { task: t, project: proj, program: pg, workstream: ws };
 
           if (isMe(t.pic)) {

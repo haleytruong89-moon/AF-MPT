@@ -1,7 +1,7 @@
 // Domain types for the AF·MTP tracker. Mirrors the Firestore schema.
 import type { Timestamp, FieldValue } from 'firebase/firestore';
 
-export type TaskStatus = 'Planned' | 'InProgress' | 'Completed' | 'Dropped';
+export type TaskStatus = 'Planned' | 'InProgress' | 'Completed' | 'Dropped' | 'Submitted';
 
 export type Role = 'owner' | 'operator' | 'member';
 
