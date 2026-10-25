@@ -21,6 +21,7 @@ import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLo
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
+import { isOverdueTask } from './taskStatus';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
 const DirectoryIndexContext = React.createContext(null);
@@ -30,9 +31,9 @@ const SEED_CRP = {"id": "proj_crp", "name": "CRP", "createdAt": "2026-04-24T00:0
 
 /* ═════════ CONSTANTS ═════════ */
 const STATUSES = ['Planned', 'InProgress', 'Completed', 'Dropped'];
-const STATUS_LABEL = { Planned: 'Planned', InProgress: 'In Progress', Completed: 'Completed', Dropped: 'Dropped' };
+const STATUS_LABEL = { Planned: 'Planned', InProgress: 'In Progress', Completed: 'Completed', Dropped: 'Dropped', Submitted: 'Pending approval' };
 // Weight for % rollup. Dropped is excluded from the denominator entirely (see rollup()).
-const STATUS_WEIGHT = { Planned: 0, InProgress: 0.5, Completed: 1, Dropped: null };
+const STATUS_WEIGHT = { Planned: 0, InProgress: 0.5, Completed: 1, Dropped: null, Submitted: 0.5 };
 const HEALTH_VALUES = ['green', 'amber', 'red'];
 const HEALTH_LABEL = { green: 'On track', amber: 'At risk', red: 'Off track' };
 
@@ -215,7 +216,7 @@ const fmtDate = (s) => { const d = parseDate(s); return d ? d.toLocaleDateString
 const fmtDateShort = (s) => { const d = parseDate(s); return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'; };
 const fmtDateTime = (s) => { const d = parseDate(s); return d ? d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'; };
 const toISODate = (s) => { const d = parseDate(s); return d ? d.toISOString().slice(0, 10) : ''; };
-const isOverdue = (t) => { if (!t || t.status === 'Completed' || t.status === 'Dropped') return false; const e = parseDate(t.end); return e ? e < today() : false; };
+const isOverdue = (t) => isOverdueTask(t, today());
 
 // ─── v30 RAID helpers ───
 // riskLevel is COMPUTED every render — never persisted. Spec §9.1.
@@ -406,11 +407,11 @@ function computeActivityIndex(projectsMap, options = {}, dirIndex = null) {
             wd.weightedTotal += wsMultiplier;
             if (isComplete) wd.weightedOnTime += wsMultiplier;
 
-            const isOverdueTask = !isComplete && new Date(task.end) < now;
-            if (isOverdueTask || isComplete) {
+            const isLate = isOverdueTask(task, now);
+            if (isLate || isComplete) {
               m.sampleSize.riskReports++;
               m.risk.totalReports++;
-              if (isOverdueTask && (task.health === 'green' || !task.health)) {
+              if (isLate && (task.health === 'green' || !task.health)) {
                 m.risk.greenButOverdue++;
                 m.recentFlags.push({
                   kind: 'risk_dishonesty',
@@ -1188,7 +1189,7 @@ function rollup(n) {
   let planned = 0, inprog = 0, done = 0, overdue = 0, weighted = 0;
   for (const t of active) {
     const s = t.status || 'Planned';
-    if (s === 'Completed') done++; else if (s === 'InProgress') inprog++; else planned++;
+    if (s === 'Completed') done++; else if (s === 'InProgress' || s === 'Submitted') inprog++; else planned++;
     weighted += STATUS_WEIGHT[s] ?? 0;
     if (isOverdue(t)) overdue++;
   }
@@ -1791,6 +1792,7 @@ function Pill({ status, overdue, size = 'md' }) {
     InProgress: { fg: TOK.inprogFg, bg: TOK.inprogBg, icon: <PlayCircle size={10} /> },
     Completed: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Dropped: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
+    Submitted: { fg: '#B7791F', bg: '#FAEEDA', icon: <Clock size={10} /> },
   };
   const s = map[status] || map.Planned;
   return (
@@ -8012,7 +8014,7 @@ function computePortfolioMetrics(projects, options = {}) {
           wl.perProject.get(project.id).count++;
           wl.perProject.get(project.id).tasks.push(t);
           wl.totalActive++;
-          if (t.end && new Date(t.end) < now) wl.overdueCount++;
+          if (isOverdueTask(t, now)) wl.overdueCount++;
         }
       }
     }
@@ -12122,7 +12124,7 @@ function generateBriefingMarkdown({ projects, daysBack = 7, ownerName = null }) 
             if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
             if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
           }
-          if (t.end && t.status !== 'Completed' && t.status !== 'Dropped' && new Date(t.end) < now) {
+          if (isOverdueTask(t, now)) {
             const lateDays = daysBetween(t.end, now);
             if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
           }
@@ -12284,7 +12286,7 @@ function generateBriefingHtml({ projects, daysBack = 7, ownerName = null }) {
             if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
             if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
           }
-          if (t.end && t.status !== 'Completed' && t.status !== 'Dropped' && new Date(t.end) < now) {
+          if (isOverdueTask(t, now)) {
             const lateDays = daysBetween(t.end, now);
             if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
           }
