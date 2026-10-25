@@ -331,6 +331,7 @@ describe('P3 task close transitions', () => {
     await seedDoc(T1, task({ blockerResolutions: { u1: res(ASG) } }));
     await assertSucceeds(up(LEAD, T1, { 'blockerResolutions.u1': res(ASG, { resolution: 'edited' }) }));
     // A manager adding two keys at once, or a key authored by someone else: denied (all writers).
+    await seedDoc(T1, task({ blockerResolutions: { u1: res(ASG) } }));
     await assertFails(up(LEAD, T1, { 'blockerResolutions.u2': res(LEAD), 'blockerResolutions.u3': res(LEAD) }));
     await assertFails(up(OWNER, T1, { 'blockerResolutions.u2': res(ASG) }));
     await assertSucceeds(up(OWNER, T1, { 'blockerResolutions.u2': res(OWNER) }));
