@@ -751,9 +751,52 @@ service cloud.firestore {
         || request.resource.data.get('approvedByUid', null) == request.auth.uid;
     }
 
+    // ── P3 blocker resolutions (Ruling P3-8, closes Ruling W) ──
+    // task.blockerResolutions[updateId] = { resolvedAt, resolvedBy,
+    // resolution, authorUid }. Missing or null reads as {}. Every check is
+    // guarded by !ch.hasAny(['blockerResolutions']), so writes that do not
+    // touch the map pay one hasAny (expression limit).
+    function mapOrEmpty(d, k) {
+      return d.get(k, null) == null ? {} : d.get(k, null);
+    }
+
+    // All writers incl. Owner: at most one key added per write, and the
+    // added value carries authorUid == caller. Edits / removals of existing
+    // keys are not checked here (managers may correct history). Rules sets
+    // have no element access, so the added key comes from a list difference
+    // (n.keys() minus o.keys() == n.diff(o).addedKeys()). A non-map value is
+    // a runtime error, i.e. denied.
+    function resolutionNewOk(ch) {
+      return !ch.hasAny(['blockerResolutions'])
+        || resolutionNewWith(mapOrEmpty(request.resource.data, 'blockerResolutions'),
+             mapOrEmpty(resource.data, 'blockerResolutions'));
+    }
+
+    function resolutionNewWith(n, o) {
+      return resolutionAddedOk(n, n.keys().removeAll(o.keys()));
+    }
+
+    function resolutionAddedOk(n, a) {
+      return a.size() == 0
+        || (a.size() == 1 && n[a[0]].get('authorUid', null) == request.auth.uid);
+    }
+
+    // Assignee and contributor: append-only, exactly one key added, none
+    // removed or changed. Same as removedKeys / changedKeys empty and
+    // addedKeys().size() == 1, as affectedKeys = added + removed + changed.
+    function resolutionAppendOnly(ch) {
+      return !ch.hasAny(['blockerResolutions'])
+        || resolutionAppendWith(mapOrEmpty(request.resource.data, 'blockerResolutions')
+             .diff(mapOrEmpty(resource.data, 'blockerResolutions')));
+    }
+
+    function resolutionAppendWith(df) {
+      return df.affectedKeys().size() == 1 && df.addedKeys().size() == 1;
+    }
+
     // Cheap checks first (picUid, keys, status) before the members get.
-    // status must stay present (V2-30). blockerResolutions: checks in P3
-    // Task 3 (Ruling P3-8). cl = a close key changed.
+    // status must stay present (V2-30). blockerResolutions append-only
+    // (Ruling P3-8). cl = a close key changed.
     function taskAssigneeUpdate(wid, pid, ch, s0, s1, cl) {
       return resource.data.get('picUid', null) == request.auth.uid
         && ch.hasOnly(assigneeKeys().concat(['closeRequest', 'closeRequestHistory', 'blockerResolutions']))
@@ -761,16 +804,18 @@ service cloud.firestore {
         && request.resource.data.get('status', null) != null
         && appendOnly(ch, 'updates')
         && appendOnly(ch, 'checkIns')
+        && resolutionAppendOnly(ch)
         && (!cl || closeTransitionOk(wid, pid, ch, s0, s1, {'mgr': false, 'pm': false, 'm': {}}))
         && isActiveMember(wid);
     }
 
     // Contributor (P2.2): uid in contributorUids and not the PIC (the PIC
-    // has the Assignee branch). Only keys updates/updatedAt/updatedBy/version;
-    // updates is append-only. A contributor who is also PM / Sub-PM / Owner
+    // has the Assignee branch). Only keys updates / blockerResolutions /
+    // updatedAt / updatedBy / version; updates and blockerResolutions are
+    // append-only (Ruling P3-8). A contributor who is also PM / Sub-PM / Owner
     // passes through those broader branches instead. No extra get() (members).
     function contributorKeys() {
-      return ['updates', 'updatedAt', 'updatedBy', 'version'];
+      return ['updates', 'blockerResolutions', 'updatedAt', 'updatedBy', 'version'];
     }
 
     function taskContributorUpdate(wid, ch) {
@@ -779,6 +824,7 @@ service cloud.firestore {
         && resource.data.get('picUid', null) != request.auth.uid
         && ch.hasOnly(contributorKeys())
         && appendOnly(ch, 'updates')
+        && resolutionAppendOnly(ch)
         && isActiveMember(wid);
     }
 
@@ -824,7 +870,8 @@ service cloud.firestore {
     }
 
     function taskUpdateWith(wid, pid, ch, s0, s1, cl) {
-      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && closeStampOk(ch, s1) && (
+      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && resolutionNewOk(ch)
+        && closeStampOk(ch, s1) && (
         isWsOwner(wid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl)
         || taskContributorUpdate(wid, ch)
