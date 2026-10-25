@@ -17,9 +17,17 @@ const MIN_UNITS = 15;
 const MAX_UNITS = 120;
 const BASE = readFileSync('firestore.rules', 'utf8');
 
+// Balanced && tree of k p10 calls: a flat chain of ~25+ terms is rejected
+// at compile time ("Expression is too complex to evaluate safely").
+function bal(k) {
+  if (k === 1) return 'p10(x)';
+  const h = Math.floor(k / 2);
+  return `(${bal(h)} && ${bal(k - h)})`;
+}
+
 function paddedRules(k) {
   const p10 = `function p10(x) { return ${Array(10).fill("x != ''").join(' && ')}; }`;
-  const pad = k === 0 ? 'true' : Array(k).fill('p10(x)').join(' && ');
+  const pad = k === 0 ? 'true' : bal(k);
   let s = BASE.replace(/(match \/databases\/\{database\}\/documents \{\r?\n)/,
     `$1    ${p10}\n    function padOk(x) { return ${pad}; }\n`);
   const before = s;
@@ -42,8 +50,16 @@ async function envFor(k) {
   return envs.get(k);
 }
 
+const compileErrors = [];
 async function passes(k, probe) {
-  const env = await envFor(k);
+  let env;
+  try {
+    env = await envFor(k);
+  } catch (e) {
+    // A padded variant that does not compile counts as "does not fit".
+    compileErrors.push(`k=${k}: ${String(e && e.message).slice(0, 160)}`);
+    return false;
+  }
   await env.clearFirestore();
   try {
     await probe(env);
@@ -89,16 +105,22 @@ describe('P3 expression headroom (padded rules)', () => {
     const cal = await maxUnits(usersProbe, 0);
     const perUnit = 1000 / (cal + 1);
     const rows = [];
+    const results = [];
     for (const s of scenarios) {
-      expect(await passes(0, scenarioProbe(s)), `${s.name} at k=0`).toBe(true);
-      expect(await passes(MIN_UNITS, scenarioProbe(s)), `${s.name} at k=${MIN_UNITS}`).toBe(true);
-      const k = await maxUnits(scenarioProbe(s), MIN_UNITS);
+      const ok0 = await passes(0, scenarioProbe(s));
+      const k = ok0 ? await maxUnits(scenarioProbe(s), 0) : -1;
+      results.push({ s, k });
       rows.push(`${s.name}: max units ${k}${k === MAX_UNITS ? '+' : ''} ~ ${Math.round(k * perUnit)} expressions headroom`);
     }
     // eslint-disable-next-line no-console
     console.log([
       `[P3 headroom] calibration /users write: max units ${cal} => ~${perUnit.toFixed(1)} expressions per unit`,
       ...rows.map((r) => `[P3 headroom] ${r}`),
+      ...compileErrors.slice(0, 3).map((r) => `[P3 headroom] compile: ${r}`),
     ].join('\n'));
+    for (const { s, k } of results) {
+      expect(k, `${s.name}: passes at k=0`).toBeGreaterThanOrEqual(0);
+      expect(k, `${s.name}: passes with ${MIN_UNITS} units`).toBeGreaterThanOrEqual(MIN_UNITS);
+    }
   }, 600000);
 });
