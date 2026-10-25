@@ -27,8 +27,8 @@ const VIEWER = { uid: 'u_viewer', email: 'viewer@smartosc.com' };
 const OUTSIDER = { uid: 'u_out', email: 'out@smartosc.com' };
 
 const WS = 'workspaces/main';
-const P1 = `${WS}/projects/p1`; // v1 doc (schemaVersion absent) carrying programMeta
-const P2 = `${WS}/projects/p2`;
+const P1 = `${WS}/projects/p1`; // schemaVersion 2 (hosts the sub-docs, P2.4)
+const P2 = `${WS}/projects/p2`; // v1 doc (schemaVersion absent) carrying programMeta
 const PV2 = `${WS}/projects/pv2`; // schemaVersion 2
 
 const programMeta = {
@@ -94,7 +94,7 @@ describe('P2.3 rules completion', () => {
     for (const u of ALL.concat([OUTSIDER])) {
       await seedDoc(`${WS}/members/${u.uid}`, member(u.email));
     }
-    await seedDoc(P1, project());
+    await seedDoc(P1, project({ schemaVersion: 2 }));
     await seedDoc(`${P1}/workstreams/w1`, ws('p1', 'prg1', LEAD.uid));
     await seedDoc(`${P1}/tasks/t1`, task());
     await seedDoc(`${P1}/actions/a1`, action());
@@ -118,8 +118,8 @@ describe('P2.3 rules completion', () => {
   });
 
   it('P23-3 v1 project doc unchanged: Owner without per-project role still cannot update it', async () => {
-    await assertFails(v1up(OWNER, P1, { name: 'x' }));
-    await assertSucceeds(v1up(PO, P1, { name: 'Renamed' }));
+    await assertFails(v1up(OWNER, P2, { name: 'x' }));
+    await assertSucceeds(v1up(PO, P2, { name: 'Renamed' }));
   });
 
   // ── (b) v2 delete guard ──
@@ -130,9 +130,9 @@ describe('P2.3 rules completion', () => {
   });
 
   it('P23-5 v1 project doc delete unchanged: per-project owner allowed, others denied', async () => {
-    await assertFails(del(OP, P1));
-    await assertFails(del(OWNER, P1));
-    await assertSucceeds(del(PO, P1));
+    await assertFails(del(OP, P2));
+    await assertFails(del(OWNER, P2));
+    await assertSucceeds(del(PO, P2));
   });
 
   // ── (c) decisions ──
@@ -289,9 +289,9 @@ describe('P2.3 rules completion', () => {
     await assertFails(getDoc(doc(await as(DEACT), PV3)));
     await assertFails(getDoc(doc(await as(DEACT), PV4)));
     // v1 doc unchanged: memberIds only (Owner not in memberIds denied).
-    await assertSucceeds(getDoc(doc(await as(VIEWER), P1)));
-    await assertFails(getDoc(doc(await as(OWNER), P1)));
-    await assertFails(getDoc(doc(await as(OUTSIDER), P1)));
+    await assertSucceeds(getDoc(doc(await as(VIEWER), P2)));
+    await assertFails(getDoc(doc(await as(OWNER), P2)));
+    await assertFails(getDoc(doc(await as(OUTSIDER), P2)));
   });
 
   it('P23-20 the client memberIds list query still passes', async () => {
@@ -325,7 +325,7 @@ describe('P2.3 final-review rules fixes', () => {
     await resetData();
     await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
     for (const u of ALL) await seedDoc(`${WS}/members/${u.uid}`, member(u.email));
-    await seedDoc(P1, project());
+    await seedDoc(P1, project({ schemaVersion: 2 }));
     await seedDoc(`${P1}/workstreams/w1`, ws('p1', 'prg1', LEAD.uid));
     await seedDoc(`${P1}/tasks/t1`, task({ end: '2026-11-30', references: [], deadlineRequestHistory: [] }));
   });

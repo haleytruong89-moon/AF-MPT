@@ -450,13 +450,27 @@ service cloud.firestore {
       );
     }
 
+    // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
+    // project doc has schemaVersion 2. After a rollback (schemaVersion back to
+    // 1/absent) every client read, create, update and delete on workstreams,
+    // tasks, actions, raid, decisions and activity is denied, so a stale v2
+    // tab cannot write data nobody reads. Admin scripts bypass rules.
+    // get(): the project doc, the same one canReadProject / v2Project /
+    // isPM / raidWriterOk read (counted once per distinct doc), so it adds a
+    // get() only on paths that did not read the project before (Owner-only
+    // branches: +1).
+    function projectIsV2(wid, pid) {
+      return v2Project(wid, pid).get('schemaVersion', 1) == 2;
+    }
+
     // ─────── v2: workstreams ───────
     // Create/delete and set leadUid: Owner or PM of the program. Sub-PM has
     // no workstream writes in P2. WS dates (start/end) and moving a WS to
     // another program are Owner-only (matrix: PM must request -> Owner), so a
     // PM-created WS must have null start/end.
     // version: create = 1, update = +1; updatedBy = caller uid on every write.
-    // get(): workspace, members/{me}, project = 3 (read: 3).
+    // get(): workspace, members/{me}, project = 3 (read: 3); P2.4 projectIsV2
+    // reuses the project get (Owner-only create/update/delete: 2).
     function wsUpdateOk(wid, pid) {
       let ch = changedKeys();
       return isWsOwner(wid)
@@ -465,19 +479,24 @@ service cloud.firestore {
     }
 
     match /workspaces/{wid}/projects/{pid}/workstreams/{wsId} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3 (project shared with canReadProject).
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid) && versionOnCreate() && stampedByMe() && (
+      // get(): Owner 2, PM 3.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || (isPM(wid, pid, request.resource.data.get('programId', null))
           && request.resource.data.get('start', null) == null
           && request.resource.data.get('end', null) == null)
       );
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid) && versionBumped()
-        && stampedByMe() && wsUpdateOk(wid, pid);
+      // get(): Owner 2, PM 3.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionBumped() && stampedByMe() && wsUpdateOk(wid, pid);
 
-      allow delete: if isSmartOSC() && (
+      // get(): Owner 2, PM 3.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
         isWsOwner(wid)
         || isPM(wid, pid, resource.data.get('programId', null))
       );
@@ -505,6 +524,8 @@ service cloud.firestore {
     // get(): create = workspace, members/{me}, project, ws = 4;
     //        update = workspace, members/{me}, project, old ws, new ws = 5;
     //        delete = 1; read = 3.
+    // P2.4 projectIsV2 reuses the project get: delete = 2, Owner-only
+    // create/update = 2; the others unchanged.
     // Ruling AE (P2.3): + references and the deadline request flow
     // (deadlineRequest, deadlineRequestHistory). The due date itself (end)
     // stays out: it changes only when an approver applies the request.
@@ -580,9 +601,11 @@ service cloud.firestore {
     }
 
     match /workspaces/{wid}/projects/{pid}/tasks/{tid} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): Owner 2, PM / Sub-PM 4.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || ((isPM(wid, pid, request.resource.data.get('programId', null))
@@ -592,12 +615,13 @@ service cloud.firestore {
           && taskWithinNewWs(wid, pid))
       );
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): Owner 2, others up to 5.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 
       // Ruling AF (P2.3): workspace Owner only (tasks are never hard-deleted;
-      // PM / Sub-PM set Dropped).
-      allow delete: if isSmartOSC() && isWsOwner(wid);
+      // PM / Sub-PM set Dropped). get(): 2.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && isWsOwner(wid);
     }
 
     // ─────── v2: actions ───────
@@ -613,6 +637,7 @@ service cloud.firestore {
     // the caller uid on every write (Ruling I).
     // get(): create/delete = workspace, members/{me}, ws, project = 4;
     //        update = + new ws = 5; read = 3.
+    // P2.4 projectIsV2 reuses the project get (Owner-only writes: 2).
     function actionManager(wid, pid, d) {
       return wsExists(wid, pid, d.get('workstreamId', null))
         && (isPM(wid, pid, v2WsData(wid, pid, d.workstreamId).get('programId', null))
@@ -646,18 +671,22 @@ service cloud.firestore {
     }
 
     match /workspaces/{wid}/projects/{pid}/actions/{aid} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): Owner 2, manager 4.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || actionManager(wid, pid, request.resource.data)
       );
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): Owner 2, PIC 3, manager up to 5.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && actionUpdateOk(wid, pid);
 
-      allow delete: if isSmartOSC() && (
+      // get(): Owner 2, manager 4.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
         isWsOwner(wid)
         || actionManager(wid, pid, resource.data)
       );
@@ -675,7 +704,7 @@ service cloud.firestore {
     // changes on update; path fields, stamping and version apply.
     // Delete: Owner only.
     // get(): create/update = workspace, project, members/{me}, ws = 4;
-    //        read = 3; delete = 1.
+    //        read = 3; delete = 1 (P2.4 projectIsV2: 2; others unchanged).
     // Shared by RAID and decisions: Owner, or the claim in the NEW data
     // (viaProgramId = a program I am PM/Deputy of, viaWorkstreamId = a ws
     // in this project I lead).
@@ -697,17 +726,21 @@ service cloud.firestore {
     }
 
     match /workspaces/{wid}/projects/{pid}/raid/{programId} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): up to 4 (project shared with raidWriterOk).
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe() && raidWriterOk(wid, pid, programId);
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): up to 4.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe()
         && request.resource.data.get('programId', null) == resource.data.get('programId', null)
         && raidWriterOk(wid, pid, programId);
 
-      allow delete: if isSmartOSC() && isWsOwner(wid);
+      // get(): 2.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && isWsOwner(wid);
     }
 
     // ─────── v2: decisions (one doc per decision, P2.3 Ruling Q) ───────
@@ -719,18 +752,23 @@ service cloud.firestore {
     // (no new data on delete); Sub-PMs set status instead.
     // get(): create/update = workspace, project, members/{me}, ws = 4;
     //        read = 3; delete = workspace, project, members/{me} = 3.
+    // P2.4 projectIsV2 reuses the project get: counts unchanged.
     match /workspaces/{wid}/projects/{pid}/decisions/{decisionId} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): up to 4.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe()
         && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
 
-      allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
+      // get(): up to 4.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe()
         && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
 
-      allow delete: if isSmartOSC() && (
+      // get(): up to 3.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
         isWsOwner(wid)
         || (resource.data.get('viaProgramId', null) is string
           && resource.data.viaProgramId in v2Project(wid, pid).get('programMeta', {})
@@ -745,9 +783,11 @@ service cloud.firestore {
     // projectId/workspaceId are optional on events but must match when set.
     // get(): workspace, members/{me}, project = 3.
     match /workspaces/{wid}/projects/{pid}/activity/{eid} {
-      allow read: if canReadProject(wid, pid);
+      // get(): 3 (P2.4 projectIsV2 shares the project get).
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      allow create: if canReadProject(wid, pid)
+      // get(): 3.
+      allow create: if projectIsV2(wid, pid) && canReadProject(wid, pid)
         && request.resource.data.get('authorUid', null) == request.auth.uid
         && request.resource.data.get('createdAt', null) == request.time
         && request.resource.data.get('projectId', pid) == pid

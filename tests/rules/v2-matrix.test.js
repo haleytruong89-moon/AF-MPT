@@ -28,8 +28,9 @@ const programMeta = {
   prg2: { name: 'Program 2', order: 1, pmUid: PM2.uid, deputyUid: null, start: null, end: null },
 };
 
+// P2.4: sub-docs only live while the parent is schemaVersion 2.
 const project = (over = {}) => ({
-  name: 'P', memberIds: [OWNER.uid], roles: { [OWNER.uid]: 'owner' },
+  name: 'P', memberIds: [OWNER.uid], roles: { [OWNER.uid]: 'owner' }, schemaVersion: 2,
   programMeta,
   memberUids: [PM.uid, DEPUTY.uid, PM2.uid, LEAD.uid, LEAD2.uid, ASG.uid, VIEWER.uid, DEACT.uid],
   visibility: 'restricted',
@@ -290,7 +291,7 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   });
 
   it('V2-22 read: project without memberUids falls back to v1 memberIds; absent visibility = restricted', async () => {
-    await seedDoc(`${WS}/projects/p3`, { name: 'v1', memberIds: [VIEWER.uid], roles: { [VIEWER.uid]: 'member' } });
+    await seedDoc(`${WS}/projects/p3`, { name: 'v1', schemaVersion: 2, memberIds: [VIEWER.uid], roles: { [VIEWER.uid]: 'member' } });
     await seedDoc(`${WS}/projects/p3/tasks/t1`, task({ projectId: 'p3' }));
     await assertSucceeds(getDoc(doc(await as(VIEWER), `${WS}/projects/p3/tasks/t1`)));
     await assertFails(getDoc(doc(await as(OUTSIDER), `${WS}/projects/p3/tasks/t1`)));
@@ -437,7 +438,7 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
 
   it('V2-35 legacy project without programMeta: PM / Sub-PM writes denied', async () => {
     const P3 = `${WS}/projects/p3`;
-    await seedDoc(P3, { name: 'v1', memberIds: [PM.uid, LEAD.uid], roles: { [PM.uid]: 'owner' } });
+    await seedDoc(P3, { name: 'v1', schemaVersion: 2, memberIds: [PM.uid, LEAD.uid], roles: { [PM.uid]: 'owner' } });
     await seedDoc(`${P3}/workstreams/w1`, ws('p3', 'prg1', LEAD.uid, null, null));
     await seedDoc(`${P3}/tasks/t1`, task({ projectId: 'p3' }));
     await seedDoc(`${P3}/actions/a1`, action({ projectId: 'p3', picUid: VIEWER.uid }));
