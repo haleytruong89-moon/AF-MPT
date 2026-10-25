@@ -530,7 +530,9 @@ service cloud.firestore {
     //   may change the credit fields (creditKeys) only while the task is
     //   open; a direct close keeps them and
     //   is denied to a manager in contributorUids (Ruling P3-C2); reopen
-    //   clears approvedByUid / approvedAt / closedByUid.
+    //   clears approvedByUid / approvedAt / closedByUid. Ruling P3-C6
+    //   (PROVISIONAL): the credit split (creditShares / creditSharesMode) is
+    //   Owner-only at every status.
     //   Nobody decides their own request. Every write that sets status to
     //   Completed / Dropped carries approvedByUid == caller (closeStampOk,
     //   Owner included). A non-Owner creates tasks Planned / InProgress only.
@@ -586,10 +588,19 @@ service cloud.firestore {
         && w.programId in p.get('programMeta', {});
     }
 
+    // Follow-up trim T2: get() alone (no exists() first). A missing WS doc
+    // or workstreamId is an evaluation error, i.e. denied.
+    // A Sub-PM cannot move the task, so its new WS is the old one: the WS
+    // doc w is read once and serves both the Sub-PM test and the date window
+    // (same check as taskDatesOk, whose 'workstreamId' key cannot change here).
     function taskLeadOk(wid, pid, ch, p) {
       return !ch.hasAny(['programId', 'workstreamId'])
-        && wsExists(wid, pid, resource.data.get('workstreamId', null))
-        && leadOfWs(v2WsData(wid, pid, resource.data.workstreamId), p);
+        && taskLeadWith(ch, p, v2WsData(wid, pid, resource.data.workstreamId));
+    }
+
+    function taskLeadWith(ch, p, w) {
+      return leadOfWs(w, p)
+        && (!ch.hasAny(['start', 'end']) || withinWs(request.resource.data, w));
     }
 
     // ── P3 close transitions ──
@@ -603,6 +614,9 @@ service cloud.firestore {
     // creditOf: pic / picUid, contributors, creditShares). A non-Owner
     // manager may change them only while the task is open, and never in a
     // direct-close write (no self-credit).
+    // Ruling P3-C6 (PROVISIONAL): of these, creditShares / creditSharesMode
+    // (the split) are Owner-only at every status, open tasks included. The
+    // Assignee / contributor key lists never had them.
     function creditKeys() {
       return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode'];
     }
@@ -641,9 +655,14 @@ service cloud.firestore {
       return l is list && a in l;
     }
 
+    // A manager listed in d's (stored) contributorUids is not eligible: they
+    // could not decide it anyway (canDecide, Ruling P3-C4), so a submit or
+    // reassign naming them fails fast. An Owner stays eligible (the Owner
+    // branch decides without canDecide).
     function eligibleWith(wid, pid, d, a, requester, m) {
       return inList(v2Workspace(wid).get('ownerUids', []), a)
         || (!isPMOrDeputyUid(m, requester)
+          && !inList(d.get('contributorUids', null), a)
           && (isPMOrDeputyUid(m, a)
             || (wsExists(wid, pid, d.get('workstreamId', null))
               && v2WsData(wid, pid, d.workstreamId).get('leadUid', null) == a)));
@@ -666,9 +685,11 @@ service cloud.firestore {
     // One decision entry prepended to closeRequestHistory (old entries kept
     // as the suffix, exactly one added), status st, decided by me. Same
     // test as appendOnly + "grows by 1" without re-deriving the diff.
+    // Follow-up trim T3: missing = [] via get(k, []); a stored null history
+    // (never written by P3 code) is not a list, so the decision is denied.
     function histOk(st) {
-      return histWith(st, listOrEmpty(resource.data, 'closeRequestHistory'),
-                      listOrEmpty(request.resource.data, 'closeRequestHistory'));
+      return histWith(st, resource.data.get('closeRequestHistory', []),
+                      request.resource.data.get('closeRequestHistory', []));
     }
 
     function histWith(st, o, n) {
@@ -699,6 +720,9 @@ service cloud.firestore {
     // self-credit (review round 1, Rulings P3-C2 / P3-C5): the direct close
     // may not change the credit fields (creditKeys), and a manager listed in contributorUids must submit
     // like anyone else. It never touches the close request / history.
+    // The stamp (approvedByUid == caller) of the direct close and of the
+    // approve below is enforced once by closeStampOk (status changes to
+    // Completed / Dropped in both), not repeated here (expression limit).
     function closeFromOpen(wid, pid, ch, s1, mgr) {
       return (isOpenSt(s1)
           && !ch.hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid']))
@@ -707,8 +731,7 @@ service cloud.firestore {
         || (mgr && isClosedSt(s1)
           && resource.data.get('picUid', null) != request.auth.uid
           && !ch.hasAny(creditKeys().concat(['closeRequest', 'closeRequestHistory']))
-          && !inList(request.resource.data.get('contributorUids', null), request.auth.uid)
-          && request.resource.data.get('approvedByUid', null) == request.auth.uid);
+          && !inList(request.resource.data.get('contributorUids', null), request.auth.uid));
     }
 
     // From Submitted (c0 = old request, c1 = new request):
@@ -719,7 +742,6 @@ service cloud.firestore {
       return c0 is map && (
         (isClosedSt(s1) && c1 == null
           && s1 == c0.get('outcome', null)
-          && request.resource.data.get('approvedByUid', null) == request.auth.uid
           && histOk('Approved')
           && canDecide(c0, r.pm, r.m))
         || (s1 == 'InProgress' && c1 == null
@@ -740,7 +762,8 @@ service cloud.firestore {
     // Only called when a close key changed (callers branch on cl first, so
     // ordinary P2.3 edits never evaluate the P3 helpers).
     // r = { mgr: the caller passed the PM / Sub-PM branch, pm: caller is
-    // PM/Deputy of the task's program, m: that program's programMeta entry }
+    // PM/Deputy of the task's program, m: that program's programMeta entry,
+    // cl (manager only): a close key changed }
     // (a map: rules functions take at most 7 arguments).
     // reopen (manager): closed -> open, close request keys untouched, the
     // approval stamp cleared (approvedByUid / approvedAt / closedByUid null
@@ -808,7 +831,7 @@ service cloud.firestore {
         && appendOnly(ch, 'checkIns')
         && rv != 'edit'
         && (!cl || closeTransitionOk(wid, pid, ch, s0, s1, {'mgr': false, 'pm': false, 'm': {}}))
-        && isActiveMember(wid);
+        && activeMemberDoc(wid);
     }
 
     // Contributor (P2.2): uid in contributorUids and not the PIC (the PIC
@@ -827,38 +850,44 @@ service cloud.firestore {
         && ch.hasOnly(contributorKeys())
         && appendOnly(ch, 'updates')
         && rv != 'edit'
-        && isActiveMember(wid);
+        && activeMemberDoc(wid);
     }
 
     // Active member without re-running isSmartOSC (the allow rule did).
+    // Follow-up trim T2: get() alone (no exists() first); a missing members
+    // doc is an evaluation error, i.e. this branch is denied. Used by the
+    // Assignee, contributor and manager branches.
     function activeMemberDoc(wid) {
-      return exists(v2MemberPath(wid))
-        && get(v2MemberPath(wid)).data.get('status', null) == 'active';
+      return get(v2MemberPath(wid)).data.get('status', null) == 'active';
     }
 
-    // PM / Sub-PM (non-Owner managers). Active-member check, project data,
-    // programMeta entry and pm are each computed once (expression limit).
+    // PM / Sub-PM (non-Owner managers). Active-member check (by the caller,
+    // taskUpdateWith), project data, programMeta entry and pm are each
+    // computed once (expression limit); cl (a close key changed) is reused
+    // from taskUpdateCh instead of re-testing closeKeys().
     // No self-credit (Ruling P3-C5): the credit fields (creditKeys) may
     // change only while the task is open (not Submitted / Completed /
-    // Dropped). A status change keeps status present.
-    function taskManagerUpdate(wid, pid, ch, s0, s1, act, p) {
-      return act && taskManagerWith(wid, pid, ch, s0, s1, p,
-        prgMetaOf(p, resource.data.get('programId', null)));
+    // Dropped). Ruling P3-C6 (PROVISIONAL): creditShares / creditSharesMode
+    // never (Owner-only). A status change keeps status present.
+    function taskManagerUpdate(wid, pid, ch, s0, s1, cl, p) {
+      return taskManagerPm(wid, pid, ch, s0, s1, p,
+        managerRole(cl, prgMetaOf(p, resource.data.get('programId', null))));
     }
 
-    function taskManagerWith(wid, pid, ch, s0, s1, p, m) {
-      return taskManagerPm(wid, pid, ch, s0, s1, p,
-        {'mgr': true, 'pm': isPMOrDeputyUid(m, request.auth.uid), 'm': m});
+    function managerRole(cl, m) {
+      return {'mgr': true, 'pm': isPMOrDeputyUid(m, request.auth.uid), 'm': m, 'cl': cl};
     }
 
     // r.pm = isPM(wid, pid, old programId) given the active-member check.
     // A PM may do everything a Sub-PM may (+ moves), so r.pm picks the branch.
+    // The Sub-PM branch checks the dates itself (taskLeadOk).
     function taskManagerPm(wid, pid, ch, s0, s1, p, r) {
-      return (r.pm ? taskPMMoveOk(wid, pid, ch, p) : taskLeadOk(wid, pid, ch, p))
-        && taskDatesOk(wid, pid, ch)
-        && (!ch.hasAny(creditKeys()) || isOpenSt(s0))
+      return (r.pm ? (taskPMMoveOk(wid, pid, ch, p) && taskDatesOk(wid, pid, ch))
+                   : taskLeadOk(wid, pid, ch, p))
+        && (!ch.hasAny(creditKeys())
+          || (isOpenSt(s0) && !ch.hasAny(['creditShares', 'creditSharesMode'])))
         && (!ch.hasAny(['status']) || request.resource.data.get('status', null) != null)
-        && (!ch.hasAny(closeKeys()) || closeTransitionOk(wid, pid, ch, s0, s1, r));
+        && (!r.cl || closeTransitionOk(wid, pid, ch, s0, s1, r));
     }
 
     // ch / s0 / s1 / cl are computed once here and passed as arguments
@@ -877,13 +906,17 @@ service cloud.firestore {
           : 'none');
     }
 
+    // Follow-up trim T1: the Owner check is the LAST alternative, so the
+    // common non-Owner writes never pay for it. An Owner write that fails or
+    // errors in a branch above (e.g. no members doc) still ends here
+    // (error || true is true).
     function taskUpdateWith(wid, pid, ch, s0, s1, cl, rv) {
       return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && rv != 'bad'
         && closeStampOk(ch, s1) && (
-        isWsOwner(wid)
-        || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
+        taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
         || taskContributorUpdate(wid, ch, rv)
-        || taskManagerUpdate(wid, pid, ch, s0, s1, activeMemberDoc(wid), v2Project(wid, pid))
+        || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
+        || isWsOwner(wid)
       );
     }
 
@@ -904,7 +937,7 @@ service cloud.firestore {
           && taskWithinNewWs(wid, pid))
       );
 
-      // get(): Owner 2, others up to 5.
+      // get(): up to 5 for everyone (the Owner check runs last, follow-up T1).
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 

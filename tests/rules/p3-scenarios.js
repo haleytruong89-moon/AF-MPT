@@ -237,7 +237,9 @@ export const scenarios = [
 // Fixture docs (written with rules disabled through seedFn(path, data)).
 export async function seedScenario(seedFn, s) {
   await seedFn(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
-  for (const u of ALL) await seedFn(`${WS}/members/${u.uid}`, member(u.email));
+  // The Owner has an active members doc too (as on production), so the
+  // Owner scenario pays for the non-Owner branches it now passes first (T1).
+  for (const u of [OWNER, ...ALL]) await seedFn(`${WS}/members/${u.uid}`, member(u.email));
   await seedFn(P1, {
     name: 'P', memberIds: ALL.map((u) => u.uid), roles: {}, programs: [], programMeta,
     memberUids: ALL.map((u) => u.uid), visibility: 'restricted', schemaVersion: 2,
