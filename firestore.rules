@@ -510,11 +510,19 @@ service cloud.firestore {
     //   WS); Sub-PM of the task's WS (no move). For PM and Sub-PM the WS date
     //   check (against the NEW ws) applies only when start/end/workstreamId
     //   change, so status/health edits on a migrated out-of-range task work.
-    //   Assignee (picUid == me): only progress keys; status must be present
-    //   and stay in Planned/InProgress (A4: never Completed/Dropped; P3 adds
-    //   Submitted), and only while the task is still open; updates/checkIns
-    //   are append-only for the Assignee.
+    //   Assignee (picUid == me): only progress keys + the close request keys;
+    //   status must be present; only while the task is Planned / InProgress
+    //   / Submitted; updates/checkIns are append-only for the Assignee.
     //   Contributor (P2.2): append-only updates, see taskContributorUpdate.
+    // P3 close transitions (Rulings P3-1, P3-3, P3-4, P3-6, P3-7, P3-18):
+    //   status / closeRequest / closeRequestHistory / approvedByUid /
+    //   approvedAt / closedByUid change only through closeTransitionOk
+    //   (Assignee, PM and Sub-PM branches): open moves, submit, withdraw,
+    //   approve, reject (with reason), reassign (PM; Owner unrestricted),
+    //   direct close by a manager who is not the PIC, reopen (manager).
+    //   Nobody decides their own request. Every write that sets status to
+    //   Completed / Dropped carries approvedByUid == caller (closeStampOk,
+    //   Owner included). A non-Owner creates tasks Planned / InProgress only.
     // All writers: version create = 1 / update = +1; updatedBy must equal
     //   the caller uid on every write (Ruling I); an entry added to updates
     //   or checkIns (at most one per write) carries authorUid == caller
@@ -526,6 +534,10 @@ service cloud.firestore {
     //        delete = 1; read = 3.
     // P2.4 projectIsV2 reuses the project get: delete = 2, Owner-only
     // create/update = 2; the others unchanged.
+    // P3: eligibleApprover / canDecide read only the workspace, the project
+    // and the task's OLD ws (and members via isPM), all already in the
+    // budget above: update stays <= 5 (Assignee 4: workspace, project,
+    // members/{me}, old ws).
     // Ruling AE (P2.3): + references and the deadline request flow
     // (deadlineRequest, deadlineRequestHistory). The due date itself (end)
     // stays out: it changes only when an approver applies the request.
@@ -561,14 +573,166 @@ service cloud.firestore {
         && taskDatesOk(wid, pid, ch);
     }
 
+    // ── P3 close transitions ──
+    // o = resource.data, n = request.resource.data, me = request.auth.uid,
+    // s0 / s1 = old / new status read with get('status', 'Planned').
+    function closeKeys() {
+      return ['status', 'closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'];
+    }
+
+    function isClosedSt(s) {
+      return s in ['Completed', 'Dropped'];
+    }
+
+    function isOpenSt(s) {
+      return s in ['Planned', 'InProgress'];
+    }
+
+    // programMeta entry of program prg ({} when prg is not a string / absent).
+    function prgMetaOf(p, prg) {
+      return prg is string ? p.get('programMeta', {}).get(prg, {}) : {};
+    }
+
+    function isPMOrDeputyUid(m, u) {
+      return u == m.get('pmUid', null) || u == m.get('deputyUid', null);
+    }
+
+    // Mirror of eligibleApprovers (client, P3 Task 6). Approver a of a
+    // request by `requester` on task d: never the requester; any Owner
+    // (ownerUids only, Ruling P3-20); the PM / Deputy of d's program, or the
+    // Sub-PM of d's WS, unless the requester is that PM / Deputy.
+    // get(): workspace, project, ws of d (all already counted).
+    function eligibleApprover(wid, pid, d, a, requester) {
+      let m = prgMetaOf(v2Project(wid, pid), d.get('programId', null));
+      let reqIsPM = isPMOrDeputyUid(m, requester);
+      let owners = v2Workspace(wid).get('ownerUids', []);
+      return a is string && a != requester && (
+        (owners is list && a in owners)
+        || (!reqIsPM && isPMOrDeputyUid(m, a))
+        || (!reqIsPM
+          && wsExists(wid, pid, d.get('workstreamId', null))
+          && v2WsData(wid, pid, d.workstreamId).get('leadUid', null) == a)
+      );
+    }
+
+    // Ruling P3-4: who may decide request cr on task d (never the requester).
+    function canDecide(wid, pid, d, cr) {
+      let m = prgMetaOf(v2Project(wid, pid), d.get('programId', null));
+      return cr is map
+        && cr.get('requestedByUid', null) != request.auth.uid
+        && (cr.get('approverUid', null) == request.auth.uid
+          || isWsOwner(wid)
+          || (isPM(wid, pid, d.get('programId', null))
+            && !isPMOrDeputyUid(m, cr.get('requestedByUid', null))));
+    }
+
+    // One decision entry prepended to closeRequestHistory, by me.
+    function histOk(ch, st) {
+      let o = listOrEmpty(resource.data, 'closeRequestHistory');
+      let n = listOrEmpty(request.resource.data, 'closeRequestHistory');
+      return appendOnly(ch, 'closeRequestHistory')
+        && n is list && o is list
+        && n.size() == o.size() + 1
+        && n[0].get('status', null) == st
+        && n[0].get('decidedByUid', null) == request.auth.uid;
+    }
+
+    function closeSubmitOk(wid, pid, ch, s0, s1, mgr) {
+      let o = resource.data;
+      let c = request.resource.data.get('closeRequest', null);
+      return isOpenSt(s0) && s1 == 'Submitted'
+        && c is map
+        && c.get('requestedByUid', null) == request.auth.uid
+        && c.get('outcome', null) in ['Completed', 'Dropped']
+        && (o.get('picUid', null) == request.auth.uid || mgr)
+        && !ch.hasAny(['closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'])
+        && eligibleApprover(wid, pid, o, c.get('approverUid', null), request.auth.uid);
+    }
+
+    function closeWithdrawOk(ch, s0, s1) {
+      return s0 == 'Submitted' && isOpenSt(s1)
+        && resource.data.get('closeRequest', {}).get('requestedByUid', null) == request.auth.uid
+        && request.resource.data.get('closeRequest', null) == null
+        && histOk(ch, 'Withdrawn');
+    }
+
+    function closeApproveOk(wid, pid, ch, s0, s1) {
+      let n = request.resource.data;
+      let cr = resource.data.get('closeRequest', null);
+      return s0 == 'Submitted' && cr is map
+        && s1 == cr.get('outcome', null)
+        && n.get('closeRequest', null) == null
+        && n.get('approvedByUid', null) == request.auth.uid
+        && histOk(ch, 'Approved')
+        && canDecide(wid, pid, resource.data, cr);
+    }
+
+    function closeRejectOk(wid, pid, ch, s0, s1) {
+      let n = request.resource.data;
+      return s0 == 'Submitted' && s1 == 'InProgress'
+        && n.get('closeRequest', null) == null
+        && histOk(ch, 'Rejected')
+        && n.closeRequestHistory[0].get('reason', null) is string
+        && n.closeRequestHistory[0].reason.size() > 0
+        && canDecide(wid, pid, resource.data, resource.data.get('closeRequest', null));
+    }
+
+    function closeReassignOk(wid, pid, ch, s0, s1) {
+      let o = resource.data;
+      let c0 = o.get('closeRequest', null);
+      let c1 = request.resource.data.get('closeRequest', null);
+      return s0 == 'Submitted' && s1 == 'Submitted'
+        && c0 is map && c1 is map
+        && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
+        && histOk(ch, 'Reassigned')
+        && isPM(wid, pid, o.get('programId', null))
+        && eligibleApprover(wid, pid, o, c1.get('approverUid', null), c0.get('requestedByUid', null));
+    }
+
+    // Ruling P3-3: a manager closes a task they are not PIC of, stamped.
+    function closeDirectOk(s0, s1, mgr) {
+      return mgr && isOpenSt(s0) && isClosedSt(s1)
+        && resource.data.get('picUid', null) != request.auth.uid
+        && request.resource.data.get('approvedByUid', null) == request.auth.uid;
+    }
+
+    function closeReopenOk(ch, s0, s1, mgr) {
+      return mgr && isClosedSt(s0) && isOpenSt(s1)
+        && !ch.hasAny(['closeRequest', 'closeRequestHistory']);
+    }
+
+    // mgr = the caller passed the PM or Sub-PM branch for this task.
+    function closeTransitionOk(wid, pid, ch, s0, s1, mgr) {
+      return !ch.hasAny(closeKeys())
+        || (isOpenSt(s0) && isOpenSt(s1)
+          && !ch.hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid']))
+        || closeSubmitOk(wid, pid, ch, s0, s1, mgr)
+        || closeWithdrawOk(ch, s0, s1)
+        || closeApproveOk(wid, pid, ch, s0, s1)
+        || closeRejectOk(wid, pid, ch, s0, s1)
+        || closeReassignOk(wid, pid, ch, s0, s1)
+        || closeDirectOk(s0, s1, mgr)
+        || closeReopenOk(ch, s0, s1, mgr);
+    }
+
+    // Ruling P3-18, all writers incl. Owner: setting Completed / Dropped
+    // stamps approvedByUid == caller.
+    function closeStampOk(ch, s1) {
+      return !(ch.hasAny(['status']) && isClosedSt(s1))
+        || request.resource.data.get('approvedByUid', null) == request.auth.uid;
+    }
+
     // Cheap checks first (picUid, keys, status) before the members get.
-    function taskAssigneeUpdate(wid, ch) {
+    // status must stay present (V2-30). blockerResolutions: checks in P3
+    // Task 3 (Ruling P3-8).
+    function taskAssigneeUpdate(wid, pid, ch, s0, s1) {
       return resource.data.get('picUid', null) == request.auth.uid
-        && ch.hasOnly(assigneeKeys())
-        && resource.data.get('status', 'Planned') in ['Planned', 'InProgress']
-        && request.resource.data.get('status', null) in ['Planned', 'InProgress']
+        && ch.hasOnly(assigneeKeys().concat(['closeRequest', 'closeRequestHistory', 'blockerResolutions']))
+        && s0 in ['Planned', 'InProgress', 'Submitted']
+        && request.resource.data.get('status', null) != null
         && appendOnly(ch, 'updates')
         && appendOnly(ch, 'checkIns')
+        && closeTransitionOk(wid, pid, ch, s0, s1, false)
         && isActiveMember(wid);
     }
 
@@ -591,12 +755,14 @@ service cloud.firestore {
 
     function taskUpdateOk(wid, pid) {
       let ch = changedKeys();
-      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && (
+      let s0 = resource.data.get('status', 'Planned');
+      let s1 = request.resource.data.get('status', 'Planned');
+      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && closeStampOk(ch, s1) && (
         isWsOwner(wid)
-        || taskAssigneeUpdate(wid, ch)
+        || taskAssigneeUpdate(wid, pid, ch, s0, s1)
         || taskContributorUpdate(wid, ch)
-        || taskPMUpdate(wid, pid, ch)
-        || taskLeadUpdate(wid, pid, ch)
+        || (taskPMUpdate(wid, pid, ch) && closeTransitionOk(wid, pid, ch, s0, s1, true))
+        || (taskLeadUpdate(wid, pid, ch) && closeTransitionOk(wid, pid, ch, s0, s1, true))
       );
     }
 
@@ -604,11 +770,13 @@ service cloud.firestore {
       // get(): 3.
       allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      // get(): Owner 2, PM / Sub-PM 4.
+      // get(): Owner 2, PM / Sub-PM 4. P3: a non-Owner creates open tasks
+      // only (closing goes through the transitions above).
       allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
-        || ((isPM(wid, pid, request.resource.data.get('programId', null))
+        || (isOpenSt(request.resource.data.get('status', 'Planned'))
+          && (isPM(wid, pid, request.resource.data.get('programId', null))
             || isLead(wid, pid, request.resource.data.get('workstreamId', null)))
           && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
                          request.resource.data.get('programId', null))

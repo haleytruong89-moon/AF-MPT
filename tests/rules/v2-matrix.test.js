@@ -130,14 +130,18 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
     await assertFails(deleteDoc(doc(await as(LEAD), `${P1}/tasks/t1`)));
     await assertFails(deleteDoc(doc(await as(ASG), `${P1}/tasks/t1`)));
     await assertFails(deleteDoc(doc(await as(PM2), `${P1}/tasks/t1`)));
-    // Sub-PM may drop instead.
-    await assertSucceeds(up(LEAD, `${P1}/tasks/t1`, { status: 'Dropped' }));
+    // Sub-PM may drop instead (P3-18: a close carries approvedByUid == caller).
+    await assertFails(up(LEAD, `${P1}/tasks/t1`, { status: 'Dropped' }));
+    await assertSucceeds(up(LEAD, `${P1}/tasks/t1`, { status: 'Dropped', approvedByUid: LEAD.uid }));
   });
 
   // ── Task update ──
   it('V2-5 task update: Owner, PM (own program), Sub-PM (own WS, within dates) allowed', async () => {
     await assertSucceeds(up(OWNER, `${P1}/tasks/t1`, { name: 'o', end: '2027-12-31' }));
-    await assertSucceeds(up(PM, `${P1}/tasks/t1`, { picUid: VIEWER.uid, status: 'Completed', version: 3 }));
+    // P3-18: a direct close by a manager carries approvedByUid == caller.
+    await assertFails(up(PM, `${P1}/tasks/t1`, { picUid: VIEWER.uid, status: 'Completed', version: 3 }));
+    await assertSucceeds(up(PM, `${P1}/tasks/t1`,
+      { picUid: VIEWER.uid, status: 'Completed', approvedByUid: PM.uid, version: 3 }));
     await assertSucceeds(up(LEAD, `${P1}/tasks/t2`, { end: '2026-06-30', picUid: ASG.uid }));
   });
 
