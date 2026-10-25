@@ -335,6 +335,14 @@ describe('P3 task close transitions', () => {
     await assertFails(up(LEAD, T1, { 'blockerResolutions.u2': res(LEAD), 'blockerResolutions.u3': res(LEAD) }));
     await assertFails(up(OWNER, T1, { 'blockerResolutions.u2': res(ASG) }));
     await assertSucceeds(up(OWNER, T1, { 'blockerResolutions.u2': res(OWNER) }));
+    // Follow-up: clearing the map (null) or deleting the field is denied for LEAD and OWNER too.
+    for (const u of [LEAD, OWNER]) {
+      await seedDoc(T1, task({ blockerResolutions: { u1: res(ASG) } }));
+      await assertFails(up(u, T1, { blockerResolutions: null }));
+      await assertFails(up(u, T1, { blockerResolutions: deleteField() }));
+      // Paired allow: an edit of the existing key.
+      await assertSucceeds(up(u, T1, { 'blockerResolutions.u1': res(ASG, { resolution: `edited by ${u.uid}` }) }));
+    }
   });
 
   // ── Ruling P3-C4: a manager listed as contributor cannot decide that task's close request ──
@@ -381,21 +389,54 @@ describe('P3 task close transitions', () => {
     await assertSucceeds(up(DEPUTY, T1, { contributorUids: [DEPUTY.uid] }));
   });
 
-  it('P3-27 P3-C5: creditShares change after close: denied; on an open task: allowed; direct close may not touch credit fields', async () => {
+  it('P3-27 P3-C5: creditShares change after close: denied (Owner allowed); direct close may not touch credit fields', async () => {
     const shares = { [PM.uid]: 50, [ASG.uid]: 50 };
     await seedDoc(T1, task({ status: 'Completed', approvedByUid: LEAD.uid }));
     await assertFails(up(PM, T1, { creditShares: shares }));
     await assertFails(up(LEAD, T1, { creditSharesMode: 'manual' }));
     await seedDoc(T1, task({ status: 'Dropped', approvedByUid: LEAD.uid }));
     await assertFails(up(LEAD, T1, { creditShares: shares }));
+    // Follow-up, Ruling P3-C6: the PM allow on an open task became a deny
+    // (credit splits are Owner-only at every status; see P3-28). The Owner
+    // remains allowed.
     await seedDoc(T1, task());
-    await assertSucceeds(up(PM, T1, { creditShares: shares, creditSharesMode: 'manual' }));
+    await assertFails(up(PM, T1, { creditShares: shares, creditSharesMode: 'manual' }));
+    await assertSucceeds(up(OWNER, T1, { creditShares: shares, creditSharesMode: 'manual' }));
     // Direct close (from open) with a credit field in the same write: denied.
     await seedDoc(T1, task());
     await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, contributors: ['lead'] }));
     await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, pic: 'lead' }));
     await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, creditShares: shares }));
     await assertSucceeds(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid }));
+  });
+
+  // ── Ruling P3-C6 (PROVISIONAL): credit splits Owner-only on v2, every status ──
+  it('P3-28 P3-C6: LEAD / PM change creditShares or creditSharesMode on an open task: denied; OWNER: allowed', async () => {
+    const shares = { [LEAD.uid]: 30, [ASG.uid]: 70 };
+    await assertFails(up(LEAD, T1, { creditShares: shares }));
+    await assertFails(up(PM, T1, { creditShares: shares }));
+    await assertFails(up(LEAD, T1, { creditSharesMode: 'manual' }));
+    await assertFails(up(PM, T1, { creditSharesMode: 'manual' }));
+    await assertFails(up(ASG, T1, { creditShares: shares }));
+    // Also inside an otherwise allowed manager write (contributors + shares).
+    await assertFails(up(LEAD, T1, { contributorUids: [VIEWER.uid], creditShares: shares }));
+    // Paired allows: the Owner sets the split; managers still edit contributors.
+    await assertSucceeds(up(OWNER, T1, { creditShares: shares, creditSharesMode: 'manual' }));
+    await seedDoc(T1, task());
+    await assertSucceeds(up(LEAD, T1, { contributorUids: [VIEWER.uid] }));
+    await seedDoc(T1, task());
+    await assertSucceeds(up(PM, T1, { contributorUids: [VIEWER.uid] }));
+  });
+
+  // ── Follow-up: a contributor-manager is not an eligible approver (mirror of P3-C4) ──
+  it('P3-29 submit naming a contributor-manager: denied; naming a non-contributor manager: allowed; reassign likewise', async () => {
+    await seedDoc(T1, task({ contributorUids: [LEAD.uid] }));
+    await assertFails(up(ASG, T1, { status: 'Submitted', closeRequest: cr(ASG, LEAD) }));
+    await assertSucceeds(up(ASG, T1, { status: 'Submitted', closeRequest: cr(ASG, PM) }));
+    await seedDoc(T1, submitted(ASG, PM, { contributorUids: [LEAD.uid] }));
+    const ra = (to) => ({ closeRequest: cr(ASG, to), closeRequestHistory: [hist('Reassigned', PM)] });
+    await assertFails(up(PM, T1, ra(LEAD)));
+    await assertSucceeds(up(PM, T1, ra(DEPUTY)));
   });
 });
 

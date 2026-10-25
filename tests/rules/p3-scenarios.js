@@ -92,6 +92,15 @@ const resolved = (u, note) => ({
   [blockerId]: { resolvedAt: '2026-10-25T00:00:00Z', resolvedBy: u.email, resolution: note, authorUid: u.uid },
 });
 
+// A Submitted task with long lists: 200 updates, 20 close history entries.
+const longSeed = submittedTo(LEAD);
+longSeed.updates = Array.from({ length: 200 }, (_, i) =>
+  upd(i % 2 ? ASG : VIEWER, `Progress note ${i}`, { id: `u_long_${i}` }));
+longSeed.closeRequestHistory = Array.from({ length: 20 }, (_, i) => ({
+  id: `cr_old_${i}`, status: i % 2 ? 'Rejected' : 'Withdrawn', decidedByUid: i % 2 ? LEAD.uid : ASG.uid,
+  decidedAt: '2026-10-01T00:00:00Z', reason: i % 2 ? `reason ${i}` : '',
+}));
+
 // Each scenario: seed doc, actor, and the new full doc (before stamping).
 export const scenarios = [
   {
@@ -177,6 +186,50 @@ export const scenarios = [
       approvedByUid: PM.uid, approvedAt: '2026-10-25T00:00:00Z',
       closeRequestHistory: [hist('Approved', PM), ...base.closeRequestHistory],
       updates: withUpd(base, PM, 'Close request approved'),
+    },
+  },
+  // Rules follow-up (post Task 3 review): combined manager writes.
+  {
+    // (a) the heaviest combination the planner can produce on the decide path.
+    name: 'LEAD approve + blocker resolution + update',
+    seed: submittedTo(LEAD), actor: LEAD,
+    next: {
+      ...submittedTo(LEAD), status: 'Completed', closeRequest: null,
+      approvedByUid: LEAD.uid, approvedAt: '2026-10-25T00:00:00Z',
+      closeRequestHistory: [hist('Approved', LEAD), ...base.closeRequestHistory],
+      blockerResolutions: resolved(LEAD, 'SG confirmed, closing'),
+      updates: withUpd(base, LEAD, 'Close request approved'),
+    },
+  },
+  {
+    // (b) reject + update + a due-date move inside the WS window (2026-12-31).
+    name: 'LEAD reject + update + end date',
+    seed: submittedTo(LEAD), actor: LEAD,
+    next: {
+      ...submittedTo(LEAD), status: 'InProgress', closeRequest: null, end: '2026-11-30',
+      closeRequestHistory: [hist('Rejected', LEAD, { reason: 'missing evidence' }), ...base.closeRequestHistory],
+      updates: withUpd(base, LEAD, 'Rejected; due date moved to 30/11'),
+    },
+  },
+  {
+    // (c) long lists: cost must not depend on list length.
+    name: 'LEAD reject + update (200 updates, 20 history entries)',
+    seed: longSeed, actor: LEAD,
+    next: {
+      ...longSeed, status: 'InProgress', closeRequest: null,
+      closeRequestHistory: [hist('Rejected', LEAD, { reason: 'missing evidence' }), ...longSeed.closeRequestHistory],
+      updates: withUpd(longSeed, LEAD, 'Close request rejected: missing evidence'),
+    },
+  },
+  {
+    // (d) Owner decides (the Owner branch is evaluated last in the update OR).
+    name: 'OWNER approve + update',
+    seed: submittedTo(LEAD), actor: OWNER,
+    next: {
+      ...submittedTo(LEAD), status: 'Completed', closeRequest: null,
+      approvedByUid: OWNER.uid, approvedAt: '2026-10-25T00:00:00Z',
+      closeRequestHistory: [hist('Approved', OWNER), ...base.closeRequestHistory],
+      updates: withUpd(base, OWNER, 'Close request approved'),
     },
   },
 ];
