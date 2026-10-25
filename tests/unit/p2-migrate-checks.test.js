@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { precheckProject, checkOrders, taskLinkMismatches, countReport, detectV2Edits } from '../../scripts/lib/migrate-checks.mjs';
+import { precheckProject, checkOrders, taskLinkMismatches, countReport, detectV2Edits, inactiveMembers } from '../../scripts/lib/migrate-checks.mjs';
 import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { splitProject } from '../../src/migrateV2.js';
 
@@ -172,5 +172,21 @@ describe('non-plain-value (Task 5 review)', () => {
     const f = fixture();
     f.programs[0].extra = Object.assign(Object.create(null), { a: 1 });
     expect(codes(precheckProject(f, { pid: PID }).blocking)).not.toContain('non-plain-value');
+  });
+});
+
+describe('inactiveMembers', () => {
+  const members = [
+    { id: 'a', data: { displayName: 'A', email: 'a@x', status: 'active' } },
+    { id: 'b', data: { displayName: 'B', email: 'b@x', status: 'deactivated' } },
+  ];
+  it('lists deactivated and missing uids, de-duplicated and sorted; null when not loaded', () => {
+    expect(inactiveMembers(['b', 'a', 'z', 'b'], members)).toEqual([
+      { uid: 'b', name: 'B', email: 'b@x', status: 'deactivated' },
+      { uid: 'z', name: null, email: null, status: 'missing' },
+    ]);
+    expect(inactiveMembers(['a'], members)).toEqual([]);
+    expect(inactiveMembers(['a'], undefined)).toBeNull();
+    expect(inactiveMembers(undefined, members)).toEqual([]);
   });
 });

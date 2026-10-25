@@ -140,7 +140,7 @@ export function planActivityCopy(entries, { uidByEmail = new Map(), now = new Da
         id,
         author: entry.authorName || entry.author || null,
         authorEmail: entry.author ?? null,
-        authorUid: (key && uidByEmail.get(key)) || null,
+        authorUid: (key && uidByEmail.get(key)) || entry.authorUid || null,
         createdAt,
         copiedBy: MIGRATE_STAMP,
       },

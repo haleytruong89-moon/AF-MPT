@@ -252,6 +252,35 @@ describe('P2.4 in-place migration (p2-migrate) against the emulator', () => {
     }
   });
 
+  it('MIG-11: a memberIds uid without an active members doc is warned and covered by the plan hash', async () => {
+    const before = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(before.accessLoss).toEqual([]);
+    await db.doc(`${WS}/members/uidOld`).set({ email: 'old@smartosc.com', displayName: 'Old Person', status: 'deactivated' });
+    await db.doc(BASE).update({ memberIds: ['uidZ', 'uidOld'], roles: { uidZ: 'owner', uidOld: 'operator' } });
+    const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
+    expect(prep.accessLoss.map((m) => m.uid)).toEqual(['uidOld']);
+    const w = prep.plan.report.issues.warnings.find((x) => x.code === 'member-not-active');
+    expect(w.detail).toContain('Old Person');
+    expect(prep.planHash).not.toBe(before.planHash);
+    // Approving the earlier preview does not approve the access loss.
+    await expect(run({ expectHash: before.planHash })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    const r = await run({ expectHash: prep.planHash });
+    expect(r.verify.ok).toBe(true);
+  });
+
+  it('MIG-12: the before-image is re-taken from the live doc on every prepared run', async () => {
+    const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
+    await expect(run({ hooks: { beforeFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });
+    expect((await record()).data().before).toEqual({});
+    await db.doc(BASE).update({ visibility: 'department', rev: 10, writeId: 'w10' });
+    await run();
+    expect((await record()).data().before).toEqual({ visibility: 'department' });
+    await rollbackMigration(db, {
+      pid: PID, FieldValue, Timestamp, writeLostReport: () => {},
+    });
+    expect((await db.doc(BASE).get()).data().visibility).toBe('department');
+  });
+
   it('MIG-10: a switch that never verified exits 2 on any mismatch, even with v2 edits present', async () => {
     const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
     await expect(run({ hooks: { afterFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });

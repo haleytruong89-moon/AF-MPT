@@ -35,11 +35,41 @@ describe('p2-migrate pure core', () => {
     expect(p.reconcile.toWrite).toHaveLength(p.plan.writes.length);
   });
 
-  it('keeps the first before-image on a re-run, recaptures after a rollback', () => {
+  it('always takes the before-image from the live doc, even on a re-run of a prepared record', () => {
     const prev = { status: 'prepared', before: { visibility: 'restricted' }, history: [{ status: 'prepared', at: 'x' }] };
-    expect(decide({ record: prev }).record.before).toEqual({ visibility: 'restricted' });
+    expect(decide({ record: prev }).record.before).toEqual({ visibility: 'department' });
     expect(decide({ record: prev }).record.history.map((h) => h.status)).toEqual(['prepared', 'prepared']);
     expect(decide({ record: { ...prev, status: 'rolled-back' } }).record.before).toEqual({ visibility: 'department' });
+  });
+
+  it('member-not-active: a memberIds uid without an active members doc is warned, shown and hashed', () => {
+    const members = [
+      { id: 'uidZ', data: { email: 'zara@smartosc.com', displayName: 'Zara Pham', status: 'active' } },
+      { id: 'uid1', data: { email: 'alice@smartosc.com', displayName: 'Alice Nguyen', status: 'active' } },
+      { id: 'uidOld', data: { email: 'old@smartosc.com', displayName: 'Old Person', status: 'deactivated' } },
+    ];
+    const withDir = { ...dir, members };
+    const ok = decide({ dir: withDir });
+    expect(ok.accessLoss).toEqual([]);
+    expect(ok.plan.report.issues.warnings.map((w) => w.code)).not.toContain('member-not-active');
+    const bad = decide({ dir: withDir, doc: { ...doc, memberIds: ['uidZ', 'uidOld', 'uidGhost'] } });
+    expect(bad.accessLoss.map((m) => m.uid)).toEqual(['uidGhost', 'uidOld']);
+    const w = bad.plan.report.issues.warnings.find((x) => x.code === 'member-not-active');
+    expect(w.detail).toContain('Old Person');
+    expect(w.detail).toContain('old@smartosc.com');
+    expect(w.detail).toContain('uidGhost');
+    expect(bad.planHash).not.toBe(decide({ dir: withDir, doc: { ...doc, memberIds: ['uidZ'] } }).planHash);
+    const text = formatMigrationPreview(bad, { pid: PID }).join(' | ');
+    expect(text).toContain('Access loss (HOD approves)');
+    expect(text).toContain('Old Person');
+    expect(previewSheets(bad, { pid: PID }).Checks.some((r) => r.Code === 'member-not-active')).toBe(true);
+  });
+
+  it('member-not-active: offline (no directory members) is "not checked"', () => {
+    const p = decide({ doc: { ...doc, memberIds: ['uidZ', 'uidOld'] } });
+    expect(p.accessLoss).toBeNull();
+    expect(p.plan.report.issues.warnings.map((w) => w.code)).not.toContain('member-not-active');
+    expect(formatMigrationPreview(p, { pid: PID }).join(' | ')).toContain('Access loss: not checked (offline)');
   });
 
   it('post-flip only with a switched / verified record; otherwise v2 is blocked', () => {
