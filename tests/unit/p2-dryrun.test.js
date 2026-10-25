@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import { readFileSync } from 'node:fs';
 import fixture from '../fixtures/fixture-workspace.json';
-import { buildDryRun, buildAssignmentTemplate, buildReportWorkbook } from '../../scripts/p2-migrate-dryrun.mjs';
+import { buildDryRun, buildAssignmentTemplate, buildReportWorkbook, dryRunExitCode } from '../../scripts/p2-migrate-dryrun.mjs';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const entries = [
@@ -155,5 +155,29 @@ describe('assignment template uses normalised ids (P2.4 Task 7)', () => {
     expect(rows(wb, 'Programs')).toHaveLength(1);
     expect(gen).toContain(rows(wb, 'Programs')[0]['Program id']);
     expect(gen).toContain(rows(wb, 'Workstreams')[0]['Workstream id']);
+  });
+});
+
+describe('dry-run exit code and offline labels (fix round 1)', () => {
+  it('X-1: exit code precedence: 2 over 3 over 0', () => {
+    expect(dryRunExitCode({ ok: true, blockedCount: 0 })).toBe(0);
+    expect(dryRunExitCode({ ok: true, blockedCount: 2 })).toBe(3);
+    expect(dryRunExitCode({ ok: false, blockedCount: 2 })).toBe(2);
+  });
+  it('X-2: a null project reports not-found and does not throw', () => {
+    const r = buildDryRun({ meta: {}, projects: { gone: null }, activity: {} }, [], new Map(), { offline: true });
+    expect(r.perProject[0].checks.blocking.map((i) => i.code)).toEqual(['not-found']);
+    expect(r.blockedCount).toBe(1);
+  });
+  it('X-3: offline adds a Checks row per project and labels Preview and Warnings', () => {
+    const wb = buildReportWorkbook(buildDryRun(withV1(), [], new Map(), { offline: true }));
+    expect(rows(wb, 'Checks').some((c) => c.Detail === 'people checks skipped (offline)')).toBe(true);
+    expect(rows(wb, 'Preview')[0].Line).toMatch(/OFFLINE/);
+    expect(String(rows(wb, 'Summary')[0].Warnings)).toMatch(/partial/);
+  });
+  it('X-4: online has no offline label', () => {
+    const wb = buildReportWorkbook(buildDryRun(withV1(), entries, uidByEmail));
+    expect(rows(wb, 'Checks').some((c) => /offline/.test(c.Detail))).toBe(false);
+    expect(typeof rows(wb, 'Summary')[0].Warnings).toBe('number');
   });
 });

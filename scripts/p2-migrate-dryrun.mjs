@@ -6,7 +6,7 @@
 //
 // Usage:
 //   node scripts/p2-migrate-dryrun.mjs <backup.json> [--offline | --key service-account.json] [--out p2-dryrun-report.xlsx] [--template p2-assignments.xlsx]
-// Exit codes: 1 = usage / missing key, 2 = a project failed the round trip.
+// Exit codes: 1 = usage / missing key, 2 = a project failed the round trip, 3 = a project is blocked by a pre-check (2 wins).
 
 import * as fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
@@ -60,8 +60,8 @@ export function buildDryRun(backup, directoryEntries, uidByEmail, opts = {}) {
     const orphanTotal = orphans.workstreams + orphans.tasks + orphans.actions + orphans.raid + orphans.missingRaid;
     // The tree the app will hold after the switch is the normalised one (generated ids, no nulls).
     const roundTripOk = Boolean(s) && isDeepStrictEqual(back?.project, pre.normalised.project) && orphanTotal === 0;
-    const v1Counts = { programs: 0, workstreams: 0, tasks: 0, actions: (project.actionItems || []).length, decisions: (project.decisions || []).length, raid: 0 };
-    for (const p of project.programs || []) {
+    const v1Counts = { programs: 0, workstreams: 0, tasks: 0, actions: (project?.actionItems || []).length, decisions: (project?.decisions || []).length, raid: 0 };
+    for (const p of project?.programs || []) {
       if (!p) continue;
       v1Counts.programs++;
       if (Object.prototype.hasOwnProperty.call(p, 'raid')) v1Counts.raid++;
@@ -78,6 +78,7 @@ export function buildDryRun(backup, directoryEntries, uidByEmail, opts = {}) {
     }
     const keep = (l) => (offline ? l.filter((i) => !OFFLINE_SKIPPED.has(i.code)) : l);
     const checks = { blocking: pre.blocking, warnings: keep(pre.warnings) };
+    if (offline) checks.warnings.push({ code: 'offline', detail: 'people checks skipped (offline)' });
     const report = prep.plan?.report;
     perProject.push({
       name,
@@ -124,7 +125,7 @@ export function buildReportWorkbook(result) {
     Duplicates: p.duplicateIds.length,
     Collisions: p.collisions,
     Blocking: p.checks.blocking.length,
-    Warnings: p.checks.warnings.length,
+    Warnings: p.offline ? `${p.checks.warnings.length - 1} (partial: offline)` : p.checks.warnings.length,
     'Ids generated': p.idMap.length,
     'Nulls removed': p.nullsRemoved,
     'Activity entries': p.activityEntries,
@@ -142,7 +143,10 @@ export function buildReportWorkbook(result) {
     ...p.checks.warnings.map((i) => ({ Project: p.name, Severity: 'warning', Code: i.code, Detail: i.detail })),
   ]));
   add('Id map', sheets.flatMap((x) => x['Id map'].map((r) => ({ Project: x.p.name, ...r }))));
-  add('Preview', sheets.flatMap((x) => x.Summary.map((r) => ({ Project: x.p.name, ...r }))));
+  add('Preview', sheets.flatMap((x) => [
+    ...(x.p.offline ? [{ Project: x.p.name, Line: 'OFFLINE: people not resolved; pic, member grants and assignments are not checked' }] : []),
+    ...x.Summary.map((r) => ({ Project: x.p.name, ...r })),
+  ]));
   return wb;
 }
 
@@ -192,6 +196,12 @@ export function buildAssignmentTemplate(backup) {
   XLSX.utils.book_append_sheet(wb, sheet(workstreams, WORKSTREAM_COLS), WORKSTREAMS_SHEET);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(instructions), 'Instructions');
   return wb;
+}
+
+// 2 = round trip failed, 3 = at least one project is blocked, 0 = clean. 2 wins over 3.
+export function dryRunExitCode(result) {
+  if (!result.ok) return 2;
+  return result.blockedCount > 0 ? 3 : 0;
 }
 
 function parseArgs(argv) {
@@ -247,10 +257,13 @@ async function main() {
   XLSX.writeFile(buildReportWorkbook(result), o.out);
   XLSX.writeFile(buildAssignmentTemplate(backup), o.template);
   for (const p of result.perProject) {
-    console.log(`${p.roundTripOk ? 'OK  ' : 'FAIL'} ${p.name}: tasks ${p.before.tasks} -> ${p.after.tasks}, meta ${p.sizeKb} KB, blocking ${p.checks.blocking.length}, warnings ${p.checks.warnings.length}, ids ${p.idMap.length}, unresolved ${p.offline ? 'not checked' : p.unresolved.length}`);
+    console.log(`${p.roundTripOk ? (p.checks.blocking.length ? 'BLOCKED' : 'OK  ') : 'FAIL'} ${p.name}: tasks ${p.before.tasks} -> ${p.after.tasks}, meta ${p.sizeKb} KB, blocking ${p.checks.blocking.length}${p.checks.blocking.length ? ` (${[...new Set(p.checks.blocking.map((i) => i.code))].join(', ')})` : ''}, warnings ${p.checks.warnings.length}, ids ${p.idMap.length}, unresolved ${p.offline ? 'not checked' : p.unresolved.length}`);
   }
   console.log(`Report ${o.out}, template ${o.template}. Dry run: Firestore untouched.`);
-  if (!result.ok) { console.error('Round trip FAILED for at least one project.'); process.exit(2); }
+  if (o.offline) console.log('OFFLINE: people checks skipped');
+  if (!result.ok) console.error('Round trip FAILED for at least one project.');
+  if (result.blockedCount > 0) console.error(`${result.blockedCount} project(s) blocked`);
+  process.exit(dryRunExitCode(result));
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
