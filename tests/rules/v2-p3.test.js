@@ -355,6 +355,47 @@ describe('P3 task close transitions', () => {
     await assertFails(up(PM, T1, reject(PM)));
     await assertSucceeds(up(LEAD, T1, reject(LEAD)));
   });
+
+  // ── Ruling P3-C5: credit fields frozen after close for non-Owner managers ──
+  it('P3-25 P3-C5: PM adds self to contributorUids on a Completed task: denied; on an open task: allowed', async () => {
+    await seedDoc(T1, task({ status: 'Completed', approvedByUid: LEAD.uid }));
+    await assertFails(up(PM, T1, { contributorUids: [PM.uid] }));
+    await assertFails(up(PM, T1, { contributors: ['pm'] }));
+    await assertFails(up(LEAD, T1, { pic: 'lead', picEmail: LEAD.email }));
+    await assertSucceeds(up(OWNER, T1, { contributorUids: [PM.uid] }));
+    await seedDoc(T1, task());
+    await assertSucceeds(up(PM, T1, { contributorUids: [PM.uid], contributors: ['pm'] }));
+  });
+
+  it('P3-26 P3-C5: DEPUTY approve that also adds self as contributor: denied; DEPUTY adds self on an open task: allowed', async () => {
+    await seedDoc(T1, submitted(ASG, LEAD));
+    const a = {
+      status: 'Completed', closeRequest: null, approvedByUid: DEPUTY.uid,
+      closeRequestHistory: [hist('Approved', DEPUTY)],
+    };
+    await assertFails(up(DEPUTY, T1, { ...a, contributorUids: [DEPUTY.uid] }));
+    await assertFails(up(DEPUTY, T1, { ...a, contributors: ['deputy'] }));
+    await assertFails(up(DEPUTY, T1, { contributorUids: [DEPUTY.uid] }));
+    await seedDoc(T1, task());
+    await assertSucceeds(up(DEPUTY, T1, { contributorUids: [DEPUTY.uid] }));
+  });
+
+  it('P3-27 P3-C5: creditShares change after close: denied; on an open task: allowed; direct close may not touch credit fields', async () => {
+    const shares = { [PM.uid]: 50, [ASG.uid]: 50 };
+    await seedDoc(T1, task({ status: 'Completed', approvedByUid: LEAD.uid }));
+    await assertFails(up(PM, T1, { creditShares: shares }));
+    await assertFails(up(LEAD, T1, { creditSharesMode: 'manual' }));
+    await seedDoc(T1, task({ status: 'Dropped', approvedByUid: LEAD.uid }));
+    await assertFails(up(LEAD, T1, { creditShares: shares }));
+    await seedDoc(T1, task());
+    await assertSucceeds(up(PM, T1, { creditShares: shares, creditSharesMode: 'manual' }));
+    // Direct close (from open) with a credit field in the same write: denied.
+    await seedDoc(T1, task());
+    await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, contributors: ['lead'] }));
+    await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, pic: 'lead' }));
+    await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, creditShares: shares }));
+    await assertSucceeds(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid }));
+  });
 });
 
 // ── Review round 1: realistic executor payloads (full doc set) on the real rules ──

@@ -526,8 +526,9 @@ service cloud.firestore {
     //   (Assignee, PM and Sub-PM branches): open moves, submit, withdraw,
     //   approve, reject (with reason), reassign (PM; Owner unrestricted),
     //   direct close by a manager who is not the PIC, reopen (manager).
-    //   No self-credit (review round 1): a non-Owner manager may change
-    //   picUid only while the task is open; a direct close keeps picUid and
+    //   No self-credit (review round 1, Ruling P3-C5): a non-Owner manager
+    //   may change the credit fields (creditKeys) only while the task is
+    //   open; a direct close keeps them and
     //   is denied to a manager in contributorUids (Ruling P3-C2); reopen
     //   clears approvedByUid / approvedAt / closedByUid.
     //   Nobody decides their own request. Every write that sets status to
@@ -596,6 +597,14 @@ service cloud.firestore {
     // s0 / s1 = old / new status read with get('status', 'Planned').
     function closeKeys() {
       return ['status', 'closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'];
+    }
+
+    // Ruling P3-C5: the fields the App derives credit from (App.jsx
+    // creditOf: pic / picUid, contributors, creditShares). A non-Owner
+    // manager may change them only while the task is open, and never in a
+    // direct-close write (no self-credit).
+    function creditKeys() {
+      return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode'];
     }
 
     function isClosedSt(s) {
@@ -687,8 +696,8 @@ service cloud.firestore {
 
     // From Planned / InProgress: open move, submit, or (manager, Ruling
     // P3-3) a direct close of a task they are not PIC of, stamped. No
-    // self-credit (review round 1, Ruling P3-C2): the direct close may not
-    // change picUid, and a manager listed in contributorUids must submit
+    // self-credit (review round 1, Rulings P3-C2 / P3-C5): the direct close
+    // may not change the credit fields (creditKeys), and a manager listed in contributorUids must submit
     // like anyone else. It never touches the close request / history.
     function closeFromOpen(wid, pid, ch, s1, mgr) {
       return (isOpenSt(s1)
@@ -697,7 +706,7 @@ service cloud.firestore {
           && closeSubmitOk(wid, pid, ch, mgr, request.resource.data.get('closeRequest', null)))
         || (mgr && isClosedSt(s1)
           && resource.data.get('picUid', null) != request.auth.uid
-          && !ch.hasAny(['picUid', 'closeRequest', 'closeRequestHistory'])
+          && !ch.hasAny(creditKeys().concat(['closeRequest', 'closeRequestHistory']))
           && !inList(request.resource.data.get('contributorUids', null), request.auth.uid)
           && request.resource.data.get('approvedByUid', null) == request.auth.uid);
     }
@@ -840,8 +849,9 @@ service cloud.firestore {
 
     // PM / Sub-PM (non-Owner managers). Active-member check, project data,
     // programMeta entry and pm are each computed once (expression limit).
-    // No self-credit: picUid may change only while the task is open (not
-    // Submitted / Completed / Dropped). A status change keeps status present.
+    // No self-credit (Ruling P3-C5): the credit fields (creditKeys) may
+    // change only while the task is open (not Submitted / Completed /
+    // Dropped). A status change keeps status present.
     function taskManagerUpdate(wid, pid, ch, s0, s1, act, p) {
       return act && taskManagerWith(wid, pid, ch, s0, s1, p,
         prgMetaOf(p, resource.data.get('programId', null)));
@@ -857,7 +867,7 @@ service cloud.firestore {
     function taskManagerPm(wid, pid, ch, s0, s1, p, r) {
       return (r.pm ? taskPMMoveOk(wid, pid, ch, p) : taskLeadOk(wid, pid, ch, p))
         && taskDatesOk(wid, pid, ch)
-        && (!ch.hasAny(['picUid']) || isOpenSt(s0))
+        && (!ch.hasAny(creditKeys()) || isOpenSt(s0))
         && (!ch.hasAny(['status']) || request.resource.data.get('status', null) != null)
         && (!ch.hasAny(closeKeys()) || closeTransitionOk(wid, pid, ch, s0, s1, r));
     }

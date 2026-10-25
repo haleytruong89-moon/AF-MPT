@@ -168,6 +168,17 @@ export const scenarios = [
       updates: withUpd(base, ASG, 'Submitted as done'),
     },
   },
+  {
+    // Ruling P3-C4: LEAD is a contributor, so PM decides the LEAD-addressed request.
+    name: 'PM approve (LEAD-addressed, LEAD contributor) + update',
+    seed: { ...submittedTo(LEAD), contributorUids: [VIEWER.uid, LEAD.uid] }, actor: PM,
+    next: {
+      ...submittedTo(LEAD), contributorUids: [VIEWER.uid, LEAD.uid], status: 'Completed', closeRequest: null,
+      approvedByUid: PM.uid, approvedAt: '2026-10-25T00:00:00Z',
+      closeRequestHistory: [hist('Approved', PM), ...base.closeRequestHistory],
+      updates: withUpd(base, PM, 'Close request approved'),
+    },
+  },
 ];
 
 // Fixture docs (written with rules disabled through seedFn(path, data)).
