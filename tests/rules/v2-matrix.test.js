@@ -140,8 +140,11 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
     await assertSucceeds(up(OWNER, `${P1}/tasks/t1`, { name: 'o', end: '2027-12-31' }));
     // P3-18: a direct close by a manager carries approvedByUid == caller.
     await assertFails(up(PM, `${P1}/tasks/t1`, { picUid: VIEWER.uid, status: 'Completed', version: 3 }));
-    await assertSucceeds(up(PM, `${P1}/tasks/t1`,
+    // Review round 1 (no self-credit): a pic change and a close are two writes.
+    await assertFails(up(PM, `${P1}/tasks/t1`,
       { picUid: VIEWER.uid, status: 'Completed', approvedByUid: PM.uid, version: 3 }));
+    await assertSucceeds(up(PM, `${P1}/tasks/t1`, { picUid: VIEWER.uid, version: 3 }));
+    await assertSucceeds(up(PM, `${P1}/tasks/t1`, { status: 'Completed', approvedByUid: PM.uid, version: 4 }));
     await assertSucceeds(up(LEAD, `${P1}/tasks/t2`, { end: '2026-06-30', picUid: ASG.uid }));
   });
 

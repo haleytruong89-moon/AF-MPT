@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteField } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
+import { scenarios, seedScenario, writeScenario } from './p3-scenarios.js';
 
 // P3 Task 2: task close transitions on a schemaVersion 2 project (Rulings
 // P3-1, P3-3, P3-4, P3-6, P3-7, P3-18, P3-20).
@@ -218,7 +219,10 @@ describe('P3 task close transitions', () => {
     await assertFails(up(ASG, T1, { status: 'InProgress' }));
     // Reopen may not rewrite the close history.
     await assertFails(up(LEAD, T1, { status: 'InProgress', closeRequestHistory: [hist('Approved', LEAD)] }));
-    await assertSucceeds(up(LEAD, T1, { status: 'InProgress' }));
+    // Review round 1: reopen clears the approval stamp.
+    await assertFails(up(LEAD, T1, { status: 'InProgress' }));
+    await assertFails(up(LEAD, T1, { status: 'InProgress', approvedByUid: null, approvedAt: '2026-10-25' }));
+    await assertSucceeds(up(LEAD, T1, { status: 'InProgress', approvedByUid: null, approvedAt: null }));
   });
 
   it('P3-13 ASG appends an update while Submitted: allowed; ASG changes closeRequest.outcome while Submitted: denied', async () => {
@@ -241,4 +245,69 @@ describe('P3 task close transitions', () => {
     await assertFails(put(LEAD, `${P1}/tasks/n1`, t('Submitted')));
     await assertSucceeds(put(LEAD, `${P1}/tasks/n1`, t('InProgress')));
   });
+
+  // ── Review round 1: no self-credit via picUid / contributorUids ──
+  it('P3-16 PM swaps picUid to self and closes in one write: denied', async () => {
+    await assertFails(up(PM, T1, { picUid: PM.uid, status: 'Completed', approvedByUid: PM.uid }));
+    await assertFails(up(LEAD, T1, { picUid: LEAD.uid, status: 'Dropped', approvedByUid: LEAD.uid }));
+    // Another pic + close in one write is denied too (two writes instead).
+    await assertFails(up(PM, T1, { picUid: VIEWER.uid, status: 'Completed', approvedByUid: PM.uid }));
+  });
+
+  it('P3-17 pic swap after close: PM / LEAD denied; Owner allowed', async () => {
+    await seedDoc(T1, task({ status: 'Completed', approvedByUid: LEAD.uid }));
+    await assertFails(up(PM, T1, { picUid: PM.uid }));
+    await assertFails(up(LEAD, T1, { picUid: LEAD.uid }));
+    await seedDoc(T1, task({ status: 'Dropped', approvedByUid: LEAD.uid }));
+    await assertFails(up(PM, T1, { picUid: VIEWER.uid }));
+    await assertSucceeds(up(OWNER, T1, { picUid: VIEWER.uid }));
+  });
+
+  it('P3-18 pic swap on a Submitted task, then approve: denied (alone and in the approve write)', async () => {
+    await seedDoc(T1, submitted(ASG, LEAD));
+    await assertFails(up(PM, T1, { picUid: PM.uid }));
+    await assertFails(up(LEAD, T1, { picUid: LEAD.uid }));
+    await assertFails(up(DEPUTY, T1, {
+      picUid: PM.uid, status: 'Completed', closeRequest: null, approvedByUid: DEPUTY.uid,
+      closeRequestHistory: [hist('Approved', DEPUTY)],
+    }));
+    // Control: the same approve without the pic change is allowed.
+    await assertSucceeds(up(DEPUTY, T1, {
+      status: 'Completed', closeRequest: null, approvedByUid: DEPUTY.uid,
+      closeRequestHistory: [hist('Approved', DEPUTY)],
+    }));
+  });
+
+  it('P3-19 Ruling P3-C2: a manager listed as contributor may not direct-close; may submit', async () => {
+    await seedDoc(`${P1}/tasks/tk`, task({ contributorUids: [LEAD.uid] }));
+    await assertFails(up(LEAD, `${P1}/tasks/tk`, { status: 'Completed', approvedByUid: LEAD.uid }));
+    await seedDoc(`${P1}/tasks/tq`, task({ contributorUids: [PM.uid] }));
+    await assertFails(up(PM, `${P1}/tasks/tq`, { status: 'Dropped', approvedByUid: PM.uid }));
+    // Submitting (to PM) is the way for a contributor-manager.
+    await assertSucceeds(up(LEAD, `${P1}/tasks/tk`, { status: 'Submitted', closeRequest: cr(LEAD, PM) }));
+  });
+
+  // ── Review round 1: close history protected; status present ──
+  it('P3-20 direct close may not touch closeRequest / closeRequestHistory; manager may not delete status', async () => {
+    await assertFails(up(LEAD, T1, {
+      status: 'Completed', approvedByUid: LEAD.uid, closeRequestHistory: [hist('Approved', LEAD)],
+    }));
+    await assertFails(up(LEAD, T1, { status: 'Completed', approvedByUid: LEAD.uid, closeRequest: cr(ASG, LEAD) }));
+    await assertFails(up(LEAD, T1, { status: deleteField() }));
+    await assertFails(up(PM, T1, { status: deleteField() }));
+    await assertSucceeds(up(LEAD, T1, { status: 'Planned' }));
+  });
+});
+
+// ── Review round 1: realistic executor payloads (full doc set) on the real rules ──
+describe('P3 realistic payloads (full task doc, executor shape)', () => {
+  beforeEach(resetData);
+  afterAll(cleanup);
+
+  for (const s of scenarios) {
+    it(`P3-R ${s.name}: allowed`, async () => {
+      await seedScenario(seedDoc, s);
+      await assertSucceeds(writeScenario(await as(s.actor), s));
+    });
+  }
 });
