@@ -2,10 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
 import { DELETE_FIELD } from '../../src/planV2Save.js';
 
+const P = 'workspaces/main/projects/p1';
+const ctx = (plan) => ({ db: {}, wid: 'main', pid: 'p1', uid: 'u1', plan });
+
 // In-memory Firestore stand-in: path -> data. A transaction stages writes and
 // applies them only when the callback resolves (like the real SDK).
+// The project doc P is seeded as schemaVersion 2 unless `initial` sets it.
 function fakeFs(initial = {}, { denyPaths = [] } = {}) {
-  const store = new Map(Object.entries(initial).map(([k, v]) => [k, { ...v }]));
+  const store = new Map(Object.entries({ [P]: { schemaVersion: 2 }, ...initial }).map(([k, v]) => [k, { ...v }]));
   const DEL = { __del: true };
   const TS = { __ts: true };
   let txCount = 0;
@@ -47,9 +51,6 @@ function fakeFs(initial = {}, { denyPaths = [] } = {}) {
   return { fs, store, TS, txCount: () => txCount };
 }
 
-const P = 'workspaces/main/projects/p1';
-const ctx = (plan) => ({ db: {}, wid: 'main', pid: 'p1', uid: 'u1', plan });
-
 describe('executeV2Save', () => {
   it('update: full-doc set with version + 1 and stamps; create: version 1 + stamps', async () => {
     const { fs, store, TS } = fakeFs({ [`${P}/tasks/t1`]: { name: 'old', extra: 1, version: 3 } });
@@ -83,7 +84,7 @@ describe('executeV2Save', () => {
       const r = await executeV2Save(fs, ctx(plan));
       expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, written: [], metaWritten: false });
       expect(store.get(`${P}/tasks/t2`)).toEqual({ version: 1 });
-      expect(store.get(P)).toBeUndefined();
+      expect(store.get(P)).toEqual({ schemaVersion: 2 });
     }
   });
 
@@ -103,10 +104,10 @@ describe('executeV2Save', () => {
   });
 
   it('metaPatch: update on the project doc in batch 1, DELETE_FIELD mapped, updatedAt stamped', async () => {
-    const { fs, store, TS } = fakeFs({ [P]: { name: 'a', gone: 1, keep: 2 } });
+    const { fs, store, TS } = fakeFs({ [P]: { schemaVersion: 2, name: 'a', gone: 1, keep: 2 } });
     const r = await executeV2Save(fs, ctx({ batches: [], metaPatch: { name: 'b', gone: DELETE_FIELD } }));
     expect(r).toMatchObject({ status: 'ok', metaWritten: true });
-    expect(store.get(P)).toEqual({ name: 'b', keep: 2, updatedAt: TS });
+    expect(store.get(P)).toEqual({ schemaVersion: 2, name: 'b', keep: 2, updatedAt: TS });
   });
 
   it('Ruling X: follow-up batches run as their own transactions, in order', async () => {
@@ -131,6 +132,43 @@ describe('executeV2Save', () => {
     expect(r).toMatchObject({ status: 'denied', failedBatch: 1 });
     expect(r.written.map((w) => w.id)).toEqual(['t1']);
     expect(store.get(`${P}/tasks/t1`).version).toBe(2);
+  });
+
+  // P2.4 fix round 1: a rolled-back project (v1 again) must not get v2 writes
+  // from a stale tab. The executor re-reads the project doc in every batch.
+  it('project doc not v2 (rolled back / missing) -> conflict, nothing written, no metaPatch', async () => {
+    for (const proj of [{}, { schemaVersion: 1 }, { schemaVersion: '2' }, undefined]) {
+      const init = { [`${P}/tasks/t1`]: { version: 1 } };
+      const { fs, store } = fakeFs(init);
+      if (proj === undefined) store.delete(P); else store.set(P, { ...proj });
+      const plan = { batches: [[
+        { kind: 'tasks', op: 'update', id: 't1', data: { a: 1 }, expectVersion: 1 },
+        { kind: 'tasks', op: 'create', id: 't2', data: { version: 1 } },
+      ]], metaPatch: { name: 'N' } };
+      const r = await executeV2Save(fs, ctx(plan));
+      expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, written: [], metaWritten: false });
+      expect(store.get(`${P}/tasks/t1`)).toEqual({ version: 1 });
+      expect(store.has(`${P}/tasks/t2`)).toBe(false);
+      expect(store.get(P)).toEqual(proj);
+    }
+  });
+
+  it('project rolled back between batches -> later batch conflicts; earlier batch stays written', async () => {
+    const { fs, store } = fakeFs({ [`${P}/tasks/t1`]: { updates: [], version: 1 } });
+    const realTx = fs.runTransaction;
+    let n = 0;
+    fs.runTransaction = async (db, fn) => {
+      if (n++ === 1) store.set(P, { name: 'rolled back' });
+      return realTx(db, fn);
+    };
+    const plan = { batches: [
+      [{ kind: 'tasks', op: 'update', id: 't1', data: { updates: ['u1'] }, expectVersion: 1 }],
+      [{ kind: 'tasks', op: 'update', id: 't1', data: { updates: ['u2', 'u1'] }, expectVersion: 2 }],
+    ], metaPatch: null };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r).toMatchObject({ status: 'conflict', failedBatch: 1 });
+    expect(r.written.map((w) => w.version)).toEqual([2]);
+    expect(store.get(`${P}/tasks/t1`)).toMatchObject({ updates: ['u1'], version: 2 });
   });
 
   it('other errors -> error', async () => {

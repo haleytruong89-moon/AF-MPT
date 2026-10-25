@@ -303,6 +303,9 @@ describe('P2.4 migration rollback (p2-migrate --rollback) against the emulator',
     const live = (await db.doc(BASE).get()).data();
     for (const k of V2_FIELDS) expect(k in live).toBe(false);
     expect(live.memberIds).toEqual(afterApply.memberIds);
+    // Fix round 1: rev / writeId bumped so stale v1 tabs hit the conflict banner.
+    expect(live.rev).toBe((afterApply.rev ?? 0) + 1);
+    expect(live.writeId).toMatch(/^p2-rollback-/);
     expect(live.programs).toEqual(seedProject.programs);
     expect(appValueFromV1(live, PID)).toEqual(appValueFromV1(seedProject, PID));
     const rec = (await record()).data();
@@ -414,16 +417,22 @@ describe('P2.4 migration rollback (p2-migrate --rollback) against the emulator',
     // An edit after the forced preview: refused before the lost-data report.
     const pf = await prepareRollback(db, { pid: PID, force: true, deleteDocs: false });
     await db.doc(`${BASE}/tasks/t1`).update({ version: 2, updatedBy: 'uidZ' });
-    await expect(rb({ force: true, expectHash: pf.hash })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    const e1 = await rb({ force: true, expectHash: pf.hash }).catch((e) => e);
+    expect(e1).toMatchObject({ code: 'PLAN_CHANGED' });
+    expect(e1.lostReportVoid).toBeFalsy(); // no lost-data file was written
     expect(lost).toEqual([]);
     expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
 
     // An edit after the lost-data report (inside the window): the transaction refuses.
     const pf2 = await prepareRollback(db, { pid: PID, force: true, deleteDocs: false });
-    await expect(rb({
+    const e2 = await rb({
       force: true, expectHash: pf2.hash,
       hooks: { beforeFlipBack: async () => { await db.doc(`${BASE}/tasks/t2`).update({ version: 2, updatedBy: 'uidZ' }); } },
-    })).rejects.toMatchObject({ code: 'PLAN_CHANGED' });
+    }).catch((e) => e);
+    expect(e2).toMatchObject({ code: 'PLAN_CHANGED' });
+    // Fix round 1: the lost-data file was written, but nothing was rolled back.
+    expect(lost.length).toBe(1);
+    expect(e2.lostReportVoid).toBe(true);
     expect((await db.doc(BASE).get()).data().schemaVersion).toBe(2);
     expect((await record()).data().status).toBe('verified');
 
@@ -434,7 +443,9 @@ describe('P2.4 migration rollback (p2-migrate --rollback) against the emulator',
 
   it('RB-6: migrate -> rollback -> migrate re-takes the before-image; a second rollback restores it', async () => {
     await run();
+    const rev0 = (await db.doc(BASE).get()).data().rev ?? 0;
     await rb();
+    expect((await db.doc(BASE).get()).data().rev).toBe(rev0 + 1);
     await db.doc(BASE).update({ visibility: 'department' }); // Owner changed it while back on v1
     const prep = await prepareMigration(db, { pid: PID, assignments: null, now: Timestamp.now() });
     expect(prep.record.before).toEqual({ visibility: 'department' });
@@ -443,11 +454,34 @@ describe('P2.4 migration rollback (p2-migrate --rollback) against the emulator',
     const rec = (await record()).data();
     expect(rec.before).toEqual({ visibility: 'department' });
     expect(rec.history.map((h) => h.status)).toEqual(['prepared', 'switched', 'verified', 'rolled-back', 'prepared', 'switched', 'verified']);
+    const rev1 = (await db.doc(BASE).get()).data().rev ?? 0;
     await rb();
     const live = (await db.doc(BASE).get()).data();
+    expect(live.rev).toBe(rev1 + 1);
+    expect(live.writeId).toMatch(/^p2-rollback-/);
     expect(live.visibility).toBe('department');
     expect('schemaVersion' in live).toBe(false);
     expect('programMeta' in live).toBe(false);
+  });
+
+  // Fix round 1: wasVerified looks at the current cycle only (history accumulates
+  // across migrate -> rollback cycles).
+  it('MIG-10 after a migrate -> rollback cycle: a switch that never verified in this cycle exits 2', async () => {
+    await run();
+    await rb();
+    expect((await record()).data().history.some((h) => h.status === 'verified')).toBe(true);
+    const crash = async () => { throw Object.assign(new Error('crash'), { code: 'CRASH' }); };
+    await expect(run({ hooks: { afterFlip: crash } })).rejects.toMatchObject({ code: 'CRASH' });
+    expect((await record()).data().status).toBe('switched');
+    await db.doc(`${BASE}/tasks/t2`).update({ version: 2, updatedBy: 'uidZ', name: 'Edited' });
+    await db.doc(`${BASE}/tasks/t1`).delete();
+    const r = await run();
+    expect(r.mode).toBe('post-flip');
+    expect(r.wasVerified).toBe(false);
+    expect(r.verify.ok).toBe(false);
+    expect(r.edits.edited.length).toBeGreaterThan(0);
+    expect(exitCodeFor(r)).toBe(2);
+    expect((await record()).data().status).toBe('switched');
   });
 });
 

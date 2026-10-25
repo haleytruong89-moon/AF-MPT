@@ -143,16 +143,16 @@ export function planHash(prep, pid) {
 }
 
 // CLI exit code for an apply result: 0 ok; 0 for post-flip drift explained by v2 edits,
-// but only when the record had already been 'verified' before this run (a switch that
-// never verified must verify clean first); 2 for any other failed verify (Ruling P4-14).
+// but only when the record was 'verified' when this run started, i.e. in the current
+// migrate cycle (a switch that never verified must verify clean first; the history of
+// earlier migrate -> rollback cycles does not count); 2 for any other failed verify
+// (Ruling P4-14).
 export function exitCodeFor(r) {
   if (r.verify.ok) return 0;
   const e = r.edits;
   if (r.mode === 'post-flip' && r.wasVerified && e && (e.edited.length || e.deleted.length || e.programMetaChanged)) return 0;
   return 2;
 }
-
-const everVerified = (record) => Array.isArray(record?.history) && record.history.some((h) => h?.status === 'verified');
 
 const issueLines = (label, list) => (list.length ? [`${label}:`, ...list.map((i) => `  ${i.code}: ${i.detail}`)] : [`${label}: none`]);
 
@@ -429,8 +429,9 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
   const rec = (await recRef.get()).data();
   if (verify.ok && rec?.status !== 'verified') await setStatus(db, pid, 'verified', stepTime());
   const edits = prep.mode === 'post-flip' ? await detectEdits(db, pid, rec) : null;
-  // Verified at least once BEFORE this run (prep.record is the record as read up front).
-  const wasVerified = prep.mode === 'post-flip' && everVerified(prep.record);
+  // Verified BEFORE this run, in the current cycle (prep.record is the record as read up
+  // front; its history accumulates across migrate -> rollback cycles, so it is not used).
+  const wasVerified = prep.mode === 'post-flip' && prep.record?.status === 'verified';
   return { mode: prep.mode, written, deleted, activityCopied: act.copied, activityClamped: act.clamped, verify, edits, wasVerified };
 }
 
@@ -443,8 +444,11 @@ export async function applyMigration(db, { pid, assignments = null, now = new Da
 //  1. with force and edits: the lost-data report (writeLostReport) BEFORE any write;
 //  2. ONE transaction re-reads everything, requires the same plan (hash) as the preview,
 //     restores programMeta / memberUids / visibility / v1Absent / schemaVersion from
-//     record.before (absent -> field delete), keeps memberIds, and sets the record
-//     'rolled-back' with a history entry;
+//     record.before (absent -> field delete), keeps memberIds, bumps rev and sets
+//     writeId 'p2-rollback-<stamp>' (a stale v1 tab then gets the conflict banner instead
+//     of silently reverting top-level fields), and sets the record 'rolled-back' with a
+//     history entry. A refusal after step 1 marks the error lostReportVoid (the lost-data
+//     file is void: nothing was rolled back);
 //  3. only with --delete-v2-docs: deletes record-listed stamped docs and copied activity
 //     (plus the edited / client-created docs listed in the lost report when forced), each
 //     guarded by its read update time. Anything else is left and reported.
@@ -607,25 +611,34 @@ export async function rollbackMigration(db, { pid, force = false, deleteDocs = f
       newActivity: jsonable(prep.lost.newActivity), deleted: prep.lost.deleted,
     });
   }
-  if (hooks.beforeFlipBack) await hooks.beforeFlipBack();
-
   const projRef = db.doc(`${PROJECTS}/${pid}`);
   const recRef = db.doc(RECORD_PATH(pid));
+  const writeId = `p2-rollback-${new Date().toISOString().replace(/[:.]/g, '-')}`;
   let deletes = [];
-  await db.runTransaction(async (tx) => {
-    const s = await readRollbackState(db, pid, tx);
-    const cur = decideRollback({ pid, ...s, force, deleteDocs });
-    if (cur.blocked.length || cur.hash !== prep.hash) {
-      throw fail('PLAN_CHANGED', 'Rollback refused: the project, its record or its v2 data changed after the preview / lost-data report. Nothing was written; re-run the preview.');
-    }
-    const fields = Object.fromEntries(cur.restore.map((r) => [r.field, r.present ? r.old : FieldValue.delete()]));
-    tx.update(projRef, fields);
-    tx.update(recRef, {
-      status: 'rolled-back',
-      history: [...(Array.isArray(s.record.history) ? s.record.history : []), { status: 'rolled-back', at: stepTime(), forced: Boolean(cur.lost), deleteDocs }],
+  try {
+    if (hooks.beforeFlipBack) await hooks.beforeFlipBack();
+    await db.runTransaction(async (tx) => {
+      const s = await readRollbackState(db, pid, tx);
+      const cur = decideRollback({ pid, ...s, force, deleteDocs });
+      if (cur.blocked.length || cur.hash !== prep.hash) {
+        throw fail('PLAN_CHANGED', 'Rollback refused: the project, its record or its v2 data changed after the preview / lost-data report. Nothing was written; re-run the preview.');
+      }
+      const fields = Object.fromEntries(cur.restore.map((r) => [r.field, r.present ? r.old : FieldValue.delete()]));
+      // Bump rev / writeId like a v1 save: stale v1 tabs then hit the conflict banner.
+      const rev = (typeof s.doc.rev === 'number' ? s.doc.rev : 0) + 1;
+      tx.update(projRef, { ...fields, rev, writeId });
+      tx.update(recRef, {
+        status: 'rolled-back',
+        history: [...(Array.isArray(s.record.history) ? s.record.history : []), { status: 'rolled-back', at: stepTime(), forced: Boolean(cur.lost), deleteDocs }],
+      });
+      deletes = cur.deletes;
     });
-    deletes = cur.deletes;
-  });
+  } catch (e) {
+    // The transaction did not commit: nothing was rolled back, so a lost-data file
+    // written above describes a rollback that did not happen.
+    if (prep.lost && e && typeof e === 'object') e.lostReportVoid = true;
+    throw e;
+  }
 
   // Deletes only on request, each guarded by the update time read in the transaction.
   let deleted = 0;
@@ -710,18 +723,23 @@ async function rollbackMain(o) {
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const lostPath = `p2-rollback-lost-${pid}-${stamp}.json`;
+  let lostWritten = false;
   let r;
   try {
     r = await rollbackMigration(db, {
       pid, force: o.force, deleteDocs: o.deleteDocs, FieldValue, Timestamp, expectHash: o.expect,
       writeLostReport: (obj) => {
         fs.writeFileSync(lostPath, JSON.stringify(obj, null, 2));
+        lostWritten = true;
         console.log(`Lost data:   written to ${lostPath}`);
       },
     });
   } catch (e) {
     console.error(`${e.code ? `[${e.code}] ` : ''}${e.message || e}`);
     if (e.edits) for (const l of editLines(e.edits)) console.error(l);
+    if (lostWritten && e.lostReportVoid) {
+      console.error(`Lost data:   ${lostPath} is VOID: nothing was rolled back (the project is still v2). Re-run the preview; a new file is written on the next forced rollback.`);
+    }
     process.exit(rollbackExitCode(e));
   }
   console.log(`Rolled back: project fields restored from the record's before-image; record 'rolled-back'.`);
