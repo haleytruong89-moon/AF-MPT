@@ -32,7 +32,7 @@ function paddedRules(k) {
   let s = BASE.replace(/(match \/databases\/\{database\}\/documents \{\r?\n)/,
     `$1    ${p2}\n    function padOk(x) { return ${pad}; }\n`);
   const before = s;
-  s = s.replace(/(function taskUpdateWith\(wid, pid, ch, s0, s1, cl\) \{\r?\n\s*return )/, '$1padOk(wid) && ');
+  s = s.replace(/(function taskUpdateWith\(wid, pid, ch, s0, s1, cl, rv\) \{\r?\n\s*return )/, '$1padOk(wid) && ');
   if (s === before) throw new Error('taskUpdateWith not found');
   const before2 = s;
   s = s.replace(/(match \/users\/\{uid\} \{\r?\n\s*allow read, write: if )/, '$1padOk(uid) && ');

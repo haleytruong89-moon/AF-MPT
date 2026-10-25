@@ -768,7 +768,7 @@ service cloud.firestore {
     // task.blockerResolutions[updateId] = { resolvedAt, resolvedBy,
     // resolution, authorUid }. The stored (old) map reads missing or null
     // as {} (mapOrEmpty). Expression limit: one verdict rv is computed once
-    // per write (taskUpdateWith), and only when the map changed:
+    // per write (taskUpdateCh), and only when the map changed:
     //   'none'   the map is untouched;
     //   'bad'    more than one key added, or the added value's authorUid is
     //            not the caller (denied for all writers incl. Owner);
@@ -776,10 +776,10 @@ service cloud.firestore {
     //            or changed (Assignee and contributor need this);
     //   'edit'   no key added, or one added plus edits / removals
     //            (managers / Owner may correct history).
-    // The new value is read with get(k, {}): writing null or a non-map is a
-    // runtime error, i.e. denied.
+    // The new value is read directly: deleting the map, or writing null or
+    // a non-map, is a runtime error, i.e. denied.
     function mapOrEmpty(d, k) {
-      return d.get(k, null) == null ? {} : d.get(k, null);
+      return d.get(k, null) == null ? {} : d[k];
     }
 
     // a = added keys (n.keys() minus o.keys(), the list form of
@@ -789,10 +789,11 @@ service cloud.firestore {
       return resolutionVerdictWith(n, n.keys().removeAll(o.keys()), n.diff(o).affectedKeys().size());
     }
 
+    // The append case (the common one) is tested first.
     function resolutionVerdictWith(n, a, aff) {
-      return a.size() == 0 ? 'edit'
-        : (a.size() > 1 || n[a[0]].get('authorUid', null) != request.auth.uid) ? 'bad'
-        : aff == 1 ? 'append' : 'edit';
+      return (a.size() == 1 && n[a[0]].get('authorUid', null) == request.auth.uid)
+        ? (aff == 1 ? 'append' : 'edit')
+        : (a.size() == 0 ? 'edit' : 'bad');
     }
 
     // Cheap checks first (picUid, keys, status) before the members get.
@@ -867,20 +868,16 @@ service cloud.firestore {
         resource.data.get('status', 'Planned'), request.resource.data.get('status', 'Planned'));
     }
 
-    function taskUpdateCh(wid, pid, ch, s0, s1) {
-      return taskUpdateWith(wid, pid, ch, s0, s1, ch.hasAny(closeKeys()));
-    }
-
     // rv = blocker-resolution verdict (see resolutionVerdict), computed once.
-    function taskUpdateWith(wid, pid, ch, s0, s1, cl) {
-      return taskUpdateRv(wid, pid, ch, s0, s1, cl,
+    function taskUpdateCh(wid, pid, ch, s0, s1) {
+      return taskUpdateWith(wid, pid, ch, s0, s1, ch.hasAny(closeKeys()),
         ch.hasAny(['blockerResolutions'])
-          ? resolutionVerdict(request.resource.data.get('blockerResolutions', {}),
+          ? resolutionVerdict(request.resource.data.blockerResolutions,
                               mapOrEmpty(resource.data, 'blockerResolutions'))
           : 'none');
     }
 
-    function taskUpdateRv(wid, pid, ch, s0, s1, cl, rv) {
+    function taskUpdateWith(wid, pid, ch, s0, s1, cl, rv) {
       return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && rv != 'bad'
         && closeStampOk(ch, s1) && (
         isWsOwner(wid)
