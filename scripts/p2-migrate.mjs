@@ -38,7 +38,7 @@ import { toJsonable } from './lib/manifest.mjs';
 import { directoryFrom } from './p2-pilot-copy.mjs';
 import { parseAssignmentsWorkbook, formatPreview } from './lib/assignments.mjs';
 import { normaliseForV2, stableJson } from './lib/migrate-normalise.mjs';
-import { countReport, detectV2Edits } from './lib/migrate-checks.mjs';
+import { countReport, detectV2Edits, inactiveMembers } from './lib/migrate-checks.mjs';
 import {
   planMigration, reconcileExisting, planActivityCopy,
   RECORD_PATH, SUBCOLS, ACTIVITY_SUBCOL, MIGRATE_STAMP, MAX_PROJECT_DOC_BYTES,
@@ -61,6 +61,8 @@ export const POST_FLIP_HASH = 'post-flip';
 
 // ---------------------------------------------------------------- pure core
 
+const arr = (v) => (Array.isArray(v) ? v : []);
+const accessLossLabel = (m) => `${m.uid} (${[m.name, m.email].filter(Boolean).join(', ') || 'unknown person'}; members doc ${m.status})`;
 const pickBefore = (doc) => Object.fromEntries(BEFORE_KEYS.filter((k) => hasOwn(doc, k)).map((k) => [k, doc[k]]));
 const byKind = (writes) => Object.fromEntries(SUBCOLS.map((k) => [k, writes
   .filter((w) => w.path.split('/')[4] === k)
@@ -100,14 +102,14 @@ export function decideMigration({ pid, doc, record, existing = [], v2ActivityIds
   if (plan.blocked) return { ...base, mode: 'blocked', blocked: plan.blocked, plan };
 
   const reconcile = reconcileExisting(plan.writes, existing);
-  const keepBefore = record && record.status !== 'rolled-back';
   const at = now ?? nowDate;
   const newRecord = {
     pid,
     status: 'prepared',
     v1Rev: base.v1Rev,
     v1WriteId: base.v1WriteId,
-    before: keepBefore ? (record.before ?? {}) : pickBefore(doc),
+    // Always the live doc: a stale before-image from an earlier prepared run would restore old values.
+    before: pickBefore(doc),
     ...plan.record,
     history: [...(Array.isArray(record?.history) ? record.history : []), { status: 'prepared', at }],
   };
@@ -120,8 +122,13 @@ export function decideMigration({ pid, doc, record, existing = [], v2ActivityIds
     v1ActivityCount: v1Entries.length,
   });
   // Access fields the flip guard re-checks (a revoke between preview and flip refuses it).
+  const flipIds = [...arr(doc.memberIds), ...arr(plan.flip.fields.memberIds), ...arr(plan.flip.fields.memberUids)];
+  const accessLoss = inactiveMembers(flipIds, dir?.members);
+  if (accessLoss && accessLoss.length) {
+    plan.report.issues.warnings.push({ code: 'member-not-active', detail: accessLoss.map(accessLossLabel).join('; ') });
+  }
   const guard = { memberIds: doc.memberIds, roles: doc.roles, visibility: doc.visibility };
-  const prep = { ...base, mode: 'fresh', plan, reconcile, record: newRecord, planned, guard, activity: activityOf() };
+  const prep = { ...base, mode: 'fresh', accessLoss, plan, reconcile, record: newRecord, planned, guard, activity: activityOf() };
   return { ...prep, planHash: planHash(prep, pid) };
 }
 
@@ -138,6 +145,7 @@ export function planHash(prep, pid) {
     members: prep.plan.report.members,
     assignments: prep.plan.report.assignments ?? null,
     idMap: prep.record.idMap,
+    accessLoss: prep.accessLoss ?? null,
   };
   return createHash('sha256').update(stableJson(payload)).digest('hex').slice(0, 16);
 }
@@ -198,6 +206,12 @@ export function formatMigrationPreview(prep, { pid, nameOfUid = (u) => u, assign
   if (!m.memberUidsAdded.length && !m.memberIdsAdded.length) L.push('  none');
   for (const u of m.memberUidsAdded) L.push(`  memberUids + ${nameOfUid(u)}`);
   for (const u of m.memberIdsAdded) L.push(`  memberIds  + ${nameOfUid(u)}`);
+  if (prep.accessLoss == null) L.push('Access loss: not checked (offline)');
+  else if (!prep.accessLoss.length) L.push('Access loss: none');
+  else {
+    L.push('Access loss (HOD approves): in memberIds / memberUids but no active members doc, so they can read v1 now and will NOT load the project after the flip:');
+    for (const m of prep.accessLoss) L.push(`  ${accessLossLabel(m)}`);
+  }
   if (report.assignments) {
     L.push('Assignments (old -> new):');
     for (const l of formatPreview(report.assignments)) L.push(`  ${l}`);

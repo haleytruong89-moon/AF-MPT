@@ -165,3 +165,17 @@ describe('plan review fixes', () => {
     expect(docs[3].data.createdAt).toEqual(new Date('2026-09-01T00:00:00.000Z'));
   });
 });
+
+describe('planActivityCopy authorUid', () => {
+  it('keeps an existing authorUid when the email is not in the directory', () => {
+    const now = new Date('2026-10-24T00:00:00Z');
+    const entries = [
+      { id: 'k1', author: 'gone@smartosc.com', authorUid: 'uidKeep', timestamp: '2026-10-01T00:00:00Z' },
+      { id: 'k2', author: 'a@smartosc.com', authorUid: 'uidOld', timestamp: '2026-10-02T00:00:00Z' },
+      { id: 'k3', author: 'nobody@smartosc.com', timestamp: '2026-10-03T00:00:00Z' },
+    ];
+    const docs = planActivityCopy(entries, { uidByEmail: new Map([['a@smartosc.com', 'uidNew']]), now, existingIds: new Set() });
+    const uid = Object.fromEntries(docs.map((d) => [d.id, d.data.authorUid]));
+    expect(uid).toEqual({ k1: 'uidKeep', k2: 'uidNew', k3: null });
+  });
+});

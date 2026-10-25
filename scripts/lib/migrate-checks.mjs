@@ -259,3 +259,19 @@ export function detectV2Edits(record, live) {
     clean: !edited.length && !deleted.length && !programMetaChanged && !newActivity.length,
   };
 }
+
+// Non-Owner reads of v2 sub-collections need an ACTIVE workspaces/main/members/{uid} doc.
+// uids: memberIds + memberUids the project will have after the flip. members: [{ id, data }]
+// | null/undefined (directory not loaded: offline) -> null = not checked.
+// -> [{ uid, name, email, status }] sorted by uid (status 'missing' when there is no members doc).
+export function inactiveMembers(uids, members) {
+  if (!Array.isArray(members)) return null;
+  const byId = new Map(members.map((m) => [m.id, m.data || {}]));
+  const out = [];
+  for (const uid of [...new Set(arr(uids))].sort()) {
+    const m = byId.get(uid);
+    if (m && m.status === 'active') continue;
+    out.push({ uid, name: m?.displayName ?? null, email: m?.email ?? null, status: m ? (m.status ?? 'unknown') : 'missing' });
+  }
+  return out;
+}
