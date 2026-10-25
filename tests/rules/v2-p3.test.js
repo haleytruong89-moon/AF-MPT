@@ -297,6 +297,64 @@ describe('P3 task close transitions', () => {
     await assertFails(up(PM, T1, { status: deleteField() }));
     await assertSucceeds(up(LEAD, T1, { status: 'Planned' }));
   });
+
+  // ── P3 Task 3: append-only blockerResolutions (Ruling P3-8, closes Ruling W) ──
+  // (Brief ids P3-20..22 renumbered P3-21..23: P3-20 is taken by review round 1.)
+  const res = (u, over = {}) => ({
+    resolvedAt: '2026-10-25T00:00:00Z', resolvedBy: u.email, resolution: 'fixed', authorUid: u.uid, ...over,
+  });
+
+  it('P3-21 ASG adds blockerResolutions.u1 {resolvedAt, resolvedBy, resolution, authorUid: ASG}: allowed', async () => {
+    await assertSucceeds(up(ASG, T1, { 'blockerResolutions.u1': res(ASG) }));
+    // authorUid of someone else: denied.
+    await seedDoc(T1, task());
+    await assertFails(up(ASG, T1, { 'blockerResolutions.u1': res(ASG, { authorUid: LEAD.uid }) }));
+  });
+
+  it('P3-22 contributor VIEWER adds one with authorUid VIEWER: allowed; with authorUid ASG: denied', async () => {
+    await seedDoc(T1, task({ contributorUids: [VIEWER.uid] }));
+    await assertFails(up(VIEWER, T1, { 'blockerResolutions.u1': res(VIEWER, { authorUid: ASG.uid }) }));
+    await assertSucceeds(up(VIEWER, T1, { 'blockerResolutions.u1': res(VIEWER) }));
+    // A non-contributor still cannot write the map.
+    await seedDoc(T1, task({ contributorUids: [] }));
+    await assertFails(up(VIEWER, T1, { 'blockerResolutions.u1': res(VIEWER) }));
+  });
+
+  it('P3-23 ASG adds two keys in one write: denied; ASG edits an existing key: denied; LEAD edits an existing key: allowed', async () => {
+    await assertFails(up(ASG, T1, { 'blockerResolutions.u1': res(ASG), 'blockerResolutions.u2': res(ASG) }));
+    await seedDoc(T1, task({ blockerResolutions: { u1: res(ASG) } }));
+    await assertFails(up(ASG, T1, { 'blockerResolutions.u1': res(ASG, { resolution: 'edited' }) }));
+    await assertFails(up(ASG, T1, { blockerResolutions: {} }));
+    // Contributor may not remove or edit either.
+    await seedDoc(T1, task({ contributorUids: [VIEWER.uid], blockerResolutions: { u1: res(ASG) } }));
+    await assertFails(up(VIEWER, T1, { blockerResolutions: { u2: res(VIEWER) } }));
+    await seedDoc(T1, task({ blockerResolutions: { u1: res(ASG) } }));
+    await assertSucceeds(up(LEAD, T1, { 'blockerResolutions.u1': res(ASG, { resolution: 'edited' }) }));
+    // A manager adding two keys at once, or a key authored by someone else: denied (all writers).
+    await assertFails(up(LEAD, T1, { 'blockerResolutions.u2': res(LEAD), 'blockerResolutions.u3': res(LEAD) }));
+    await assertFails(up(OWNER, T1, { 'blockerResolutions.u2': res(ASG) }));
+    await assertSucceeds(up(OWNER, T1, { 'blockerResolutions.u2': res(OWNER) }));
+  });
+
+  // ── Ruling P3-C4: a manager listed as contributor cannot decide that task's close request ──
+  it('P3-24 P3-C4: LEAD / PM in contributorUids cannot approve or reject; a non-contributor manager can', async () => {
+    const approve = (u) => ({
+      status: 'Completed', closeRequest: null, approvedByUid: u.uid, closeRequestHistory: [hist('Approved', u)],
+    });
+    const reject = (u) => ({
+      status: 'InProgress', closeRequest: null, closeRequestHistory: [hist('Rejected', u, { reason: 'no' })],
+    });
+    await seedDoc(T1, submitted(ASG, LEAD, { contributorUids: [LEAD.uid] }));
+    await assertFails(up(LEAD, T1, approve(LEAD)));
+    await assertFails(up(LEAD, T1, reject(LEAD)));
+    // Dropping self from contributorUids in the same write does not help.
+    await assertFails(up(LEAD, T1, { ...approve(LEAD), contributorUids: [] }));
+    await assertSucceeds(up(PM, T1, approve(PM)));
+    await seedDoc(T1, submitted(ASG, LEAD, { contributorUids: [PM.uid] }));
+    await assertFails(up(PM, T1, approve(PM)));
+    await assertFails(up(PM, T1, reject(PM)));
+    await assertSucceeds(up(LEAD, T1, reject(LEAD)));
+  });
 });
 
 // ── Review round 1: realistic executor payloads (full doc set) on the real rules ──

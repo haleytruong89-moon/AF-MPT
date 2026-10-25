@@ -85,6 +85,13 @@ const base = realTask();
 const submittedTo = (approver) => realTask({ status: 'Submitted', closeRequest: cr(ASG, approver) });
 const withUpd = (t, u, text) => [upd(u, text), ...t.updates];
 
+// P3 Task 3 (Ruling P3-8): a blocker resolution is one added key of the
+// blockerResolutions map, keyed by the blocker update's id.
+const blockerId = base.updates[1].id;
+const resolved = (u, note) => ({
+  [blockerId]: { resolvedAt: '2026-10-25T00:00:00Z', resolvedBy: u.email, resolution: note, authorUid: u.uid },
+});
+
 // Each scenario: seed doc, actor, and the new full doc (before stamping).
 export const scenarios = [
   {
@@ -134,6 +141,31 @@ export const scenarios = [
     next: {
       ...base, status: 'Completed', approvedByUid: LEAD.uid, approvedAt: '2026-10-25T00:00:00Z',
       updates: withUpd(base, LEAD, 'Closed by Sub-PM'),
+    },
+  },
+  {
+    name: 'Assignee resolves a blocker + update',
+    seed: base, actor: ASG,
+    next: {
+      ...base, blockerResolutions: resolved(ASG, 'SG confirmed by email'),
+      updates: withUpd(base, ASG, 'SG entity confirmed the balance'),
+    },
+  },
+  {
+    name: 'contributor resolves a blocker + update',
+    seed: base, actor: VIEWER,
+    next: {
+      ...base, blockerResolutions: resolved(VIEWER, 'SG confirmation received'),
+      updates: withUpd(base, VIEWER, 'Got the SG confirmation'),
+    },
+  },
+  {
+    name: 'Assignee submit + blocker resolution + update',
+    seed: base, actor: ASG,
+    next: {
+      ...base, status: 'Submitted', closeRequest: cr(ASG, LEAD),
+      blockerResolutions: resolved(ASG, 'SG confirmed by email'),
+      updates: withUpd(base, ASG, 'Submitted as done'),
     },
   },
 ];
