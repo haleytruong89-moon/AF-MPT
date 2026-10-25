@@ -602,117 +602,115 @@ service cloud.firestore {
     // (ownerUids only, Ruling P3-20); the PM / Deputy of d's program, or the
     // Sub-PM of d's WS, unless the requester is that PM / Deputy.
     // get(): workspace, project, ws of d (all already counted).
+    // Expression limit (1000): computed values are passed as arguments
+    // (evaluated once) rather than re-derived in each helper.
     function eligibleApprover(wid, pid, d, a, requester) {
-      let m = prgMetaOf(v2Project(wid, pid), d.get('programId', null));
-      let reqIsPM = isPMOrDeputyUid(m, requester);
-      let owners = v2Workspace(wid).get('ownerUids', []);
-      return a is string && a != requester && (
-        (owners is list && a in owners)
-        || (!reqIsPM && isPMOrDeputyUid(m, a))
-        || (!reqIsPM
-          && wsExists(wid, pid, d.get('workstreamId', null))
-          && v2WsData(wid, pid, d.workstreamId).get('leadUid', null) == a)
-      );
+      return a is string && a != requester
+        && eligibleWith(wid, pid, d, a, requester,
+          prgMetaOf(v2Project(wid, pid), d.get('programId', null)));
+    }
+
+    function inList(l, a) {
+      return l is list && a in l;
+    }
+
+    function eligibleWith(wid, pid, d, a, requester, m) {
+      return inList(v2Workspace(wid).get('ownerUids', []), a)
+        || (!isPMOrDeputyUid(m, requester)
+          && (isPMOrDeputyUid(m, a)
+            || (wsExists(wid, pid, d.get('workstreamId', null))
+              && v2WsData(wid, pid, d.workstreamId).get('leadUid', null) == a)));
     }
 
     // Ruling P3-4: who may decide request cr on task d (never the requester).
     function canDecide(wid, pid, d, cr) {
-      let m = prgMetaOf(v2Project(wid, pid), d.get('programId', null));
-      return cr is map
-        && cr.get('requestedByUid', null) != request.auth.uid
+      return cr.get('requestedByUid', null) != request.auth.uid
         && (cr.get('approverUid', null) == request.auth.uid
           || isWsOwner(wid)
           || (isPM(wid, pid, d.get('programId', null))
-            && !isPMOrDeputyUid(m, cr.get('requestedByUid', null))));
+            && !isPMOrDeputyUid(prgMetaOf(v2Project(wid, pid), d.get('programId', null)),
+                                cr.get('requestedByUid', null))));
     }
 
-    // One decision entry prepended to closeRequestHistory, by me.
-    function histOk(ch, st) {
-      let o = listOrEmpty(resource.data, 'closeRequestHistory');
-      let n = listOrEmpty(request.resource.data, 'closeRequestHistory');
-      return appendOnly(ch, 'closeRequestHistory')
-        && n is list && o is list
+    // One decision entry prepended to closeRequestHistory (old entries kept
+    // as the suffix, exactly one added), status st, decided by me. Same
+    // test as appendOnly + "grows by 1" without re-deriving the diff.
+    function histOk(st) {
+      return histWith(st, listOrEmpty(resource.data, 'closeRequestHistory'),
+                      listOrEmpty(request.resource.data, 'closeRequestHistory'));
+    }
+
+    function histWith(st, o, n) {
+      return o is list && n is list
         && n.size() == o.size() + 1
+        && (o.size() == 0 || n[1:n.size()] == o)
+        && n[0] is map
         && n[0].get('status', null) == st
         && n[0].get('decidedByUid', null) == request.auth.uid;
     }
 
-    function closeSubmitOk(wid, pid, ch, s0, s1, mgr) {
-      let o = resource.data;
-      let c = request.resource.data.get('closeRequest', null);
-      return isOpenSt(s0) && s1 == 'Submitted'
-        && c is map
+    function reasonOk(e) {
+      return e.get('reason', null) is string && e.reason.size() > 0;
+    }
+
+    // submit: c = the new closeRequest.
+    function closeSubmitOk(wid, pid, ch, mgr, c) {
+      return c is map
         && c.get('requestedByUid', null) == request.auth.uid
         && c.get('outcome', null) in ['Completed', 'Dropped']
-        && (o.get('picUid', null) == request.auth.uid || mgr)
+        && (resource.data.get('picUid', null) == request.auth.uid || mgr)
         && !ch.hasAny(['closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'])
-        && eligibleApprover(wid, pid, o, c.get('approverUid', null), request.auth.uid);
+        && eligibleApprover(wid, pid, resource.data, c.get('approverUid', null), request.auth.uid);
     }
 
-    function closeWithdrawOk(ch, s0, s1) {
-      return s0 == 'Submitted' && isOpenSt(s1)
-        && resource.data.get('closeRequest', {}).get('requestedByUid', null) == request.auth.uid
-        && request.resource.data.get('closeRequest', null) == null
-        && histOk(ch, 'Withdrawn');
+    // From Planned / InProgress: open move, submit, or (manager, Ruling
+    // P3-3) a direct close of a task they are not PIC of, stamped.
+    function closeFromOpen(wid, pid, ch, s1, mgr) {
+      return (isOpenSt(s1)
+          && !ch.hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid']))
+        || (s1 == 'Submitted'
+          && closeSubmitOk(wid, pid, ch, mgr, request.resource.data.get('closeRequest', null)))
+        || (mgr && isClosedSt(s1)
+          && resource.data.get('picUid', null) != request.auth.uid
+          && request.resource.data.get('approvedByUid', null) == request.auth.uid);
     }
 
-    function closeApproveOk(wid, pid, ch, s0, s1) {
-      let n = request.resource.data;
-      let cr = resource.data.get('closeRequest', null);
-      return s0 == 'Submitted' && cr is map
-        && s1 == cr.get('outcome', null)
-        && n.get('closeRequest', null) == null
-        && n.get('approvedByUid', null) == request.auth.uid
-        && histOk(ch, 'Approved')
-        && canDecide(wid, pid, resource.data, cr);
-    }
-
-    function closeRejectOk(wid, pid, ch, s0, s1) {
-      let n = request.resource.data;
-      return s0 == 'Submitted' && s1 == 'InProgress'
-        && n.get('closeRequest', null) == null
-        && histOk(ch, 'Rejected')
-        && n.closeRequestHistory[0].get('reason', null) is string
-        && n.closeRequestHistory[0].reason.size() > 0
-        && canDecide(wid, pid, resource.data, resource.data.get('closeRequest', null));
-    }
-
-    function closeReassignOk(wid, pid, ch, s0, s1) {
-      let o = resource.data;
-      let c0 = o.get('closeRequest', null);
-      let c1 = request.resource.data.get('closeRequest', null);
-      return s0 == 'Submitted' && s1 == 'Submitted'
-        && c0 is map && c1 is map
-        && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
-        && histOk(ch, 'Reassigned')
-        && isPM(wid, pid, o.get('programId', null))
-        && eligibleApprover(wid, pid, o, c1.get('approverUid', null), c0.get('requestedByUid', null));
-    }
-
-    // Ruling P3-3: a manager closes a task they are not PIC of, stamped.
-    function closeDirectOk(s0, s1, mgr) {
-      return mgr && isOpenSt(s0) && isClosedSt(s1)
-        && resource.data.get('picUid', null) != request.auth.uid
-        && request.resource.data.get('approvedByUid', null) == request.auth.uid;
-    }
-
-    function closeReopenOk(ch, s0, s1, mgr) {
-      return mgr && isClosedSt(s0) && isOpenSt(s1)
-        && !ch.hasAny(['closeRequest', 'closeRequestHistory']);
+    // From Submitted (c0 = old request, c1 = new request):
+    //   withdraw (requester, -> open), approve (status == outcome, stamped),
+    //   reject (-> InProgress, reason), reassign (PM; approverUid only).
+    function closeFromSubmitted(wid, pid, s1, c0, c1) {
+      return c0 is map && (
+        (isOpenSt(s1) && c1 == null
+          && c0.get('requestedByUid', null) == request.auth.uid
+          && histOk('Withdrawn'))
+        || (isClosedSt(s1) && c1 == null
+          && s1 == c0.get('outcome', null)
+          && request.resource.data.get('approvedByUid', null) == request.auth.uid
+          && histOk('Approved')
+          && canDecide(wid, pid, resource.data, c0))
+        || (s1 == 'InProgress' && c1 == null
+          && histOk('Rejected')
+          && reasonOk(request.resource.data.closeRequestHistory[0])
+          && canDecide(wid, pid, resource.data, c0))
+        || (s1 == 'Submitted' && c1 is map
+          && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
+          && histOk('Reassigned')
+          && isPM(wid, pid, resource.data.get('programId', null))
+          && eligibleApprover(wid, pid, resource.data, c1.get('approverUid', null),
+                              c0.get('requestedByUid', null)))
+      );
     }
 
     // mgr = the caller passed the PM or Sub-PM branch for this task.
+    // reopen (manager): closed -> open, close request keys untouched.
     function closeTransitionOk(wid, pid, ch, s0, s1, mgr) {
       return !ch.hasAny(closeKeys())
-        || (isOpenSt(s0) && isOpenSt(s1)
-          && !ch.hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid']))
-        || closeSubmitOk(wid, pid, ch, s0, s1, mgr)
-        || closeWithdrawOk(ch, s0, s1)
-        || closeApproveOk(wid, pid, ch, s0, s1)
-        || closeRejectOk(wid, pid, ch, s0, s1)
-        || closeReassignOk(wid, pid, ch, s0, s1)
-        || closeDirectOk(s0, s1, mgr)
-        || closeReopenOk(ch, s0, s1, mgr);
+        || (isOpenSt(s0) && closeFromOpen(wid, pid, ch, s1, mgr))
+        || (s0 == 'Submitted'
+          && closeFromSubmitted(wid, pid, s1, resource.data.get('closeRequest', null),
+                                request.resource.data.get('closeRequest', null)))
+        || (mgr && isClosedSt(s0) && isOpenSt(s1)
+          && !ch.hasAny(['closeRequest', 'closeRequestHistory']));
     }
 
     // Ruling P3-18, all writers incl. Owner: setting Completed / Dropped
@@ -753,16 +751,20 @@ service cloud.firestore {
         && isActiveMember(wid);
     }
 
+    // ch / s0 / s1 are computed once here and passed as arguments
+    // (expression limit, see changedKeys).
     function taskUpdateOk(wid, pid) {
-      let ch = changedKeys();
-      let s0 = resource.data.get('status', 'Planned');
-      let s1 = request.resource.data.get('status', 'Planned');
+      return taskUpdateWith(wid, pid, changedKeys(),
+        resource.data.get('status', 'Planned'), request.resource.data.get('status', 'Planned'));
+    }
+
+    function taskUpdateWith(wid, pid, ch, s0, s1) {
       return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && closeStampOk(ch, s1) && (
         isWsOwner(wid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1)
         || taskContributorUpdate(wid, ch)
-        || (taskPMUpdate(wid, pid, ch) && closeTransitionOk(wid, pid, ch, s0, s1, true))
-        || (taskLeadUpdate(wid, pid, ch) && closeTransitionOk(wid, pid, ch, s0, s1, true))
+        || ((taskPMUpdate(wid, pid, ch) || taskLeadUpdate(wid, pid, ch))
+          && closeTransitionOk(wid, pid, ch, s0, s1, true))
       );
     }
 
