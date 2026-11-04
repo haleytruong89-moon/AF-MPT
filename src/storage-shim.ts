@@ -38,7 +38,7 @@ import {
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
-import { assembleFromSnapshots } from './readV2';
+import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists} from './readV2';
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
@@ -65,25 +65,23 @@ const projectWriteQueue = createKeyedQueue();
 // P2.3: the read also keeps `loaded` (project doc + every doc with its version) per
 // pid; a save of that pid is planned against it (planV2Save) and written per doc
 // (executeV2Save). The v1 write path (buildProjectWrite) still refuses v2 docs.
-const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'] as const;
+type V2Sub = 'workstreams' | 'tasks' | 'actions' | 'raid' | 'decisions';
 type V2Entry = { version: number; data: Record<string, unknown> };
-type V2Loaded = { meta: Record<string, unknown>; docs: Record<(typeof V2_SUBCOLS)[number], Map<string, V2Entry>> };
+type V2Loaded = { meta: Record<string, unknown>; docs: Record<V2Sub, Map<string, V2Entry>> };
 const v2Loaded = new Map<string, V2Loaded>();
 // v2 activity: ids of events known to exist on the server, per pid.
 const v2ActivityKnown = new Map<string, Set<string>>();
 const V2_ACTIVITY_COL = (pid: string) => collection(db, 'workspaces', WORKSPACE, 'projects', pid, 'activity');
 async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
-  let lists: Array<Array<{ id: string; data: Record<string, unknown> }>>;
+  type Snap = { id: string; data: Record<string, unknown> };
+  let lists: { ws: Snap[]; tasks: Snap[]; actions: Snap[]; raid: Snap[]; decisions: Snap[] };
   try {
-    const snaps = await Promise.all(
-      V2_SUBCOLS.map((c) => getDocs(collection(db, 'workspaces', WORKSPACE, 'projects', pid, c))),
-    );
-    lists = snaps.map((s) => s.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> })));
+    lists = (await loadV2Lists({ collection, getDocs }, db, WORKSPACE, pid)) as typeof lists;
   } catch (e) {
     console.warn('[storage] v2 sub-collection read failed:', key, e);
     return null;
   }
-  const [ws, tasks, actions, raid, decisions] = lists;
+  const { ws, tasks, actions, raid, decisions } = lists;
   const toMap = (list: Array<{ id: string; data: Record<string, unknown> }>) =>
     new Map(list.map(({ id, data }) => [id, { version: typeof data.version === 'number' ? data.version : 0, data }]));
   // Replaces the cached `loaded` object: safe only because the App loads each project once;
@@ -102,16 +100,9 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
       missingRaid: orphans.missingRaid.length,
     });
   }
-  const {
-    memberIds: _mi, roles: _ro, deletedAt: _da, createdBy: _cb, createdAt: _ca, updatedAt: _ua, rev: _rv, writeId: _wi,
-    programMeta: _pm, memberUids: _mu, visibility: _vi, schemaVersion: _sv, v1Absent: _va,
-    ...rest
-  } = project as Record<string, unknown>;
-  void _mi; void _ro; void _da; void _cb; void _ca; void _ua; void _rv; void _wi;
-  void _pm; void _mu; void _vi; void _sv; void _va;
   return {
     key,
-    value: JSON.stringify({ id: pid, ...rest, __v2: { orphans: orphanCount } }),
+    value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount)),
     shared: true,
   };
 }
@@ -337,26 +328,16 @@ window.storage = {
         if (!snap.exists()) return null;
         const data = snap.data() as Record<string, unknown>;
         if (data.deletedAt) return null;
-        // Strip RBAC-internal fields from the value so the new App.jsx isn't
-        // confused by extra members/roles fields. (Member management uses the
-        // separate MembersModal which reads them via the data.ts hooks.)
-        const { memberIds, roles, deletedAt, createdBy, createdAt, updatedAt, rev, writeId: _writeId, ...rest } =
-          data as Record<string, unknown>;
-        void _writeId;
+        // Strip RBAC-internal fields via appValueFromV1/V2 (readV2.js) so the App isn't
+        // confused by them. (Member management uses MembersModal, which reads them via data.ts.)
+        const rev = data.rev;
         knownRev.set(pid, typeof rev === 'number' ? rev : 0);
         pendingWriteIds.delete(pid);
-        // Suppress unused warnings — these are intentional drops:
-        void memberIds;
-        void roles;
-        void deletedAt;
-        void createdBy;
-        void createdAt;
-        void updatedAt;
         if (data.schemaVersion === 2) return await getV2Project(key, pid, data);
         v2Loaded.delete(pid);
         return {
           key,
-          value: JSON.stringify({ id: pid, ...rest }),
+          value: JSON.stringify(appValueFromV1(data, pid)),
           shared: true,
         };
       }

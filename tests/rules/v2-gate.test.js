@@ -24,8 +24,8 @@ const OUTSIDER = { uid: 'u_out', email: 'out@smartosc.com' };
 const DEACT = { uid: 'u_deact', email: 'deact@smartosc.com' }; // deactivated contributor
 
 const WS = 'workspaces/main';
-const P1 = `${WS}/projects/p1`; // v1 doc carrying programMeta (restricted)
-const P2 = `${WS}/projects/p2`; // another project
+const P1 = `${WS}/projects/p1`; // schemaVersion 2 carrying programMeta (restricted; hosts the sub-docs, P2.4)
+const P2 = `${WS}/projects/p2`; // v1 doc carrying programMeta (G-1..G-3)
 const PV2 = `${WS}/projects/pv2`; // schemaVersion 2
 
 const programMeta = {
@@ -85,7 +85,7 @@ describe('P2.2 pre-P2.2 gate rules', () => {
     }
     await seedDoc(`${WS}/members/${DEACT.uid}`, member(DEACT.email, 'deactivated'));
 
-    await seedDoc(P1, project());
+    await seedDoc(P1, project({ schemaVersion: 2 }));
     await seedDoc(`${P1}/workstreams/w1`, ws('p1', 'prg1', LEAD.uid));
     await seedDoc(`${P1}/tasks/t1`, task());
     await seedDoc(`${P1}/raid/prg1`, raid('prg1', { updatedBy: OWNER.uid }));
@@ -99,35 +99,35 @@ describe('P2.2 pre-P2.2 gate rules', () => {
 
   // ── v1 project doc: Owner-only v2 fields ──
   it('G-1 operator / per-project owner changing programMeta, memberUids, visibility, schemaVersion denied', async () => {
-    await assertFails(v1up(OP, P1, { programMeta: {} }));
-    await assertFails(v1up(OP, P1, { memberUids: [OP.uid] }));
-    await assertFails(v1up(OP, P1, { visibility: 'department' }));
-    await assertFails(v1up(OP, P1, { schemaVersion: 2 }));
+    await assertFails(v1up(OP, P2, { programMeta: {} }));
+    await assertFails(v1up(OP, P2, { memberUids: [OP.uid] }));
+    await assertFails(v1up(OP, P2, { visibility: 'department' }));
+    await assertFails(v1up(OP, P2, { schemaVersion: 2 }));
     // A v1 per-project owner is not the workspace Owner.
-    await assertFails(v1up(PO, P1, { visibility: 'department' }));
-    await assertFails(v1up(PO, P1, { programMeta: {} }));
+    await assertFails(v1up(PO, P2, { visibility: 'department' }));
+    await assertFails(v1up(PO, P2, { programMeta: {} }));
   });
 
   it('G-2 v1 content saves still work: operator content (name unchanged), per-project owner rename', async () => {
-    await assertSucceeds(v1up(OP, P1, {
+    await assertSucceeds(v1up(OP, P2, {
       programs: [{ id: 'prg1', name: 'Program 1', workstreams: [{ id: 'w1', tasks: [{ id: 't1' }] }] }],
       updatedAt: 'now',
     }));
     // Full-doc overwrite keeping the v2 fields identical (shim-preserved) is allowed.
-    await assertSucceeds(setDoc(doc(await as(OP), P1), project({ programs: [] })));
-    await assertSucceeds(v1up(PO, P1, { name: 'Renamed' }));
+    await assertSucceeds(setDoc(doc(await as(OP), P2), project({ programs: [] })));
+    await assertSucceeds(v1up(PO, P2, { name: 'Renamed' }));
     // The v1 operator rule is unchanged: operator rename still denied.
-    await assertFails(v1up(OP, P1, { name: 'x' }));
+    await assertFails(v1up(OP, P2, { name: 'x' }));
     // A full overwrite that drops programMeta (old bundle) is denied for non-Owners.
     const { programMeta: _pm, ...noMeta } = project();
-    await assertFails(setDoc(doc(await as(OP), P1), noMeta));
+    await assertFails(setDoc(doc(await as(OP), P2), noMeta));
   });
 
   it('G-3 workspace Owner may change visibility, programMeta, memberUids, schemaVersion', async () => {
-    await assertSucceeds(v1up(OWNER, P1, { visibility: 'department' }));
-    await assertSucceeds(v1up(OWNER, P1, { programMeta: {} }));
-    await assertSucceeds(v1up(OWNER, P1, { memberUids: [OWNER.uid] }));
-    await assertSucceeds(v1up(OWNER, P1, { schemaVersion: 2 }));
+    await assertSucceeds(v1up(OWNER, P2, { visibility: 'department' }));
+    await assertSucceeds(v1up(OWNER, P2, { programMeta: {} }));
+    await assertSucceeds(v1up(OWNER, P2, { memberUids: [OWNER.uid] }));
+    await assertSucceeds(v1up(OWNER, P2, { schemaVersion: 2 }));
   });
 
   it('G-4 create: non-Owner may not include v2 keys; plain create and Owner create with them allowed', async () => {

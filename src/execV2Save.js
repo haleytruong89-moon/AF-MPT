@@ -4,7 +4,10 @@
 // serverTimestamp, deleteField }) so the emulator test can pass the client SDK of
 // @firebase/rules-unit-testing; the shim passes the app's SDK.
 //
-// Per batch: tx.get every op target, then
+// Per batch: tx.get the project doc (P2.4 fix round 1: if it is missing or its
+// schemaVersion is not 2, e.g. after a rollback, the batch is a conflict and
+// writes nothing, so a stale v2 tab gets the reload banner), tx.get every op
+// target, then
 //   - update: conflict unless the doc exists with version === expectVersion;
 //     written as a full-doc set (op.data is the full doc) + version expect+1,
 //     updatedBy, updatedAt;
@@ -44,6 +47,8 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
     let res;
     try {
       res = await runTransaction(db, async (tx) => {
+        const projectSnap = await tx.get(projectRef);
+        if (!projectSnap.exists() || projectSnap.data()?.schemaVersion !== 2) return { conflict: true };
         const snaps = [];
         for (const op of ops) snaps.push(await tx.get(refOf(op)));
         for (let k = 0; k < ops.length; k++) {
