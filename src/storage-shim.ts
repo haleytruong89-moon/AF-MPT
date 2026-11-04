@@ -38,7 +38,7 @@ import {
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
-import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists} from './readV2';
+import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loadApprovals, rolesFromLoaded } from './readV2';
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
@@ -75,21 +75,31 @@ const V2_ACTIVITY_COL = (pid: string) => collection(db, 'workspaces', WORKSPACE,
 async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
   type Snap = { id: string; data: Record<string, unknown> };
   let lists: { ws: Snap[]; tasks: Snap[]; actions: Snap[]; raid: Snap[]; decisions: Snap[] };
+  // P3: approvals/{reqId}, read alongside (separate from V2_SUBCOLS: the planner's
+  // loaded.docs is unchanged). A failed read gives approvals: null; the project still loads.
+  const approvalsP: Promise<unknown[] | null> = loadApprovals({ collection, getDocs }, db, WORKSPACE, pid)
+    .catch((e: unknown) => {
+      console.warn('[storage] v2 approvals read failed:', key, e);
+      return null;
+    });
   try {
     lists = (await loadV2Lists({ collection, getDocs }, db, WORKSPACE, pid)) as typeof lists;
   } catch (e) {
     console.warn('[storage] v2 sub-collection read failed:', key, e);
     return null;
   }
+  const [approvals, ownerUids] = await Promise.all([approvalsP, ownerUidsNow()]);
   const { ws, tasks, actions, raid, decisions } = lists;
   const toMap = (list: Array<{ id: string; data: Record<string, unknown> }>) =>
     new Map(list.map(({ id, data }) => [id, { version: typeof data.version === 'number' ? data.version : 0, data }]));
   // Replaces the cached `loaded` object: safe only because the App loads each project once;
   // a read during an in-flight save would make applyWritten update a discarded object.
-  v2Loaded.set(pid, {
+  const loaded: V2Loaded = {
     meta,
     docs: { workstreams: toMap(ws), tasks: toMap(tasks), actions: toMap(actions), raid: toMap(raid), decisions: toMap(decisions) },
-  });
+  };
+  v2Loaded.set(pid, loaded);
+  const roles = rolesFromLoaded(loaded, ownerUids);
   const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   if (orphanCount > 0) {
     console.warn('[storage] v2 project has orphans:', pid, {
@@ -102,25 +112,35 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
   }
   return {
     key,
-    value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount)),
+    value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount, { roles, approvals })),
     shared: true,
   };
 }
 
 // Workspace doc as last read (Owner check for the planner: ownerUids or legacy email).
 let wsMetaCache: Record<string, unknown> | null = null;
-async function isOwnerNow(user: UserProfile): Promise<boolean> {
+async function wsMetaNow(): Promise<Record<string, unknown> | null> {
   if (!wsMetaCache) {
     try {
       const s = await getDoc(META_REF());
       wsMetaCache = s.exists() ? (s.data() as Record<string, unknown>) : {};
     } catch {
-      return false;
+      return null;
     }
   }
-  const m = wsMetaCache;
+  return wsMetaCache;
+}
+async function isOwnerNow(user: UserProfile): Promise<boolean> {
+  const m = await wsMetaNow();
+  if (!m) return false;
   return (Array.isArray(m.ownerUids) && m.ownerUids.includes(user.uid))
     || isWorkspaceOwnerEmail(m.workspaceOwner, user.email);
+}
+
+/** P3: workspace ownerUids as last read (via wsMetaCache); [] when unset or unreadable. */
+export async function ownerUidsNow(): Promise<string[]> {
+  const m = await wsMetaNow();
+  return m && Array.isArray(m.ownerUids) ? m.ownerUids.filter((u): u is string => typeof u === 'string') : [];
 }
 
 // Directory for person -> uid resolution in planV2Save, built like the P2 scripts

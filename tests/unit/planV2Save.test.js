@@ -48,6 +48,20 @@ describe('planV2Save', () => {
     expect(r).toEqual({ batches: [], metaPatch: null, refused: null });
   });
 
+  it('planV2Save ignores __v2.roles and __v2.approvals (no ops, no metaPatch)', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.__v2 = {
+      orphans: 0,
+      roles: { ownerUids: ['o'], programs: { pg1: { pmUid: 'x', deputyUid: null, start: null, end: null } }, workstreams: {}, tasks: {} },
+      approvals: [{ id: 'r1', kind: 'plan_import', status: 'pending', createdAt: '2026-11-01T00:00:00.000Z', decidedAt: null, version: 1 }],
+    };
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual({ batches: [], metaPatch: null, refused: null });
+    tree.__v2.approvals = null;
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
   it('one task edited -> one update with expectVersion', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
