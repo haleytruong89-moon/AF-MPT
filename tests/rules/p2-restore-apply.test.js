@@ -274,6 +274,31 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     expect(rec.counts.historyLost).toBe(1);
   });
 
+  it('RS-6: restoring from the snapshot of an apply reverses it (u7 back, t9 Completed, w1 live name)', async () => {
+    const backup = await seedApply();
+    tasksOfBackup(backup).find((t) => t.id === 't2').updates = [];
+    const allowed = await prep(backup, { allowHistoryLoss: true });
+    const snaps = [];
+    await apply(backup, { allowHistoryLoss: true, expectHash: allowed.planHash, writeSnapshot: (o) => { snaps.push(o); } });
+    expect((await db.doc(`${BASE}/tasks/t9`).get()).data().status).toBe('Dropped');
+
+    // The snapshot file is a Backup JSON (Ruling P4b-10): feed it back as --backup.
+    const snapshot = JSON.parse(JSON.stringify(snaps[0]));
+    const back = await prepareRestore(db, { pid: PID, backup: snapshot, backupName: 'snap.json', backupSha256: SHA, Timestamp });
+    expect(back.blocked).toEqual([]);
+    expect(back.refused).toBeNull();
+    expect(back.mode).toBe('restore');
+    const r = await applyRestore(db, {
+      pid: PID, backup: snapshot, backupName: 'snap.json', backupSha256: SHA, allowHistoryLoss: false,
+      expectHash: back.planHash, FieldValue, Timestamp, writeSnapshot: () => {},
+    });
+    expect(r.verify).toEqual({ ok: true, diffs: [] });
+    expect((await db.doc(`${BASE}/tasks/t2`).get()).data().updates.map((u) => u.id)).toEqual(['u7']);
+    expect((await db.doc(`${BASE}/tasks/t9`).get()).data().status).toBe('Completed');
+    expect((await db.doc(`${BASE}/workstreams/w1`).get()).data().name).toBe('WS One (renamed live)');
+    expect((await prepareRestore(db, { pid: PID, backup: snapshot, backupName: 'snap.json', backupSha256: SHA, Timestamp })).mode).toBe('noop');
+  });
+
   it('RS-5: a rolled-back project (schemaVersion 1) -> BLOCKED not-v2, nothing written', async () => {
     const backup = await seedApply();
     await db.doc(BASE).update({ schemaVersion: 1 });

@@ -26,10 +26,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { toJsonable, revive } from './lib/manifest.mjs';
 import { RECORD_PATH, SUBCOLS, ACTIVITY_SUBCOL } from './lib/migrate-plan.mjs';
 import { readBackupProject, TASK_DROPPED, ACTION_CANCELLED } from './lib/restore-target.mjs';
+import { META_SKIP } from '../src/planV2Save.js';
 import {
   planRestore, liveFingerprint, expectedAfter, buildSnapshot, RESTORE_STAMP, RESTORES_PATH, restoreIdOf, MAX_TX_OPS,
 } from './lib/restore-plan.mjs';
-import { readDirectory, openDb, nameLookup, writePreviewXlsx } from './p2-migrate.mjs';
+import { readDirectory, openDb, writePreviewXlsx } from './p2-migrate.mjs';
 
 const WS = 'workspaces/main';
 const PROJECTS = `${WS}/projects`;
@@ -109,11 +110,11 @@ export async function prepareRestore(db, { pid, backup, backupName, backupSha256
 // ---------------------------------------------------------------- preview text
 
 const issueLines = (label, list) => (list.length ? [`${label}:`, ...list.map((i) => `  ${i.code}: ${i.detail}`)] : [`${label}: none`]);
-const show = (v) => (v === null || v === undefined ? '-' : typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v));
+const show = (v) => (v === null || v === undefined ? '-' : JSON.stringify(v));
 const trunc = (s, n = 80) => (s.length > n ? `${s.slice(0, n)}...` : s);
 
-// prep = prepareRestore result; nameOfUid is accepted for symmetry with p2-migrate. -> string[].
-export function formatRestorePreview(prep, { pid } = {}) {
+// prep = prepareRestore result; backupPath = the --backup path as given (for the apply line). -> string[].
+export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
   const L = [];
   const r = prep.report;
   L.push(`Project:     ${PROJECTS}/${pid}`);
@@ -146,6 +147,10 @@ export function formatRestorePreview(prep, { pid } = {}) {
     L.push('Edited entries (same id, content differs; not blocking):');
     for (const h of r.editedEntries) L.push(`  ${h.kind}/${h.id} ${h.list}: ${h.entries.map((e) => e.id ?? '(no id)').join(', ')}`);
   }
+  const removedRows = arr(r.fieldChanges).filter((f) => f.removed.length);
+  if (removedRows.length) {
+    for (const f of removedRows) L.push(`Fields removed: ${f.kind}/${f.id}: ${f.removed.join(', ')}`);
+  } else L.push('Fields removed: none');
   const changed = r.meta.filter((m) => !m.kept);
   const kept = r.meta.filter((m) => m.kept);
   L.push(`Project doc: ${changed.length ? `${changed.length} field(s) change: ${changed.map((m) => m.field).join(', ')}` : 'no field changes'}`);
@@ -157,7 +162,8 @@ export function formatRestorePreview(prep, { pid } = {}) {
     L.push(`  backup memberIds differs (informational only): +${r.backupMemberIdsDiff.added.length} -${r.backupMemberIdsDiff.removed.length}`);
   }
   L.push(`Activity:    backup has ${prep.backupActivityCount ?? r.backupActivityCount} entries (not restored); ${prep.mode === 'restore' ? '1 restore event will be added' : 'no restore event (nothing to write)'}`);
-  L.push(...issueLines('Warnings', prep.warnings));
+  // The migration warning is printed once, as the line below.
+  L.push(...issueLines('Warnings', prep.warnings.filter((w) => !(prep.hasMigrationRecord && w.code === 'migration-rollback-affected'))));
   if (prep.hasMigrationRecord) {
     L.push('MIGRATION RECORD EXISTS: after this restore, a later p2-migrate --rollback reports these docs as v2 edits and needs --force-with-report; it returns to the frozen pre-migration v1 tree, not to this restore.');
   }
@@ -165,20 +171,26 @@ export function formatRestorePreview(prep, { pid } = {}) {
     L.push('REFUSED (exit 3): this restore would delete history entries (listed above). Re-run the preview with --allow-history-loss only after HOD approves the loss.');
   } else if (prep.mode === 'restore') {
     const flag = prep.allowHistoryLoss ? ' --allow-history-loss' : '';
-    L.push(`Plan hash:   ${prep.planHash}  (apply with node scripts/p2-restore.mjs ${pid} --backup ${prep.backupName ?? '<file>'}${flag} --apply --expect ${prep.planHash})`);
+    L.push(`Plan hash:   ${prep.planHash}  (apply with node scripts/p2-restore.mjs ${pid} --backup ${backupPath ?? prep.backupName ?? '<file>'}${flag} --apply --expect ${prep.planHash})`);
   }
   return L;
 }
 
 // -> { Summary, Ops, Retained, 'History loss', Changes } as arrays of row objects.
-export function restorePreviewSheets(prep, { pid, nameOfUid = (u) => u } = {}) {
+export function restorePreviewSheets(prep, { pid, backupPath = null } = {}) {
   const r = prep.report;
-  const Summary = formatRestorePreview(prep, { pid, nameOfUid }).map((line) => ({ Line: line }));
+  const Summary = formatRestorePreview(prep, { pid, backupPath }).map((line) => ({ Line: line }));
+  const fieldsOf = (o) => arr(r.fieldChanges).find((f) => f.kind === o.kind && f.id === o.id);
+  const changedCell = (o) => {
+    if (o.op === 'create') return '(new doc)';
+    const f = fieldsOf(o);
+    return f ? f.changed.map((k) => (f.removed.includes(k) ? `${k} (removed)` : k)).join(', ') : '';
+  };
   const nameOf = (kind, id) => {
     const d = arr(prep.live?.docs?.[kind]).find((x) => x.id === id);
     return d?.data?.name ?? d?.data?.title ?? d?.data?.text ?? '';
   };
-  const Ops = prep.ops.map((o) => ({ Kind: o.kind, Op: o.op, Id: o.id, Name: o.data?.name ?? o.data?.title ?? nameOf(o.kind, o.id), 'Expect version': o.expectVersion ?? '' }));
+  const Ops = prep.ops.map((o) => ({ Kind: o.kind, Op: o.op, Id: o.id, Name: o.data?.name ?? o.data?.title ?? nameOf(o.kind, o.id), 'Expect version': o.expectVersion ?? '', 'Changed fields': changedCell(o) }));
   const Retained = r.retained.map((x) => ({ Kind: x.kind, Id: x.id, Name: x.name ?? '', 'Live status': x.liveStatus ?? '', 'New status': x.newStatus ?? '' }));
   const HistoryLoss = r.historyLost.flatMap((h) => h.entries.map((e) => ({ Kind: h.kind, Doc: h.id, List: h.list, 'Entry id': e.id ?? '', Preview: e.preview ?? '' })));
   const Changes = [
@@ -203,11 +215,14 @@ const noUpdatedAt = (o) => {
 };
 
 // Pure. actual / expected = { meta, docs: { kind: [{ id, data }] } } (JSON). -> string[].
+// Meta: only the fields a restore may write (not META_SKIP, plus programMeta). A differing
+// sub-doc is annotated with its live version / updatedBy (an edit after the restore shows).
 export function diffRestore(actual, expected) {
   const diffs = [];
   const am = noUpdatedAt(actual?.meta);
   const em = noUpdatedAt(expected?.meta);
-  for (const k of [...new Set([...Object.keys(am), ...Object.keys(em)])].sort()) {
+  const inScope = (k) => !META_SKIP.has(k) || k === 'programMeta';
+  for (const k of [...new Set([...Object.keys(am), ...Object.keys(em)])].filter(inScope).sort()) {
     if (!isDeepStrictEqual(am[k], em[k])) diffs.push(`meta.${k}`);
   }
   for (const kind of SUBCOLS) {
@@ -215,7 +230,11 @@ export function diffRestore(actual, expected) {
     const e = new Map(arr(expected?.docs?.[kind]).map((d) => [d.id, noUpdatedAt(d.data)]));
     for (const [id, data] of e) {
       if (!a.has(id)) diffs.push(`${kind}/${id} (missing)`);
-      else if (!isDeepStrictEqual(a.get(id), data)) diffs.push(`${kind}/${id}`);
+      else if (!isDeepStrictEqual(a.get(id), data)) {
+        const live = a.get(id);
+        const edited = live.version !== data.version || live.updatedBy !== data.updatedBy;
+        diffs.push(`${kind}/${id} (live version ${live.version ?? '-'}, updatedBy ${live.updatedBy ?? '-'}${edited ? `: edited after restore by ${live.updatedBy ?? '?'}` : ''})`);
+      }
     }
     for (const id of a.keys()) if (!e.has(id)) diffs.push(`${kind}/${id} (unexpected)`);
   }
@@ -275,10 +294,6 @@ export async function applyRestore(db, {
   const writes = prep.ops.length + (prep.metaPatch ? 1 : 0) + 2;
   if (writes > MAX_TX_OPS) {
     throw fail('BLOCKED', `Blocked: too-many-ops (${writes} > ${MAX_TX_OPS}). Nothing was written.`, { blocked: [{ code: 'too-many-ops', detail: String(writes) }] });
-  }
-  const dotted = Object.keys(prep.metaPatch || {}).filter((k) => k.includes('.'));
-  if (dotted.length) {
-    throw fail('BLOCKED', `Blocked: project field(s) with "." cannot be patched: ${dotted.join(', ')}. Nothing was written.`, { blocked: [{ code: 'dotted-field', detail: dotted.join(', ') }] });
   }
 
   const restoreId = restoreIdOf(pid, prep.planHash);
@@ -351,10 +366,9 @@ async function main() {
   try { backup = JSON.parse(bytes.toString('utf8')); } catch (e) { console.error(`Backup file is not valid JSON: ${e.message}`); process.exit(1); }
   const backupName = path.basename(o.backup);
   const prep = await prepareRestore(db, { pid: o.pid, backup, backupName, backupSha256, allowHistoryLoss: o.allowHistoryLoss, Timestamp });
-  const nameOfUid = nameLookup(prep.dir.members);
-  for (const l of formatRestorePreview(prep, { pid: o.pid, nameOfUid })) console.log(l);
+  for (const l of formatRestorePreview(prep, { pid: o.pid, backupPath: o.backup })) console.log(l);
   const xlsxPath = `p2-restore-preview-${o.pid}.xlsx`;
-  writePreviewXlsx(xlsxPath, restorePreviewSheets(prep, { pid: o.pid, nameOfUid }));
+  writePreviewXlsx(xlsxPath, restorePreviewSheets(prep, { pid: o.pid, backupPath: o.backup }));
   console.log(`Preview:     ${xlsxPath}`);
   const previewExit = prep.mode === 'blocked' ? 1 : prep.refused ? 3 : 0;
   if (!o.apply || previewExit !== 0 || prep.mode === 'noop') {
@@ -377,7 +391,11 @@ async function main() {
     });
   } catch (e) {
     console.error(`${e.code ? `[${e.code}] ` : ''}${e.message || e}`);
-    if (e.snapshotVoid) console.error(`Snapshot ${snapshotPath} is VOID: the transaction did not commit, nothing was restored.`);
+    if (e.snapshotVoid && fs.existsSync(snapshotPath)) {
+      const voidPath = snapshotPath.replace(/\.json$/, '-VOID.json');
+      fs.renameSync(snapshotPath, voidPath);
+      console.error(`Snapshot is VOID (renamed to ${voidPath}): the transaction did not commit, nothing was restored.`);
+    }
     process.exit(restoreExitCode(e));
   }
   if (r.mode === 'noop') {

@@ -139,9 +139,29 @@ function collectLosses(kind, id, old, next, out) {
   }
 }
 
+// Ruling P4b-19: per update op, the fields that change and the live fields the final doc
+// no longer has. Removing a non-empty array or map is history loss (future fields such as
+// P3 approval histories are covered without naming them); lists checked on their own
+// (ENTRY_LISTS, RAID items) are not counted twice.
+const isNonEmpty = (v) => (Array.isArray(v) ? v.length > 0 : isObj(v) && Object.keys(v).length > 0);
+function fieldChanges(kind, id, old, fin, out, list) {
+  const keys = [...new Set([...Object.keys(old), ...Object.keys(fin)])].sort();
+  const changed = keys.filter((k) => !isDeepStrictEqual(old[k], fin[k]));
+  const removed = Object.keys(old).filter((k) => !hasOwn(fin, k)).sort();
+  list.push({ kind, id, changed, removed });
+  const checked = new Set([...(ENTRY_LISTS[kind] || []), ...(kind === 'raid' ? ['items'] : [])]);
+  for (const k of removed) {
+    if (checked.has(k) || !isNonEmpty(old[k])) continue;
+    const entries = Array.isArray(old[k])
+      ? describeEntries(old[k])
+      : Object.keys(old[k]).sort().map((x) => ({ id: x, preview: preview(old[k][x]) }));
+    out.historyLost.push({ kind, id, list: `${k} (field removed)`, entries });
+  }
+}
+
 const emptyReport = () => ({
   perKind: Object.fromEntries(SUBCOLS.map((k) => [k, { create: 0, update: 0, unchanged: 0, retained: 0 }])),
-  retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [],
+  retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
   access: null, backupMemberIdsDiff: null, idMap: [], removedNulls: [], backupActivityCount: 0,
 });
 
@@ -195,6 +215,15 @@ export function planRestore({
     ...o.actions.map((id) => `actions/${id}`), ...o.raid.map((id) => `raid/${id}`),
   ];
   if (orphanIds.length) block('live-orphans', orphanIds.join(', '));
+  // Ruling P4b-18: the tree is keyed by data.id; a doc whose data.id is missing or differs
+  // from its doc id would be re-created under a new id instead of updated / retained.
+  // RAID docs are keyed by programId, not id.
+  const idMismatch = SUBCOLS.filter((k) => k !== 'raid')
+    .flatMap((k) => liveDocs[k].filter((d) => d.data?.id == null || String(d.data.id) !== d.id).map((d) => `${k}/${d.id}`));
+  if (idMismatch.length) {
+    block('live-id-mismatch', idMismatch.join(', '));
+    return result({});
+  }
 
   const target = buildRestoreTarget(backupProject, assembled.project, { pid });
   blocked.push(...target.blocked);
@@ -256,6 +285,7 @@ export function planRestore({
           report.creditLoss.push({ id, name: fin.name ?? null, from: old.status, to: fin.status ?? null, retained: retainedTasks.has(id) });
         }
         collectLosses(kind, id, old, fin, losses);
+        fieldChanges(kind, id, old, fin, losses, report.fieldChanges);
         ops.push({ kind, op: 'update', id, data: fin, expectVersion: versionOf(lv) });
         nextDocs[kind].push({ id, data: fin });
       } else {
@@ -319,6 +349,8 @@ export function planRestore({
     }
   }
   const patch = Object.keys(metaPatch).length ? metaPatch : null;
+  const dotted = Object.keys(metaPatch).filter((k) => k.includes('.'));
+  if (dotted.length) block('dotted-field', `project field(s) with "." cannot be patched as one field: ${dotted.join(', ')}`);
 
   const bytes = Buffer.byteLength(JSON.stringify({ ...lm, ...(patch || {}) }), 'utf8');
   if (bytes >= MAX_PROJECT_DOC_BYTES) block('doc-too-large', `${bytes} bytes >= ${MAX_PROJECT_DOC_BYTES}`);

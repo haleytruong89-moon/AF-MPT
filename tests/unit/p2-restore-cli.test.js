@@ -68,8 +68,8 @@ describe('formatRestorePreview', () => {
     const p = plan(live, b);
     const L = formatRestorePreview(prepOf(p, live, { backupActivityCount: 4 }), { pid: PID });
     const at = [
-      /^Project:/, /^Mode:        restore/, /^Counts:/, /^Retained \(Dropped\/Cancelled\):/, /^CREDIT LOSS/,
-      /^History loss: none/, /^Access:      memberIds 1, memberUids 2, visibility restricted \(unchanged, not restored\)/,
+      /^Project:/, /^Mode: {8}restore/, /^Counts:/, /^Retained \(Dropped\/Cancelled\):/, /^CREDIT LOSS/,
+      /^History loss: none/, /^Access: {6}memberIds 1, memberUids 2, visibility restricted \(unchanged, not restored\)/,
       /^Activity:/, /^Plan hash:/,
     ].map((re) => indexOf(L, re));
     expect(at.every((i) => i >= 0)).toBe(true);
@@ -109,9 +109,12 @@ describe('formatRestorePreview', () => {
     expect(text).toMatch(/extraLive/);
     expect(text).toMatch(/--force-with-report/);
     expect(text).toMatch(/pg1/);
+    // The migration warning is printed once (the MIGRATION RECORD line), not also under Warnings.
+    expect(text).not.toMatch(/migration-rollback-affected/);
+    expect(text.match(/MIGRATION RECORD EXISTS/g)).toHaveLength(1);
     const blocked = plan(live, null);
     const bt = formatRestorePreview(prepOf(blocked, live), { pid: PID });
-    expect(bt.some((l) => /^Mode:        blocked/.test(l))).toBe(true);
+    expect(bt.some((l) => /^Mode: {8}blocked/.test(l))).toBe(true);
     expect(bt.join('\n')).toContain('backup-invalid');
     expect(bt.some((l) => /^Plan hash:/.test(l))).toBe(false);
   });
@@ -123,8 +126,24 @@ describe('formatRestorePreview', () => {
     const p = plan(live, b);
     const s = restorePreviewSheets(prepOf(p, live), { pid: PID });
     expect(Object.keys(s)).toEqual(['Summary', 'Ops', 'Retained', 'History loss', 'Changes']);
-    expect(s.Ops).toEqual([expect.objectContaining({ Kind: 'workstreams', Op: 'update', Id: 'w1' })]);
+    expect(s.Ops).toEqual([expect.objectContaining({ Kind: 'workstreams', Op: 'update', Id: 'w1', 'Changed fields': 'name' })]);
     expect(s.Summary.length).toBeGreaterThan(3);
+  });
+
+  it('CLI-8: removed fields are printed; the apply line uses the --backup path as given', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    const t2 = live.docs.tasks.find((d) => d.id === 't2').data;
+    t2.flag = 'x';
+    t2.note2 = 'y';
+    const p = plan(live, b);
+    const L = formatRestorePreview(prepOf(p, live), { pid: PID, backupPath: 'backups/2026/b.json' });
+    expect(L).toContain('Fields removed: tasks/t2: flag, note2');
+    expect(L[L.length - 1]).toContain('--backup backups/2026/b.json --apply --expect');
+    const s = restorePreviewSheets(prepOf(p, live), { pid: PID });
+    expect(s.Ops.find((o) => o.Id === 't2')['Changed fields']).toBe('flag (removed), note2 (removed)');
+    const none = formatRestorePreview(prepOf(plan(makeLive(), backupOf(makeLive())), live), { pid: PID });
+    expect(none).toContain('Fields removed: none');
   });
 
   it('CLI-6: exit codes: ok 0, verify mismatch 2, history loss 3, other errors 1', () => {
@@ -152,8 +171,19 @@ describe('formatRestorePreview', () => {
     actual.docs.actions.pop();
     actual.docs.decisions.push({ id: 'dX', data: {} });
     actual.meta.name = 'other';
+    // Out of scope (META_SKIP, never written by a restore): ignored. programMeta: compared.
+    actual.meta.rev = 99;
+    actual.meta.memberIds = ['someoneElse'];
+    actual.meta.programMeta.pg1.pmUid = 'uidQ';
     const diffs = diffRestore(actual, exp);
-    expect(diffs).toEqual(expect.arrayContaining(['meta.name', 'workstreams/w1', 'decisions/dX (unexpected)']));
+    expect(diffs).toEqual(expect.arrayContaining(['meta.name', 'meta.programMeta', 'decisions/dX (unexpected)']));
+    expect(diffs.some((d) => d.startsWith('meta.rev') || d.startsWith('meta.memberIds'))).toBe(false);
     expect(diffs.some((d) => d.startsWith('actions/') && d.endsWith(' (missing)'))).toBe(true);
+    const w1 = diffs.find((d) => d.startsWith('workstreams/w1'));
+    expect(w1).toMatch(/live version \d+, updatedBy p2-restore\)$/);
+    const t1 = actual.docs.tasks.find((d) => d.id === 't1').data;
+    t1.version += 1;
+    t1.updatedBy = 'uidZ';
+    expect(diffRestore(actual, exp).find((d) => d.startsWith('tasks/t1'))).toMatch(/edited after restore by uidZ/);
   });
 });

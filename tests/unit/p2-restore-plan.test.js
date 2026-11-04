@@ -440,4 +440,63 @@ describe('planRestore', () => {
     expect(p.ops.map((o) => o.id)).toEqual(['aN']);
     expect(p.ops[0].data.order).toBe(-0.25);
   });
+
+  it('P-21 (Ruling P4b-18): a live doc whose data.id is missing or differs blocks live-id-mismatch with no ops', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    wsOf(b, 'w1').name = 'renamed';
+    delete doc(live, 'tasks', 't1').id;
+    doc(live, 'actions', 'a1').id = 'aX';
+    const p = plan(live, b);
+    expect(p.mode).toBe('blocked');
+    expect(p.blocked).toEqual([{ code: 'live-id-mismatch', detail: 'tasks/t1, actions/a1' }]);
+    expect(p.ops).toEqual([]);
+    expect(p.planHash).toBeNull();
+    // RAID docs are keyed by programId and are not checked.
+    const ok = makeLive();
+    expect(ok.docs.raid.length).toBeGreaterThan(0);
+    expect(plan(ok, backupOf(ok)).blocked).toEqual([]);
+  });
+
+  it('P-22 (Ruling P4b-19): removed fields are reported; removing a non-empty array or map is history loss', () => {
+    const live = makeLive();
+    Object.assign(doc(live, 'tasks', 't2'), {
+      closeRequestHistory: [{ id: 'c1', note: 'asked to close' }],
+      blockerResolutions: { b1: { note: 'resolved' } },
+      emptyList: [], emptyMap: {}, flag: 'x',
+    });
+    const b = backupOf(live);
+    const bt = task(b, 't2');
+    for (const k of ['closeRequestHistory', 'blockerResolutions', 'emptyList', 'emptyMap', 'flag']) delete bt[k];
+    const p = plan(live, b);
+    expect(p.report.fieldChanges).toEqual([{
+      kind: 'tasks', id: 't2',
+      changed: ['blockerResolutions', 'closeRequestHistory', 'emptyList', 'emptyMap', 'flag'],
+      removed: ['blockerResolutions', 'closeRequestHistory', 'emptyList', 'emptyMap', 'flag'],
+    }]);
+    expect(p.report.historyLost).toEqual([
+      { kind: 'tasks', id: 't2', list: 'blockerResolutions (field removed)', entries: [{ id: 'b1', preview: 'resolved' }] },
+      { kind: 'tasks', id: 't2', list: 'closeRequestHistory (field removed)', entries: [{ id: 'c1', preview: 'asked to close' }] },
+    ]);
+    expect(p.refused).toBe('history-loss');
+    const allowed = plan(live, b, { allowHistoryLoss: true });
+    expect(allowed.refused).toBeNull();
+    expect(allowed.planHash).not.toBe(p.planHash);
+    // A removed entry list already checked on its own is not counted twice.
+    const live2 = makeLive();
+    const b2 = backupOf(live2);
+    delete task(b2, 't2').updates;
+    const p2 = plan(live2, b2);
+    expect(p2.report.historyLost.map((h) => h.list)).toEqual(['updates']);
+    expect(p2.report.fieldChanges[0].removed).toEqual(['updates']);
+  });
+
+  it('P-23: a project field with "." blocks dotted-field (shown in the preview, not only at apply)', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    b['x.y'] = 1;
+    const p = plan(live, b);
+    expect(p.mode).toBe('blocked');
+    expect(p.blocked.map((x) => x.code)).toEqual(['dotted-field']);
+  });
 });
