@@ -1,24 +1,34 @@
-// P2.4b Task 3: read-only preview of restoring ONE v2 project from an in-app Backup JSON.
+// P2.4b: restore ONE v2 project from an in-app Backup JSON (Admin SDK).
 //
-// This task only previews: it reads Firestore, never writes it, and never writes a JSON
-// file (the preview workbook is the only output). --apply is parsed but not wired yet
-// (Task 4). The pure plan lives in scripts/lib/restore-plan.mjs (Rulings P4b-1..17).
+// Without --apply it only previews: reads Firestore, never writes it (the preview workbook
+// is the only output). With --apply --expect <plan hash> (Task 4): recompute the plan and
+// require the approved hash (PLAN_CHANGED), write the local snapshot file, then ONE
+// transaction that refuses if the live state changed since the preview (STATE_CHANGED),
+// writes every op (version + 1, updatedBy 'p2-restore'), the project-doc patch, one
+// 'project_restore' activity event and the record workspaces/main/restores/<pid>_<hash>;
+// then verify. Never deletes; never writes access fields, schemaVersion or another project.
+// The pure plan lives in scripts/lib/restore-plan.mjs (Rulings P4b-1..17).
 //
 // Usage:
 //   node scripts/p2-restore.mjs <pid> --backup <file.json> [--allow-history-loss] [--key service-account.json]
-//   (apply, Task 4:  ... --apply --expect <plan hash>)
-// Exit codes: 0 restore plan or nothing to restore; 1 usage / blocked / unreadable backup;
+//   node scripts/p2-restore.mjs <pid> --backup <file.json> [--allow-history-loss] --apply --expect <plan hash>
+// Exit codes: 0 restored or nothing to restore; 1 usage / blocked / unreadable backup /
+// PLAN_CHANGED / STATE_CHANGED; 2 verify mismatch after commit (no automatic undo);
 // 3 refused because history would be lost and --allow-history-loss was not given.
-// Output (gitignored, contains people data): p2-restore-preview-<pid>.xlsx.
+// Outputs (gitignored, contain people data): p2-restore-preview-<pid>.xlsx and, on apply,
+// p2-restore-before-<pid>-<stamp>.json (the snapshot; restorable with --backup).
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { toJsonable } from './lib/manifest.mjs';
-import { RECORD_PATH, SUBCOLS } from './lib/migrate-plan.mjs';
-import { readBackupProject } from './lib/restore-target.mjs';
-import { planRestore } from './lib/restore-plan.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { toJsonable, revive } from './lib/manifest.mjs';
+import { RECORD_PATH, SUBCOLS, ACTIVITY_SUBCOL } from './lib/migrate-plan.mjs';
+import { readBackupProject, TASK_DROPPED, ACTION_CANCELLED } from './lib/restore-target.mjs';
+import {
+  planRestore, liveFingerprint, expectedAfter, buildSnapshot, RESTORE_STAMP, RESTORES_PATH, restoreIdOf, MAX_TX_OPS,
+} from './lib/restore-plan.mjs';
 import { readDirectory, openDb, nameLookup, writePreviewXlsx } from './p2-migrate.mjs';
 
 const WS = 'workspaces/main';
@@ -182,14 +192,158 @@ export function restorePreviewSheets(prep, { pid, nameOfUid = (u) => u } = {}) {
   return { Summary, Ops, Retained, 'History loss': HistoryLoss, Changes };
 }
 
+// ---------------------------------------------------------------- apply (Task 4)
+
+const fail = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
+// Plain JSON for comparison: undefined dropped; updatedAt (server time) ignored.
+const noUpdatedAt = (o) => {
+  const out = JSON.parse(JSON.stringify(o ?? {}));
+  delete out.updatedAt;
+  return out;
+};
+
+// Pure. actual / expected = { meta, docs: { kind: [{ id, data }] } } (JSON). -> string[].
+export function diffRestore(actual, expected) {
+  const diffs = [];
+  const am = noUpdatedAt(actual?.meta);
+  const em = noUpdatedAt(expected?.meta);
+  for (const k of [...new Set([...Object.keys(am), ...Object.keys(em)])].sort()) {
+    if (!isDeepStrictEqual(am[k], em[k])) diffs.push(`meta.${k}`);
+  }
+  for (const kind of SUBCOLS) {
+    const a = new Map(arr(actual?.docs?.[kind]).map((d) => [d.id, noUpdatedAt(d.data)]));
+    const e = new Map(arr(expected?.docs?.[kind]).map((d) => [d.id, noUpdatedAt(d.data)]));
+    for (const [id, data] of e) {
+      if (!a.has(id)) diffs.push(`${kind}/${id} (missing)`);
+      else if (!isDeepStrictEqual(a.get(id), data)) diffs.push(`${kind}/${id}`);
+    }
+    for (const id of a.keys()) if (!e.has(id)) diffs.push(`${kind}/${id} (unexpected)`);
+  }
+  return diffs;
+}
+
+// Re-reads the project and compares with expectedAfter (updatedAt ignored on both sides).
+export async function verifyRestore(db, pid, expected, Timestamp = null) {
+  const { live } = await readLive(db, pid, null, Timestamp);
+  if (!live) return { ok: false, diffs: ['project doc is gone'] };
+  const diffs = diffRestore(live, expected);
+  return { ok: diffs.length === 0, diffs };
+}
+
+// -> 0 ok / noop; 1 usage, BLOCKED, PLAN_CHANGED, STATE_CHANGED; 2 verify mismatch;
+// 3 HISTORY_LOSS (refused without --allow-history-loss). r = applyRestore result or Error.
+export function restoreExitCode(r) {
+  if (r instanceof Error) return r.code === 'HISTORY_LOSS' ? 3 : 1;
+  return r?.verify && !r.verify.ok ? 2 : 0;
+}
+
+function restoreCounts(plan) {
+  const r = plan.report;
+  return {
+    create: plan.ops.filter((o) => o.op === 'create').length,
+    update: plan.ops.filter((o) => o.op === 'update').length,
+    retained: r.retained.length,
+    droppedTasks: r.retained.filter((x) => x.kind === 'task' && x.newStatus === TASK_DROPPED).length,
+    cancelledActions: r.retained.filter((x) => x.kind === 'action' && x.newStatus === ACTION_CANCELLED).length,
+    historyLost: r.historyLost.reduce((s, h) => s + h.entries.length, 0),
+  };
+}
+
+// Order (Rulings P4b-8..12): prepare -> BLOCKED / HISTORY_LOSS -> noop returns without
+// writing -> expectHash (PLAN_CHANGED) -> writeSnapshot -> hooks.beforeTx -> ONE transaction:
+// re-read, same live fingerprint as the preview (else STATE_CHANGED) -> every op with
+// version + 1 (create: 1) and updatedBy RESTORE_STAMP, the project-doc patch, the activity
+// event (tx.create: a duplicate never overwrites) and the restore record -> verify.
+// Errors before the snapshot leave nothing anywhere; an error in the transaction leaves
+// Firestore untouched and is marked snapshotVoid. writeSnapshot(obj) may return the file
+// path; its basename goes into the record.
+export async function applyRestore(db, {
+  pid, backup, backupName, backupSha256, allowHistoryLoss = false, expectHash, FieldValue, Timestamp,
+  writeSnapshot, now = new Date(), hooks = {},
+}) {
+  const prep = await prepareRestore(db, { pid, backup, backupName, backupSha256, allowHistoryLoss, Timestamp });
+  if (prep.mode === 'blocked') {
+    throw fail('BLOCKED', `Blocked: ${prep.blocked.map((b) => `${b.code} (${b.detail})`).join('; ')}. Nothing was written.`, { blocked: prep.blocked });
+  }
+  if (prep.refused) {
+    throw fail('HISTORY_LOSS', 'Refused: this restore would delete history entries (see the preview). Re-run the preview with --allow-history-loss only after HOD approves the loss. Nothing was written.', { historyLost: prep.report.historyLost });
+  }
+  if (prep.mode === 'noop') return { mode: 'noop', restoreId: null, written: 0, counts: null, verify: { ok: true, diffs: [] } };
+  if (expectHash !== prep.planHash) {
+    throw fail('PLAN_CHANGED', `Plan changed since the approved preview (expected ${expectHash}, now ${prep.planHash}). Re-run the preview and get it approved. Nothing was written.`, { planHash: prep.planHash });
+  }
+  const writes = prep.ops.length + (prep.metaPatch ? 1 : 0) + 2;
+  if (writes > MAX_TX_OPS) {
+    throw fail('BLOCKED', `Blocked: too-many-ops (${writes} > ${MAX_TX_OPS}). Nothing was written.`, { blocked: [{ code: 'too-many-ops', detail: String(writes) }] });
+  }
+  const dotted = Object.keys(prep.metaPatch || {}).filter((k) => k.includes('.'));
+  if (dotted.length) {
+    throw fail('BLOCKED', `Blocked: project field(s) with "." cannot be patched: ${dotted.join(', ')}. Nothing was written.`, { blocked: [{ code: 'dotted-field', detail: dotted.join(', ') }] });
+  }
+
+  const restoreId = restoreIdOf(pid, prep.planHash);
+  const counts = restoreCounts(prep);
+  const snapshot = buildSnapshot(prep.live, prep, { pid, backupName, backupSha256, createdAt: now.toISOString() });
+  const snapPath = await writeSnapshot(snapshot);
+  const snapshotFile = typeof snapPath === 'string' ? path.basename(snapPath) : null;
+  if (hooks.beforeTx) await hooks.beforeTx();
+
+  const base = `${PROJECTS}/${pid}`;
+  const eventId = `restore_${prep.planHash}`;
+  try {
+    await db.runTransaction(async (tx) => {
+      const { live } = await readLive(db, pid, tx, Timestamp);
+      if (!live || liveFingerprint(live) !== prep.fingerprint) {
+        throw fail('STATE_CHANGED', `The project changed since the preview (${live ? 'live fingerprint differs' : 'project doc is gone'}). Nothing was written; re-run the preview.`);
+      }
+      const ts = FieldValue.serverTimestamp();
+      for (const op of prep.ops) {
+        const version = op.op === 'create' ? 1 : op.expectVersion + 1;
+        tx.set(db.doc(`${base}/${op.kind}/${op.id}`), { ...revive(op.data, Timestamp), version, updatedBy: RESTORE_STAMP, updatedAt: ts });
+      }
+      if (prep.metaPatch) tx.update(db.doc(base), { ...revive(prep.metaPatch, Timestamp), updatedAt: ts });
+      tx.create(db.doc(`${base}/${ACTIVITY_SUBCOL}/${eventId}`), {
+        id: eventId,
+        type: 'project_restore',
+        description: `Restored from backup ${backupName} (sha ${String(backupSha256 || '').slice(0, 12)}) by Admin script`,
+        author: RESTORE_STAMP,
+        authorName: 'Restore (Admin script)',
+        authorUid: null,
+        timestamp: now.toISOString(),
+        createdAt: ts,
+        projectId: pid,
+        workspaceId: 'main',
+        restoreId,
+      });
+      tx.set(db.doc(RESTORES_PATH(restoreId)), {
+        pid,
+        planHash: prep.planHash,
+        fingerprint: prep.fingerprint,
+        backupFile: backupName ?? null,
+        backupSha256: backupSha256 ?? null,
+        snapshotFile,
+        allowHistoryLoss: !!allowHistoryLoss,
+        counts,
+        at: ts,
+        by: RESTORE_STAMP,
+      });
+    });
+  } catch (e) {
+    // Nothing committed: the snapshot file describes a restore that never happened.
+    e.snapshotVoid = true;
+    throw e;
+  }
+  const verify = await verifyRestore(db, pid, expectedAfter(prep.live, prep), Timestamp);
+  return { mode: 'restore', restoreId, written: writes, counts, verify };
+}
+
 // ---------------------------------------------------------------- CLI
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.error) { console.error(o.error); console.error(USAGE); process.exit(1); }
-  if (o.apply) { console.error('--apply is not available yet (P2.4b Task 4). Run the preview without --apply.'); process.exit(1); }
   // Key check first: nothing below touches Firestore without it.
-  const { db, Timestamp } = await openDb(o.key);
+  const { db, FieldValue, Timestamp } = await openDb(o.key);
   if (!fs.existsSync(o.backup)) { console.error(`Backup file not found: ${o.backup}`); process.exit(1); }
   const bytes = fs.readFileSync(o.backup);
   const backupSha256 = createHash('sha256').update(bytes).digest('hex');
@@ -202,8 +356,43 @@ async function main() {
   const xlsxPath = `p2-restore-preview-${o.pid}.xlsx`;
   writePreviewXlsx(xlsxPath, restorePreviewSheets(prep, { pid: o.pid, nameOfUid }));
   console.log(`Preview:     ${xlsxPath}`);
-  console.log('Dry run: Firestore untouched.');
-  process.exit(prep.mode === 'blocked' ? 1 : prep.refused ? 3 : 0);
+  const previewExit = prep.mode === 'blocked' ? 1 : prep.refused ? 3 : 0;
+  if (!o.apply || previewExit !== 0 || prep.mode === 'noop') {
+    console.log(o.apply && previewExit !== 0 ? 'Refusing to apply (see above). Nothing was written.' : 'Dry run: Firestore untouched.');
+    process.exit(previewExit);
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotPath = `p2-restore-before-${o.pid}-${stamp}.json`;
+  let r;
+  try {
+    r = await applyRestore(db, {
+      pid: o.pid, backup, backupName, backupSha256, allowHistoryLoss: o.allowHistoryLoss, expectHash: o.expect,
+      FieldValue, Timestamp,
+      writeSnapshot: (obj) => {
+        fs.writeFileSync(snapshotPath, JSON.stringify(obj, null, 2));
+        console.log(`Snapshot:    ${snapshotPath}`);
+        return snapshotPath;
+      },
+    });
+  } catch (e) {
+    console.error(`${e.code ? `[${e.code}] ` : ''}${e.message || e}`);
+    if (e.snapshotVoid) console.error(`Snapshot ${snapshotPath} is VOID: the transaction did not commit, nothing was restored.`);
+    process.exit(restoreExitCode(e));
+  }
+  if (r.mode === 'noop') {
+    console.log('Nothing to restore (noop). Nothing was written.');
+    process.exit(0);
+  }
+  console.log(`Restored:    create ${r.counts.create}, update ${r.counts.update} (record ${RESTORES_PATH(r.restoreId)})`);
+  console.log(`Verify:      ${r.verify.ok ? 'OK' : 'MISMATCH'}`);
+  for (const d of r.verify.diffs.slice(0, 30)) console.log(`  differs: ${d}`);
+  if (r.verify.diffs.length > 30) console.log(`  ... ${r.verify.diffs.length - 30} more`);
+  const code = restoreExitCode(r);
+  if (code === 2) {
+    console.error(`Verification mismatch. No automatic undo (as Ruling P4-14): check the docs above; to reverse, preview a restore with --backup ${snapshotPath}.`);
+  }
+  process.exit(code);
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

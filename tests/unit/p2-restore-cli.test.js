@@ -154,6 +154,6 @@ describe('formatRestorePreview', () => {
     actual.meta.name = 'other';
     const diffs = diffRestore(actual, exp);
     expect(diffs).toEqual(expect.arrayContaining(['meta.name', 'workstreams/w1', 'decisions/dX (unexpected)']));
-    expect(diffs.some((d) => /^actions/.* (missing)$/.test(d))).toBe(true);
+    expect(diffs.some((d) => d.startsWith('actions/') && d.endsWith(' (missing)'))).toBe(true);
   });
 });
