@@ -107,7 +107,7 @@ export function CloseControl({ task, roles, onUpdate, dialogs }) {
           <Chip status={status}>{LABEL[status] || status}</Chip>
         </div>
       )}
-      {kind === 'open' && me.readOnly && <Chip status={status}>{LABEL[status] || status}</Chip>}
+      {kind === 'open' && (me.readOnly || !buttons.length) && <Chip status={status}>{LABEL[status] || status}</Chip>}
       {buttons.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {buttons.filter((b) => b !== 'reassign').map((b) => (

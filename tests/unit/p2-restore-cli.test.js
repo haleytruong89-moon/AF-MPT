@@ -80,6 +80,21 @@ describe('formatRestorePreview', () => {
     expect(L.join('\n')).not.toMatch(/REFUSED/);
   });
 
+  it('CLI-2b: pending approvals are listed with resolve-or-withdraw advice (P3.1 I2)', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    Object.assign(live.docs.tasks.find((d) => d.id === 't1').data, {
+      status: 'Submitted', closeRequest: { id: 'cr1', outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1' },
+    });
+    const p = plan(live, b);
+    const L = formatRestorePreview(prepOf(p, live), { pid: PID });
+    const i = L.findIndex((l) => l.startsWith('PENDING APPROVALS: 1 Submitted task(s) - resolve or withdraw before restoring'));
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(L[i + 1]).toMatch(/^  t1 .*Completed requested by uid2, approver uid1/);
+    const none = formatRestorePreview(prepOf(plan(makeLive(), b), makeLive()), { pid: PID });
+    expect(none.some((l) => /^Pending approvals: none/.test(l))).toBe(true);
+  });
+
   it('CLI-3: refused history loss prints REFUSED (exit 3) and the lost entry ids, no apply hash', () => {
     const live = makeLive();
     const b = backupOf(live);

@@ -85,6 +85,41 @@ describe('buildRestoreTarget', () => {
     ]);
   });
 
+  it('T-9: a live Submitted task absent from the backup is Dropped with its request withdrawn (P3.1 I2)', () => {
+    const live = liveTree();
+    const backup = structuredClone(live);
+    const cr = { id: 'cr1', outcome: 'Completed', requestedByUid: 'uA', requestedBy: 'A', approverUid: 'uL', submittedAt: '2026-11-01T00:00:00.000Z', prevStatus: 'InProgress', note: null };
+    const old = { id: 'crh0', status: 'Rejected', decidedByUid: 'uL' };
+    ws(live, 'w2').tasks.push({ id: 't9', name: 'Pending', status: 'Submitted', closeRequest: cr, closeRequestHistory: [old] });
+    const r = buildRestoreTarget(backup, live, { pid: PID });
+    expect(r.blocked).toEqual([]);
+    const t = ws(r.tree, 'w2').tasks.at(-1);
+    expect(t.status).toBe('Dropped');
+    expect(t.closeRequest).toBeNull();
+    expect(t.closeRequestHistory).toHaveLength(2);
+    expect(t.closeRequestHistory[1]).toEqual(old);
+    expect(t.closeRequestHistory[0]).toEqual({
+      id: 'crh_restore_t9', outcome: 'Completed', requestedByUid: 'uA', approverUid: 'uL',
+      status: 'Withdrawn', decidedByUid: 'p2-restore', decidedBy: 'p2-restore', decidedAt: null, reason: 'restore',
+      before: { status: 'Submitted' }, after: { status: 'Dropped' },
+    });
+    expect(r.retained.at(-1)).toMatchObject({ id: 't9', liveStatus: 'Submitted', newStatus: 'Dropped' });
+    // live input untouched
+    expect(ws(live, 'w2').tasks.at(-1).closeRequest).toEqual(cr);
+  });
+
+  it('T-10: a retained Submitted task without history gets a one-entry history; non-Submitted tasks are not touched', () => {
+    const live = liveTree();
+    const backup = structuredClone(live);
+    ws(live, 'w2').tasks.push({ id: 't9', name: 'P', status: 'Submitted', closeRequest: { outcome: 'Dropped', requestedByUid: 'uA', approverUid: 'uL' } });
+    ws(live, 'w2').tasks.push({ id: 't8', name: 'Q', status: 'InProgress' });
+    const r = buildRestoreTarget(backup, live, { pid: PID });
+    const tasks = ws(r.tree, 'w2').tasks;
+    expect(tasks.at(-2).closeRequestHistory.map((e) => e.status)).toEqual(['Withdrawn']);
+    expect(tasks.at(-2).closeRequestHistory[0].after).toEqual({ status: 'Dropped' });
+    expect(tasks.at(-1)).toEqual({ id: 't8', name: 'Q', status: 'Dropped' });
+  });
+
   it('T-8: a target that does not survive split/assemble blocks round-trip', () => {
     const live = liveTree();
     const backup = structuredClone(live);

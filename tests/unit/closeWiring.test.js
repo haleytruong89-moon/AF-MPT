@@ -210,8 +210,17 @@ describe('closeControlModel', () => {
   it('a contributor-manager submits (P3-C2)', () => {
     expect(closeControlModel({ task: task('tC', 'Planned'), roles: R, me: me('L') }).buttons).toContain('submit-done');
   });
-  it('no Submit buttons for someone who can neither close nor submit (not PIC, not a manager)', () => {
-    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: R, me: me('X') }).buttons).toEqual(['Planned', 'InProgress']);
+  it('no buttons at all for someone who is not the PIC, not a manager and not the Owner (P3.1 M8)', () => {
+    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: R, me: me('X') }).buttons).toEqual([]);
+    expect(closeControlModel({ task: task('tA', 'Planned'), roles: R, me: me('X') }).buttons).toEqual([]);
+    // A plain contributor (not PIC, not a manager) cannot change the status either.
+    const RC = mkRoles({ tasks: { tA: info('A', { contributorUids: ['Z'] }) } });
+    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: RC, me: me('Z') }).buttons).toEqual([]);
+    // No roles (failed read): no buttons.
+    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: null, me: me('A') }).buttons).toEqual([]);
+    // The Owner still gets the direct buttons.
+    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: R, me: me('O') }).buttons)
+      .toEqual(['Planned', 'InProgress', 'Completed', 'Dropped']);
   });
   it('Submitted: requester Withdraw; approver Approve/Reject; PM Approve/Reject/Reassign', () => {
     const a = closeControlModel({ task: sub, roles: R, me: me('A') });

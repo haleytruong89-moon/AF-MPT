@@ -16,7 +16,8 @@
 //     that differ from loaded, so a stale tab never clears pmUid / deputyUid set
 //     by another writer (programMetaPatch).
 //   - refused: 'task-delete' (tasks are never deleted, CLAUDE.md), 'history-wipe'
-//     (a non-empty updates list would become empty; guards the ActionForm bug) or
+//     (a non-empty updates list would become empty; guards the ActionForm bug),
+//     'close-history-wipe' (wipesCloseHistory: approval history / close stamps removed) or
 //     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
 //     value changed or was set on a new doc, so its uid cannot be resolved).
 //     A refused plan has no batches and no metaPatch.
@@ -241,6 +242,20 @@ export function overlay(kind, stored, data) {
   return out;
 }
 
+// P3.1 final review I2: approval history feeds performance scoring. A task update
+// must not shrink closeRequestHistory (missing = []) and must not remove a stored
+// approvedByUid / approvedAt / closedByUid while the task stays closed (any status
+// but Planned / InProgress). Reopen (closeFlow: open status + stamps cleared in the
+// same write) passes.
+const CLOSE_STAMPS = ['approvedByUid', 'approvedAt', 'closedByUid'];
+const REOPEN_STATUSES = ['Planned', 'InProgress'];
+const histLen = (d) => (Array.isArray(d?.closeRequestHistory) ? d.closeRequestHistory.length : 0);
+export function wipesCloseHistory(old, data) {
+  if (histLen(data) < histLen(old)) return true;
+  if (!['Completed', 'Dropped'].includes(old?.status) || REOPEN_STATUSES.includes(data?.status)) return false;
+  return CLOSE_STAMPS.some((k) => old[k] != null && data?.[k] == null);
+}
+
 const listOf = (m) => [...(m || new Map()).entries()].map(([id, e]) => ({ id, data: e.data }));
 const versionOf = (e) => (typeof e.version === 'number' ? e.version : e.data?.version);
 
@@ -361,6 +376,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         && !(Array.isArray(data.updates) && data.updates.length)) {
         return none('history-wipe');
       }
+      if (kind === 'tasks' && wipesCloseHistory(old, data)) return none('close-history-wipe');
       const stamped = stampDoc(kind, old, data, uid);
       const v = versionOf(entry);
       steps(kind, old, stamped).forEach((d, i) => {

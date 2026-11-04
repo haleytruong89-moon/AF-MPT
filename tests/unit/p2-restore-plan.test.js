@@ -586,4 +586,33 @@ describe('planRestore', () => {
     expect(p.warnings.filter((w) => w.code === 'resolution-kept')).toEqual([{ code: 'resolution-kept', detail: 'tasks/t2: b2, b1' }]);
     expect(p.ops).toEqual([]);
   });
+
+  it('P-28: live Submitted tasks are listed in report.pending with a pending-approvals warning (P3.1 I2)', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    const t1 = doc(live, 'tasks', 't1');
+    Object.assign(t1, { status: 'Submitted', closeRequest: { id: 'cr1', outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1', submittedAt: '2026-11-01T00:00:00.000Z', prevStatus: 'InProgress' } });
+    live.docs.tasks.push({ id: 't9', data: {
+      id: 't9', name: 'Late', status: 'Submitted', updates: [], workspaceId: 'main', projectId: PID, programId: 'pg1', workstreamId: 'w2', order: 0,
+      picUid: null, picEmail: null, contributorUids: [], version: 2,
+      closeRequest: { id: 'cr9', outcome: 'Dropped', requestedByUid: 'uid1', approverUid: 'uid2' },
+    } });
+    const p = plan(live, b);
+    expect(p.report.pending).toEqual([
+      { id: 't1', name: t1.name, outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1', retained: false },
+      { id: 't9', name: 'Late', outcome: 'Dropped', requestedByUid: 'uid1', approverUid: 'uid2', retained: true },
+    ]);
+    expect(p.warnings).toContainEqual({ code: 'pending-approvals', detail: '2 Submitted task(s) (t1, t9): resolve or withdraw before restoring' });
+    // The retained one is written Dropped with its request withdrawn.
+    const op = p.ops.find((o) => o.id === 't9');
+    expect(op.data).toMatchObject({ status: 'Dropped', closeRequest: null });
+    expect(op.data.closeRequestHistory[0]).toMatchObject({ status: 'Withdrawn', decidedByUid: 'p2-restore', reason: 'restore' });
+  });
+
+  it('P-29: no Submitted task -> report.pending [] and no pending-approvals warning', () => {
+    const live = makeLive();
+    const p = plan(live, backupOf(live));
+    expect(p.report.pending).toEqual([]);
+    expect(codes(p.warnings)).not.toContain('pending-approvals');
+  });
 });

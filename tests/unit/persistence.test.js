@@ -128,18 +128,29 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: [] });
+    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [], history: [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] });
   });
   it('lists readonly (v2 pilot) projects separately', () => {
     expect(bannerGroups({
       a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [] });
+    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [], history: [] });
   });
   it('lists denied and refused (P2.3 v2 saves) separately', () => {
     expect(bannerGroups({
       a: { status: 'denied', name: 'Pilot' }, b: { status: 'refused', name: 'KR' }, c: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'] });
+    })).toEqual({ conflict: [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'], history: [] });
+  });
+  it('lists history (close-history-wipe refusals, P3.1 I2) separately from other refusals', () => {
+    expect(bannerGroups({
+      a: { status: 'history', name: 'KR' }, b: { status: 'refused', name: 'Ops' },
+    })).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: ['Ops'], history: ['KR'] });
+  });
+  it('history is per attempt: a later ok clears it', () => {
+    let s = nextSaveState({}, 'p1', 'history', 'KR');
+    expect(s.p1.status).toBe('history');
+    s = nextSaveState(s, 'p1', 'ok', 'KR');
+    expect(s).toEqual({});
   });
 });
 

@@ -181,7 +181,7 @@ function resolutionKept(old, fin) {
 
 const emptyReport = () => ({
   perKind: Object.fromEntries(SUBCOLS.map((k) => [k, { create: 0, update: 0, unchanged: 0, retained: 0 }])),
-  retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
+  retained: [], pending: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
   access: null, backupMemberIdsDiff: null, idMap: [], removedNulls: [], backupActivityCount: 0,
 });
 
@@ -251,6 +251,23 @@ export function planRestore({
   report.idMap = target.idMap;
   report.removedNulls = target.removedNulls;
   for (const r of target.retained) if (RETAINED_KIND[r.kind]) report.perKind[RETAINED_KIND[r.kind]].retained++;
+  // P3.1 final review I2 (P2.4b carry a): pending close requests on the live project.
+  // A restore can overwrite them (task in the backup) or withdraw them (retained as
+  // Dropped), so HOD resolves or withdraws them first.
+  const retainedTaskIds = new Set(target.retained.filter((r) => r.kind === 'task').map((r) => r.id));
+  report.pending = liveDocs.tasks
+    .filter((d) => d.data?.status === 'Submitted')
+    .map((d) => {
+      const cr = isObj(d.data.closeRequest) ? d.data.closeRequest : {};
+      return {
+        id: d.id, name: d.data.name ?? null, outcome: cr.outcome ?? null,
+        requestedByUid: cr.requestedByUid ?? null, approverUid: cr.approverUid ?? null, retained: retainedTaskIds.has(d.id),
+      };
+    })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  if (report.pending.length) {
+    warn('pending-approvals', `${report.pending.length} Submitted task(s) (${report.pending.map((x) => x.id).join(', ')}): resolve or withdraw before restoring`);
+  }
   if (backupProject.name !== lm.name) warn('name-differs', `backup "${backupProject.name}" vs live "${lm.name}"`);
   if (target.idMap.length) warn('ids-generated', target.idMap.length);
   if (target.removedNulls.length) warn('nulls-removed', target.removedNulls.length);

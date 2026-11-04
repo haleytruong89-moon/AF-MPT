@@ -66,8 +66,9 @@ export function failedRestores(results) {
 // Banner wording per failure kind (a mixed state must not call an error a conflict).
 // P2.3: 'denied' (rules refused part of a v2 save) and 'refused' (the planner refused
 // a task delete / history wipe) are per attempt: nextSaveState lets a later 'ok' clear them.
+// P3.1 I2: 'history' = the planner refused a close-history wipe (own banner copy).
 export function bannerGroups(saveState) {
-  const out = { conflict: [], error: [], readonly: [], denied: [], refused: [] };
+  const out = { conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] };
   for (const v of Object.values(saveState || {})) {
     (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }

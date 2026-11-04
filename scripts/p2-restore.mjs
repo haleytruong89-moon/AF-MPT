@@ -144,6 +144,14 @@ export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
   for (const x of r.retained) {
     L.push(`  ${x.id} ${x.kind} ${show(x.name)}: ${x.liveStatus ?? '-'} -> ${x.newStatus ?? 'unchanged'}${x.liveStatus === 'Completed' && x.kind === 'task' ? ' (was Completed)' : ''}`);
   }
+  // P3.1 I2: live close requests still waiting for a decision.
+  const pending = arr(r.pending);
+  if (pending.length) {
+    L.push(`PENDING APPROVALS: ${pending.length} Submitted task(s) - resolve or withdraw before restoring:`);
+    for (const x of pending) {
+      L.push(`  ${x.id} ${show(x.name)}: ${x.outcome ?? '-'} requested by ${x.requestedByUid ?? '-'}, approver ${x.approverUid ?? '-'}${x.retained ? ' (absent from the backup: withdrawn and set to Dropped)' : ''}`);
+    }
+  } else L.push('Pending approvals: none');
   if (r.kept.length) L.push(`Kept (no counterpart, not deleted): ${r.kept.map((k) => `${k.kind}/${k.id}`).join(', ')}`);
   if (r.creditLoss.length) {
     L.push(`CREDIT LOSS: ${r.creditLoss.length} task(s) leave Completed (their Completed credit is removed):`);

@@ -122,7 +122,7 @@ export function replaceTask(project, taskId, task) {
 /**
  * What CloseControl shows. buttons: ids in display order —
  * open: 'Planned', 'InProgress', then 'Completed' + 'Dropped' (direct) or
- * 'submit-done' + 'submit-dropped' (only when canSubmit); Submitted: 'withdraw' (requester),
+ * 'submit-done' + 'submit-dropped' (only when canSubmit), none for anyone else; Submitted: 'withdraw' (requester),
  * 'approve' + 'reject' (canDecideClose), 'reassign' (Owner or PM/Deputy, not the
  * requester, with an active eligible target); closed: 'reopen' (managers).
  * readOnly: no buttons.
@@ -138,7 +138,8 @@ export function closeControlModel({ task, roles, me, readOnly = false, isActive 
   if (kind === 'open') {
     if (canCloseDirectly(roles, task.id, uid)) out.buttons = ['Planned', 'InProgress', 'Completed', 'Dropped'];
     else if (canSubmit(roles, task.id, uid)) out.buttons = ['Planned', 'InProgress', 'submit-done', 'submit-dropped'];
-    else out.buttons = ['Planned', 'InProgress'];
+    // P3.1 M8: neither PIC, manager nor Owner (incl. a plain contributor): no buttons,
+    // the rules would deny any status change.
     return out;
   }
   if (kind === 'submitted') {

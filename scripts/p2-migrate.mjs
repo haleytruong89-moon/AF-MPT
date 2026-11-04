@@ -38,7 +38,7 @@ import { toJsonable } from './lib/manifest.mjs';
 import { directoryFrom } from './p2-pilot-copy.mjs';
 import { parseAssignmentsWorkbook, formatPreview } from './lib/assignments.mjs';
 import { normaliseForV2, stableJson } from './lib/migrate-normalise.mjs';
-import { countReport, detectV2Edits, inactiveMembers } from './lib/migrate-checks.mjs';
+import { countReport, detectV2Edits, inactiveMembers, ROLLBACK_SUBCOLS } from './lib/migrate-checks.mjs';
 import {
   planMigration, reconcileExisting, planActivityCopy,
   RECORD_PATH, SUBCOLS, ACTIVITY_SUBCOL, MIGRATE_STAMP, MAX_PROJECT_DOC_BYTES,
@@ -486,7 +486,7 @@ export function decideRollback({ pid, doc, record, docs = {}, activity = [], for
 
   const edits = detectV2Edits(record, {
     meta: doc,
-    docs: Object.fromEntries(SUBCOLS.map((k) => [k, stripDocs(docs[k])])),
+    docs: Object.fromEntries(ROLLBACK_SUBCOLS.map((k) => [k, stripDocs(docs[k])])),
     activity: stripDocs(activity),
   });
   const before = record.before || {};
@@ -498,7 +498,7 @@ export function decideRollback({ pid, doc, record, docs = {}, activity = [], for
   let lost = null;
   if (!edits.clean) {
     lost = {
-      docs: Object.fromEntries(SUBCOLS.map((k) => [k, Object.fromEntries((docs[k] || [])
+      docs: Object.fromEntries(ROLLBACK_SUBCOLS.map((k) => [k, Object.fromEntries((docs[k] || [])
         .filter((d) => editedKey.has(`${k}/${d.id}`)).map((d) => [d.id, d.data]))])),
       programMeta: edits.programMetaChanged ? { live: doc.programMeta ?? null, written: record.written?.programMeta ?? null } : null,
       newActivity: activity.filter((a) => newEvents.has(a.id)).map(({ id, data }) => ({ id, data })),
@@ -509,7 +509,7 @@ export function decideRollback({ pid, doc, record, docs = {}, activity = [], for
   // and therefore in the lost report.
   const deletes = [];
   const keep = [];
-  for (const k of SUBCOLS) {
+  for (const k of ROLLBACK_SUBCOLS) {
     const listed = new Set(Array.isArray(record.docIds?.[k]) ? record.docIds[k] : []);
     for (const d of docs[k] || []) {
       const ok = editedKey.has(`${k}/${d.id}`) ? force : listed.has(d.id);
@@ -563,7 +563,7 @@ export function formatRollbackPreview(prep, { pid } = {}) {
   L.push(`  ${'memberIds'.padEnd(14)} kept ${fmtVal(prep.memberIds != null, prep.memberIds)} (grants are not revoked)`);
   L.push(...editLines(prep.edits));
   if (prep.lost) {
-    const n = SUBCOLS.reduce((s, k) => s + Object.keys(prep.lost.docs[k]).length, 0);
+    const n = ROLLBACK_SUBCOLS.reduce((s, k) => s + Object.keys(prep.lost.docs[k]).length, 0);
     L.push(`Lost data:   ${n} edited/created doc(s), programMeta ${prep.lost.programMeta ? 'changed' : 'unchanged'}, ${prep.lost.newActivity.length} new event(s), ${prep.lost.deleted.length} deleted doc(s)`);
     L.push(prep.force
       ? '  --force-with-report: p2-rollback-lost-<pid>-<stamp>.json is written BEFORE any Firestore write'
@@ -591,7 +591,7 @@ async function readRollbackState(db, pid, tx = null) {
   const list = async (path) => (await get(db.collection(path))).docs
     .map((d) => ({ id: d.id, path: `${path}/${d.id}`, data: d.data(), updateTime: d.updateTime }));
   const docs = {};
-  for (const k of SUBCOLS) docs[k] = await list(`${PROJECTS}/${pid}/${k}`);
+  for (const k of ROLLBACK_SUBCOLS) docs[k] = await list(`${PROJECTS}/${pid}/${k}`);
   const activity = await list(`${PROJECTS}/${pid}/${ACTIVITY_SUBCOL}`);
   return { doc: ps.exists ? ps.data() : null, record: rs.exists ? rs.data() : null, docs, activity };
 }
@@ -668,7 +668,7 @@ export async function rollbackMigration(db, { pid, force = false, deleteDocs = f
     }
   }
   const after = await readRollbackState(db, pid);
-  const leftover = [...SUBCOLS.flatMap((k) => after.docs[k]), ...after.activity].map((d) => d.path);
+  const leftover = [...ROLLBACK_SUBCOLS.flatMap((k) => after.docs[k]), ...after.activity].map((d) => d.path);
   return { edits: prep.edits, flippedBack: true, deleted, leftover, lostReport: Boolean(prep.lost) };
 }
 

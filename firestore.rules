@@ -921,14 +921,19 @@ service cloud.firestore {
           : 'none');
     }
 
-    // Follow-up trim T1: the Owner check is the LAST alternative, so the
-    // common non-Owner writes never pay for it. An Owner write that fails or
-    // errors in a branch above (e.g. no members doc) still ends here
-    // (error || true is true).
+    // P3.1 final review I1: a cheap Owner test (uid in ownerUids; the
+    // workspace doc isWsOwner / eligibleWith read, one get) comes FIRST
+    // again. With the Owner check only last (trim T1), an Owner who is not
+    // PM read one workstream doc per distinct WS in the failing Sub-PM
+    // branch, so one transaction over ~16+ workstreams exceeded the 20
+    // access-call limit and was denied. The full isWsOwner (legacy
+    // workspaceOwner email) stays the last alternative: an Owner write that
+    // fails or errors in a branch above still ends there (error || true).
     function taskUpdateWith(wid, pid, ch, s0, s1, cl, rv) {
       return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && rv != 'bad'
         && closeStampOk(ch, s1) && (
-        taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
+        inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
+        || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
         || taskContributorUpdate(wid, ch, rv)
         || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
         || isWsOwner(wid)
@@ -952,7 +957,9 @@ service cloud.firestore {
           && taskWithinNewWs(wid, pid))
       );
 
-      // get(): up to 5 for everyone (the Owner check runs last, follow-up T1).
+      // get(): up to 5 (workspace doc first for the ownerUids test, I1;
+      // legacy-email Owner last). Per transaction: one WS doc per distinct
+      // WS only on Sub-PM writes and moves.
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 

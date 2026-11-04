@@ -56,3 +56,17 @@ export function transferCandidates(projects, teamMembers, currentOwner) {
   for (const m of teamMembers || []) add(m);
   return Array.from(byEmail.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
+
+/**
+ * P3.1 M9: the workspace ownerUids after a read. meta = the workspace doc data, or
+ * null when the read failed; last = the list from the last successful read. A failed
+ * read keeps the last known list (an Owner never loses Owner buttons / roles to a
+ * transient error); a successful read is authoritative ([] when unset).
+ * @param {Record<string, unknown> | null} meta
+ * @param {string[] | undefined} last
+ * @returns {string[]}
+ */
+export function ownerUidsAfterRead(meta, last) {
+  if (!meta) return Array.isArray(last) ? last : [];
+  return Array.isArray(meta.ownerUids) ? meta.ownerUids.filter((u) => typeof u === 'string') : [];
+}

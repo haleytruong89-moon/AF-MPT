@@ -630,3 +630,74 @@ describe('planV2Save blocker resolutions (append-only map)', () => {
     expect(op.data).not.toHaveProperty('blockerResolutions');
   });
 });
+
+describe('planV2Save close history protection (P3.1 final review I2)', () => {
+  const CLOSED = { approvedByUid: 'uidPM', approvedAt: '2026-11-01T00:00:00.000Z', closedByUid: 'uid1' };
+  const HIST = [
+    { id: 'crh2', status: 'Approved', decidedByUid: 'uidPM', decidedAt: '2026-11-01T00:00:00.000Z' },
+    { id: 'crh1', status: 'Rejected', decidedByUid: 'uidPM', decidedAt: '2026-10-30T00:00:00.000Z' },
+  ];
+  // Stored t1 (first task of the first WS) with the given fields; returns the tree task too.
+  function setup(fields) {
+    const loaded = makeLoaded();
+    const id = treeOf(loaded).programs[0].workstreams[0].tasks[0].id;
+    const entry = [...loaded.docs.tasks.values()].find((e) => e.data.id === id);
+    Object.assign(entry.data, fields);
+    const tree = treeOf(loaded);
+    return { loaded, tree, task: ws1(tree).tasks[0] };
+  }
+  const refused = { batches: [], metaPatch: null, refused: 'close-history-wipe' };
+
+  it('shrinking closeRequestHistory is refused (Owner too)', () => {
+    const { loaded, tree, task } = setup({ status: 'InProgress', closeRequestHistory: HIST });
+    task.closeRequestHistory = HIST.slice(1);
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+    expect(planV2Save(loaded, tree, ctx())).toEqual(refused);
+  });
+
+  it('dropping the closeRequestHistory field (import / restore of an older tree) is refused', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    delete task.closeRequestHistory;
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+  });
+
+  for (const k of ['approvedByUid', 'approvedAt', 'closedByUid']) {
+    for (const status of ['Completed', 'Dropped']) {
+      it(`removing ${k} from a task that stays ${status} is refused (absent or null)`, () => {
+        const a = setup({ status, closeRequestHistory: HIST, ...CLOSED });
+        delete a.task[k];
+        expect(planV2Save(a.loaded, a.tree, ctx({ isOwner: true }))).toEqual(refused);
+        const b = setup({ status, closeRequestHistory: HIST, ...CLOSED });
+        b.task[k] = null;
+        expect(planV2Save(b.loaded, b.tree, ctx({ isOwner: true }))).toEqual(refused);
+      });
+    }
+  }
+
+  it('Completed -> Dropped without the stamps is refused', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    task.status = 'Dropped';
+    task.approvedByUid = null;
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+  });
+
+  it('reopen (closeFlow: open status + stamps cleared, history kept) is planned', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    Object.assign(task, { status: 'InProgress', approvedByUid: null, approvedAt: null, closedByUid: null });
+    const r = planV2Save(loaded, tree, ctx());
+    expect(r.refused).toBe(null);
+    expect(allOps(r)).toHaveLength(1);
+    expect(allOps(r)[0].data).toMatchObject({ status: 'InProgress', approvedByUid: null, closeRequestHistory: HIST });
+  });
+
+  it('a decision (history grows by one) and an edit of a closed task that keeps the stamps are planned', () => {
+    const grow = setup({ status: 'Submitted', closeRequestHistory: HIST.slice(1) });
+    Object.assign(grow.task, { status: 'Completed', ...CLOSED, closeRequestHistory: HIST });
+    expect(planV2Save(grow.loaded, grow.tree, ctx()).refused).toBe(null);
+    const edit = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    edit.task.name = 'Renamed';
+    const r = planV2Save(edit.loaded, edit.tree, ctx({ isOwner: true }));
+    expect(r.refused).toBe(null);
+    expect(allOps(r)).toHaveLength(1);
+  });
+});

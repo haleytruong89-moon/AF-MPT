@@ -36,7 +36,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { metaForWrite, isWorkspaceOwnerEmail } from './ownership';
+import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
 import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loadApprovals, rolesFromLoaded } from './readV2';
 import { planV2Save } from './planV2Save';
@@ -137,10 +137,14 @@ async function isOwnerNow(user: UserProfile): Promise<boolean> {
     || isWorkspaceOwnerEmail(m.workspaceOwner, user.email);
 }
 
-/** P3: workspace ownerUids as last read (via wsMetaCache); [] when unset or unreadable. */
+/**
+ * P3: workspace ownerUids as last read (via wsMetaCache); [] when unset. P3.1 M9: a
+ * failed read keeps the last known list instead of [] (ownerUidsAfterRead).
+ */
+let lastOwnerUids: string[] = [];
 export async function ownerUidsNow(): Promise<string[]> {
-  const m = await wsMetaNow();
-  return m && Array.isArray(m.ownerUids) ? m.ownerUids.filter((u): u is string => typeof u === 'string') : [];
+  lastOwnerUids = ownerUidsAfterRead(await wsMetaNow(), lastOwnerUids);
+  return lastOwnerUids;
 }
 
 /**
@@ -228,7 +232,9 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   if (plan.refused) {
     console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
     // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
-    const error = plan.refused === 'directory-unavailable' ? 'error' : 'refused';
+    // P3.1 I2: a close-history wipe has its own banner copy ('history').
+    const error = plan.refused === 'directory-unavailable' ? 'error'
+      : plan.refused === 'close-history-wipe' ? 'history' : 'refused';
     return { key, value, shared: true, error, reason: plan.refused };
   }
   if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };

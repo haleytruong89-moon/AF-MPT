@@ -1537,13 +1537,13 @@ async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
 // Only for owner-field changes (transfer, workspace default view); see metaForWrite().
 async function saveMetaOwnerFields(m) { return ssetShared(K.meta, JSON.stringify({ ...m, [OWNER_WRITE_FLAG]: true })); }
 async function loadProject(id) { const r = await sgetShared(K.project(id)); if (!r) return null; try { return JSON.parse(r); } catch { return null; } }
-// Returns 'ok' | 'conflict' | 'readonly' | 'denied' | 'refused' | 'error' (B2/B3, P2.2, P2.3). Callers that ignore it keep working.
+// Returns 'ok' | 'conflict' | 'readonly' | 'denied' | 'refused' | 'history' | 'error' (B2/B3, P2.2, P2.3, P3.1). Callers that ignore it keep working.
 async function saveProject(p) {
   try {
     const r = await window.storage.set(K.project(p.id), JSON.stringify(p), true);
     if (!r) return 'error';
     if (!r.error) return 'ok';
-    return ['conflict', 'readonly', 'denied', 'refused'].includes(r.error) ? r.error : 'error';
+    return ['conflict', 'readonly', 'denied', 'refused', 'history'].includes(r.error) ? r.error : 'error';
   } catch { return 'error'; }
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
@@ -2014,8 +2014,8 @@ function FieldLabel({ children }) {
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
 function SaveBanner({ saveState }) {
-  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames } = bannerGroups(saveState);
-  if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length === 0) return null;
+  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
+  if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
   return (
     <div role="alert" style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 120, maxWidth: 'calc(100% - 40px)', background: TOK.blockerBg, color: TOK.blocker, border: '1px solid currentColor', borderRadius: 8, padding: '10px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
@@ -2025,6 +2025,7 @@ function SaveBanner({ saveState }) {
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
         {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (use Submit as done to close a task). Reload to continue — edits made after this are not saved either. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
+        {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>

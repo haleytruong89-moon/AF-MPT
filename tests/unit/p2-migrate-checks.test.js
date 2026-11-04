@@ -114,6 +114,14 @@ describe('detectV2Edits', () => {
     l4.meta.programMeta.pg1.pmUid = 'u';
     expect(detectV2Edits(record, l4).programMetaChanged).toBe(true);
   });
+  it('C-7b: any approvals doc (client-created, P3) is a v2 edit (P3.1 M6)', () => {
+    const live = mk();
+    live.docs.approvals = [{ id: 'r1', data: { version: 1, updatedBy: 'uidZ', kind: 'plan_import' } }];
+    const r = detectV2Edits(record, live);
+    expect(r.edited).toEqual([{ kind: 'approvals', id: 'r1', version: 1, updatedBy: 'uidZ' }]);
+    expect(r.clean).toBe(false);
+    expect(r.deleted).toEqual([]);
+  });
 });
 
 describe('precheck review fixes', () => {

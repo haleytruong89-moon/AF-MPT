@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   decideMigration, formatMigrationPreview, previewSheets, parseArgs, exitCodeFor, POST_FLIP_HASH,
-  decideRollback, rollbackExitCode,
+  decideRollback, rollbackExitCode, formatRollbackPreview,
 } from '../../scripts/p2-migrate.mjs';
 import { directoryFrom } from '../../scripts/p2-pilot-copy.mjs';
 
@@ -216,5 +216,29 @@ describe('p2-migrate pure core', () => {
     expect(decideRollback({ ...base, record: null }).blocked[0].code).toBe('NOT_MIGRATED');
     expect(decideRollback({ ...base, record: { ...record, status: 'rolled-back' } }).blocked[0].code).toBe('NOT_MIGRATED');
     expect(decideRollback({ ...base, doc: { ...doc, schemaVersion: undefined } }).blocked[0].code).toBe('NOT_SWITCHED');
+  });
+
+  it('decideRollback: approvals docs are v2 edits, in the lost report, deleted only when forced (P3.1 M6)', () => {
+    const programMeta = { pg1: { name: 'P' } };
+    const record = {
+      status: 'verified', before: {}, written: { programMeta },
+      docIds: { workstreams: [], tasks: ['t1'], actions: [], raid: [], decisions: [] }, history: [],
+    };
+    const doc = { schemaVersion: 2, programMeta, memberIds: ['uidZ'] };
+    const docs = {
+      workstreams: [], tasks: [{ id: 't1', path: 'x/tasks/t1', data: { version: 1, updatedBy: 'p2-migrate' } }], actions: [], raid: [], decisions: [],
+      approvals: [{ id: 'r1', path: 'x/approvals/r1', data: { version: 2, updatedBy: 'uidZ', kind: 'plan_import' } }],
+    };
+    const base = { pid: PID, doc, record, docs, activity: [], deleteDocs: true };
+    const refused = decideRollback({ ...base, force: false });
+    expect(refused.edits.edited).toEqual([{ kind: 'approvals', id: 'r1', version: 2, updatedBy: 'uidZ' }]);
+    expect(refused.refused).toBe(true);
+    expect(refused.deletes.map((x) => x.path)).toEqual(['x/tasks/t1']);
+    expect(refused.keep.map((x) => x.path)).toEqual(['x/approvals/r1']);
+    const forced = decideRollback({ ...base, force: true });
+    expect(forced.lost.docs.approvals).toEqual({ r1: docs.approvals[0].data });
+    expect(forced.deletes.map((x) => x.path)).toEqual(['x/tasks/t1', 'x/approvals/r1']);
+    expect(formatRollbackPreview(forced, { pid: PID }).join('\n')).toContain('edited approvals/r1');
+    expect(formatRollbackPreview(forced, { pid: PID }).join('\n')).toContain('Lost data:   1 edited/created doc(s)');
   });
 });

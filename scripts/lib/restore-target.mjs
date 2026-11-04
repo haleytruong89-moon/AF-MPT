@@ -46,6 +46,33 @@ export function readBackupProject(backup, pid) {
   return out;
 }
 
+// P3.1 final review I2: a retained live Submitted task (now Dropped) must not keep a
+// pending close request. The request is cleared and a 'Withdrawn' decision entry is
+// prepended to closeRequestHistory in the closeFlow histEntry shape, decided by
+// 'p2-restore' with reason 'restore'. decidedAt is null: the plan is hashed for HOD
+// approval, so it holds no clock value (the restore's activity event and restores/
+// record carry the time). The id is derived from the task id (deterministic).
+export const TASK_SUBMITTED = 'Submitted';
+const RESTORE_BY = 'p2-restore';
+function withdrawForRestore(t) {
+  const cr = isObj(t.closeRequest) ? t.closeRequest : {};
+  const entry = {
+    id: `crh_restore_${keyOf(t.id)}`,
+    outcome: cr.outcome ?? null,
+    requestedByUid: cr.requestedByUid ?? null,
+    approverUid: cr.approverUid ?? null,
+    status: 'Withdrawn',
+    decidedByUid: RESTORE_BY,
+    decidedBy: RESTORE_BY,
+    decidedAt: null,
+    reason: 'restore',
+    before: { status: TASK_SUBMITTED },
+    after: { status: t.status },
+  };
+  t.closeRequest = null;
+  t.closeRequestHistory = [entry, ...arr(t.closeRequestHistory)];
+}
+
 const nameOf = (item) => item.name ?? item.title ?? null;
 const statusOf = (item) => (item.status === undefined ? null : item.status);
 
@@ -118,6 +145,7 @@ export function buildRestoreTarget(backupProject, liveTree, { pid } = {}) {
         const t = structuredClone(lt);
         const newStatus = lt.status === TASK_DROPPED ? null : TASK_DROPPED;
         if (newStatus) t.status = newStatus;
+        if (lt.status === TASK_SUBMITTED) withdrawForRestore(t);
         pushTo(tw, 'tasks', t);
         if (keyOf(lt.id) !== null) index.task.add(keyOf(lt.id));
         keep('task', lt, newStatus, lw.id);
