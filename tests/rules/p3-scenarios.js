@@ -236,6 +236,11 @@ export const scenarios = [
 
 // Fixture docs (written with rules disabled through seedFn(path, data)).
 export async function seedScenario(seedFn, s) {
+  await seedBase(seedFn);
+  await seedFn(T, s.seed);
+}
+
+async function seedBase(seedFn) {
   await seedFn(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
   // The Owner has an active members doc too (as on production), so the
   // Owner scenario pays for the non-Owner branches it now passes first (T1).
@@ -248,12 +253,88 @@ export async function seedScenario(seedFn, s) {
     workspaceId: 'main', projectId: 'p1', programId: 'prg1', name: 'WS', order: 0,
     leadUid: LEAD.uid, start: '2026-01-01', end: '2026-12-31', version: 1,
   });
-  await seedFn(T, s.seed);
 }
 
 // The executor's write: full doc, version + 1, updatedBy, server updatedAt.
 export function writeScenario(db, s) {
   return setDoc(doc(db, T), {
     ...s.next, version: s.seed.version + 1, updatedBy: s.actor.uid, updatedAt: serverTimestamp(),
+  });
+}
+
+// ── P3 Task 4: approvals/{reqId} requests (realistic client payloads) ──
+// Shaped like src/approvalsStore.js (Task 11) writes them: create = the full
+// request doc; decide / withdraw / reassign = tx.set of the full doc with
+// version + 1, updatedBy and a server updatedAt. Used by v2-p3.test.js
+// (allow tests) and v2-p3-headroom.test.js (padded rules).
+const A = `${P1}/approvals/ra`;
+
+// A plan upload diff of 60 task edits.
+const planDiff = Array.from({ length: 60 }, (_, i) => ({
+  taskId: `t_${i}`, name: `Task ${i}`,
+  changes: { end: { from: '2026-10-31', to: '2026-11-15' }, pic: { from: 'asg', to: 'viewer' } },
+}));
+
+export const apprReq = (type, requester, approver, over = {}) => ({
+  workspaceId: 'main', projectId: 'p1', type,
+  scope: type === 'mitigation_done' ? { programId: 'prg1' } : { programId: 'prg1', workstreamId: 'w1' },
+  title: type === 'plan_import' ? 'Plan upload: WS (60 changes)' : 'Request',
+  payload: type === 'plan_import' ? { diff: planDiff, includeDrops: false }
+    : type === 'mitigation_done' ? { itemId: 'r_1', mitigationId: 'm_1', from: 'InProgress', to: 'Done' }
+      : { target: 'workstream', targetId: 'w1', from: '2026-12-31', to: '2027-01-31', reason: 'Audit slipped' },
+  requestedByUid: requester.uid, requestedBy: requester.email, approverUid: approver.uid,
+  status: 'Pending', createdAt: '2026-10-24T00:00:00Z',
+  decidedByUid: null, decidedAt: null, reason: null, reassignLog: [],
+  version: 1, updatedBy: requester.uid, updatedAt: '2026-10-24T00:00:00Z',
+  ...over,
+});
+
+const decided = (u, status, reason = null) => ({ status, decidedByUid: u.uid, decidedAt: serverTimestamp(), reason });
+
+// seed = stored request (null for a create); next = the written doc.
+export const approvalScenarios = [
+  {
+    name: 'appr LEAD creates plan_import (60-row diff)',
+    seed: null, actor: LEAD,
+    next: apprReq('plan_import', LEAD, OWNER, { createdAt: serverTimestamp() }),
+  },
+  {
+    name: 'appr ASG creates mitigation_done',
+    seed: null, actor: ASG,
+    next: apprReq('mitigation_done', ASG, PM, { createdAt: serverTimestamp() }),
+  },
+  {
+    name: 'appr OWNER approves plan_import',
+    seed: apprReq('plan_import', LEAD, OWNER), actor: OWNER,
+    next: { ...apprReq('plan_import', LEAD, OWNER), ...decided(OWNER, 'Approved') },
+  },
+  {
+    name: 'appr PM rejects mitigation_done (DEPUTY-addressed)',
+    seed: apprReq('mitigation_done', ASG, DEPUTY), actor: PM,
+    next: { ...apprReq('mitigation_done', ASG, DEPUTY), ...decided(PM, 'Rejected', 'Mitigation not evidenced') },
+  },
+  {
+    name: 'appr PM reassigns mitigation_done to LEAD (ws claim)',
+    seed: apprReq('mitigation_done', ASG, PM), actor: PM,
+    next: {
+      ...apprReq('mitigation_done', ASG, PM), approverUid: LEAD.uid,
+      reassignLog: [{ at: '2026-10-26T00:00:00Z', byUid: PM.uid, from: PM.uid, to: LEAD.uid, viaWorkstreamId: 'w1' }],
+    },
+  },
+  {
+    name: 'appr LEAD withdraws plan_import',
+    seed: apprReq('plan_import', LEAD, OWNER), actor: LEAD,
+    next: { ...apprReq('plan_import', LEAD, OWNER), status: 'Withdrawn', decidedByUid: LEAD.uid, decidedAt: serverTimestamp() },
+  },
+];
+
+export async function seedApprovalScenario(seedFn, s) {
+  await seedBase(seedFn);
+  if (s.seed) await seedFn(A, s.seed);
+}
+
+export function writeApprovalScenario(db, s) {
+  return setDoc(doc(db, A), {
+    ...s.next, version: s.seed ? s.seed.version + 1 : 1, updatedBy: s.actor.uid, updatedAt: serverTimestamp(),
   });
 }

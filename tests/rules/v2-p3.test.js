@@ -1,8 +1,11 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, deleteField } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteField, deleteDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
-import { scenarios, seedScenario, writeScenario } from './p3-scenarios.js';
+import {
+  scenarios, seedScenario, writeScenario,
+  approvalScenarios, seedApprovalScenario, writeApprovalScenario,
+} from './p3-scenarios.js';
 
 // P3 Task 2: task close transitions on a schemaVersion 2 project (Rulings
 // P3-1, P3-3, P3-4, P3-6, P3-7, P3-18, P3-20).
@@ -462,6 +465,233 @@ describe('P3 realistic payloads (full task doc, executor shape)', () => {
     it(`P3-R ${s.name}: allowed`, async () => {
       await seedScenario(seedDoc, s);
       await assertSucceeds(writeScenario(await as(s.actor), s));
+    });
+  }
+});
+
+// ── P3 Task 4: approvals/{reqId} (Rulings P3-2, P3-4, P3-9, P3-20, P3-C3) ──
+// plan_import / scope_deadline: requested by the PM of scope.programId or the
+// Sub-PM of scope.workstreamId, addressed to an Owner, decided by an Owner.
+// mitigation_done: requested by any project reader, addressed to the PM /
+// Deputy / an Owner (a Sub-PM of the program only by reassign, with a ws
+// claim), decided by the named approver, the PM / Deputy (requester neither)
+// or an Owner. Never the requester, except an Owner (P3-C3). Never deleted.
+describe('P3 approvals requests', () => {
+  const OWNER2 = { uid: 'u_owner2', email: 'owner2@smartosc.com' }; // second Owner (ownerUids only)
+  const APR = `${P1}/approvals/r1`;
+  const req = (type, requester, approver, over = {}) => ({
+    workspaceId: 'main', projectId: 'p1', type,
+    scope: type === 'mitigation_done' ? { programId: 'prg1' } : { programId: 'prg1', workstreamId: 'w1' },
+    title: 'Request', payload: { k: 1 },
+    requestedByUid: requester.uid, requestedBy: requester.email, approverUid: approver.uid,
+    status: 'Pending', createdAt: '2026-10-24T00:00:00Z',
+    decidedByUid: null, decidedAt: null, reason: null, reassignLog: [],
+    version: 1, updatedBy: requester.uid, ...over,
+  });
+  // Create as u (createdAt = server time unless the data overrides it).
+  const create = async (u, data, path = APR) =>
+    setDoc(doc(await as(u), path), { createdAt: serverTimestamp(), ...data, updatedBy: u.uid });
+  const decide = (u, status, reason) => up(u, APR, {
+    status, decidedByUid: u.uid, decidedAt: serverTimestamp(), ...(reason === undefined ? {} : { reason }),
+  });
+  const withdraw = (u) => up(u, APR, { status: 'Withdrawn', decidedByUid: u.uid, decidedAt: serverTimestamp() });
+  const logEntry = (u, from, to, extra = {}) => ({ at: '2026-10-26T00:00:00Z', byUid: u.uid, from: from.uid, to: to.uid, ...extra });
+  const reassign = (u, from, to, extra = {}) => up(u, APR, { approverUid: to.uid, reassignLog: [logEntry(u, from, to, extra)] });
+
+  beforeEach(async () => {
+    await resetData();
+    await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid, OWNER2.uid], workspaceOwner: OWNER.email });
+    for (const u of ALL.concat([OUTSIDER, OWNER])) {
+      await seedDoc(`${WS}/members/${u.uid}`, member(u.email));
+    }
+    await seedDoc(P1, project());
+    await seedDoc(`${P1}/workstreams/w1`, ws('p1', 'prg1', LEAD.uid));
+    await seedDoc(`${P1}/workstreams/w2`, ws('p1', 'prg1', VIEWER.uid)); // prg1, another lead
+    await seedDoc(`${P1}/workstreams/w3`, ws('p1', 'prg2', LEAD.uid)); // LEAD's ws in prg2
+  });
+  afterAll(cleanup);
+
+  it('P3-30 LEAD creates plan_import for w1 approver OWNER: allowed; for wx: denied; approver PM: denied', async () => {
+    await assertFails(create(LEAD, req('plan_import', LEAD, OWNER, { scope: { programId: 'prg1', workstreamId: 'w2' } })));
+    await assertFails(create(LEAD, req('plan_import', LEAD, OWNER, { scope: { programId: 'prg1', workstreamId: 'w3' } })));
+    await assertFails(create(LEAD, req('plan_import', LEAD, OWNER, { scope: { programId: 'prg1', workstreamId: 'nope' } })));
+    await assertFails(create(LEAD, req('plan_import', LEAD, PM)));
+    await assertFails(create(LEAD, req('plan_import', LEAD, LEAD)));
+    // Wrong path fields / version / stamp / requester / type: denied.
+    await assertFails(create(LEAD, req('plan_import', LEAD, OWNER, { projectId: 'p9' })));
+    await assertFails(create(LEAD, req('plan_import', LEAD, OWNER, { version: 2 })));
+    await assertFails(setDoc(doc(await as(LEAD), APR), {
+      ...req('plan_import', LEAD, OWNER), createdAt: serverTimestamp(), updatedBy: PM.uid,
+    }));
+    await assertFails(create(LEAD, req('plan_import', PM, OWNER)));
+    await assertFails(create(LEAD, req('task_close', LEAD, OWNER)));
+    await assertSucceeds(create(LEAD, req('plan_import', LEAD, OWNER)));
+    // LEAD's ws under its own program (prg2): allowed.
+    await assertSucceeds(create(LEAD, req('plan_import', LEAD, OWNER, { scope: { programId: 'prg2', workstreamId: 'w3' } }),
+      `${P1}/approvals/r2`));
+  });
+
+  it('P3-31 PM creates scope_deadline for prg1: allowed; ASG creates plan_import: denied', async () => {
+    await assertFails(create(ASG, req('plan_import', ASG, OWNER)));
+    await assertFails(create(ASG, req('scope_deadline', ASG, OWNER, { scope: { programId: 'prg1' } })));
+    await assertFails(create(PM2, req('scope_deadline', PM2, OWNER, { scope: { programId: 'prg1' } })));
+    // PM naming a ws of another program: denied.
+    await assertFails(create(PM, req('scope_deadline', PM, OWNER, { scope: { programId: 'prg1', workstreamId: 'w3' } })));
+    await assertSucceeds(create(PM, req('scope_deadline', PM, OWNER, { scope: { programId: 'prg1' } })));
+    await assertSucceeds(create(DEPUTY, req('scope_deadline', DEPUTY, OWNER, { scope: { programId: 'prg1', workstreamId: 'w2' } }),
+      `${P1}/approvals/r2`));
+  });
+
+  it('P3-32 ASG creates mitigation_done approver PM: allowed; OUTSIDER / status Approved / client createdAt: denied', async () => {
+    await assertFails(create(OUTSIDER, req('mitigation_done', OUTSIDER, PM)));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { status: 'Approved' })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { createdAt: '2026-10-24T00:00:00Z' })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { decidedByUid: ASG.uid })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { reassignLog: [{ byUid: ASG.uid }] })));
+    // Approver: the PM / Deputy of that program or an Owner; the program must exist.
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM2)));
+    await assertFails(create(ASG, req('mitigation_done', ASG, LEAD)));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { scope: { programId: 'prgX' } })));
+    await assertSucceeds(create(ASG, req('mitigation_done', ASG, PM)));
+    await assertSucceeds(create(ASG, req('mitigation_done', ASG, OWNER), `${P1}/approvals/r2`));
+  });
+
+  it('P3-32b a request on a v1 project: denied; same request on v2: allowed', async () => {
+    await seedDoc(P1, project({ schemaVersion: 1 }));
+    await assertFails(create(ASG, req('mitigation_done', ASG, DEPUTY)));
+    await seedDoc(P1, project());
+    await assertSucceeds(create(ASG, req('mitigation_done', ASG, DEPUTY)));
+  });
+
+  it('P3-33 OWNER approves plan_import: allowed; PM approves plan_import: denied', async () => {
+    await seedDoc(APR, req('plan_import', LEAD, OWNER));
+    await assertFails(decide(PM, 'Approved'));
+    await assertFails(decide(LEAD, 'Approved'));
+    await assertFails(decide(DEPUTY, 'Rejected', 'no'));
+    // Stamp = caller and server time.
+    await assertFails(up(OWNER, APR, { status: 'Approved', decidedByUid: PM.uid, decidedAt: serverTimestamp() }));
+    await assertFails(up(OWNER, APR, { status: 'Approved', decidedByUid: OWNER.uid, decidedAt: '2026-10-25T00:00:00Z' }));
+    // The payload cannot change in a decision.
+    await assertFails(up(OWNER, APR, { status: 'Approved', decidedByUid: OWNER.uid, decidedAt: serverTimestamp(), payload: { k: 2 } }));
+    await assertSucceeds(decide(OWNER, 'Approved'));
+    // A decided request is final.
+    await assertFails(up(OWNER, APR, { version: 3, status: 'Rejected', decidedByUid: OWNER.uid, decidedAt: serverTimestamp(), reason: 'x' }));
+  });
+
+  it("P3-34 PM approves ASG's mitigation_done: allowed; ASG own / LEAD: denied; LEAD as reassigned approver: allowed", async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, DEPUTY));
+    await assertFails(decide(ASG, 'Approved'));
+    await assertFails(decide(LEAD, 'Approved'));
+    await assertFails(decide(PM2, 'Approved'));
+    await assertSucceeds(decide(PM, 'Approved'));
+    // LEAD named as approver after a reassign.
+    await seedDoc(APR, req('mitigation_done', ASG, LEAD, { reassignLog: [logEntry(PM, PM, LEAD, { viaWorkstreamId: 'w1' })] }));
+    await assertSucceeds(decide(LEAD, 'Approved'));
+  });
+
+  it('P3-34b PM-requested mitigation_done: DEPUTY / PM denied, OWNER allowed; inactive approver denied', async () => {
+    await seedDoc(APR, req('mitigation_done', PM, OWNER));
+    await assertFails(decide(DEPUTY, 'Approved'));
+    await assertFails(decide(PM, 'Approved'));
+    await assertSucceeds(decide(OWNER, 'Approved'));
+    await seedDoc(APR, req('mitigation_done', ASG, LEAD));
+    await seedDoc(`${WS}/members/${LEAD.uid}`, member(LEAD.email, 'inactive'));
+    await assertFails(decide(LEAD, 'Approved'));
+    await assertSucceeds(decide(DEPUTY, 'Approved'));
+  });
+
+  it('P3-34c P3-C3: an Owner may decide their own request; others may not decide theirs', async () => {
+    await seedDoc(APR, req('mitigation_done', OWNER, PM));
+    await assertSucceeds(decide(OWNER, 'Approved'));
+    await seedDoc(APR, req('mitigation_done', DEPUTY, PM));
+    await assertFails(decide(DEPUTY, 'Approved'));
+    await assertSucceeds(decide(PM, 'Approved'));
+  });
+
+  it('P3-35 reject without reason: denied; with reason: allowed', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertFails(decide(PM, 'Rejected'));
+    await assertFails(decide(PM, 'Rejected', ''));
+    await assertFails(decide(PM, 'Rejected', null));
+    await assertFails(decide(PM, 'Pending'));
+    await assertSucceeds(decide(PM, 'Rejected', 'Not evidenced'));
+    await seedDoc(APR, req('plan_import', LEAD, OWNER));
+    await assertFails(decide(OWNER, 'Rejected'));
+    await assertSucceeds(decide(OWNER, 'Rejected', 'Split by WS'));
+  });
+
+  it('P3-36 requester withdraws Pending: allowed; withdraws Approved: denied; non-requester withdraws: denied', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertFails(withdraw(PM));
+    await assertFails(withdraw(OWNER));
+    await assertFails(up(ASG, APR, { status: 'Withdrawn', decidedByUid: PM.uid, decidedAt: serverTimestamp() }));
+    await assertFails(up(ASG, APR, { status: 'Withdrawn', decidedByUid: ASG.uid, decidedAt: serverTimestamp(), title: 'y' }));
+    await assertSucceeds(withdraw(ASG));
+    await seedDoc(APR, req('mitigation_done', ASG, PM, { status: 'Approved', decidedByUid: PM.uid, decidedAt: '2026-10-25T00:00:00Z' }));
+    await assertFails(withdraw(ASG));
+    await seedDoc(APR, req('plan_import', LEAD, OWNER));
+    await assertSucceeds(withdraw(LEAD));
+  });
+
+  it('P3-37 PM reassigns mitigation_done to LEAD with reassignLog+1: allowed; plan_import to PM: denied; to requester: denied', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    // LEAD needs a claim: a ws of the request's program that LEAD leads.
+    await assertFails(reassign(PM, PM, LEAD));
+    await assertFails(reassign(PM, PM, LEAD, { viaWorkstreamId: 'w3' }));
+    await assertFails(reassign(PM, PM, LEAD, { viaWorkstreamId: 'w2' }));
+    // The log entry names the caller and the from / to approvers; it grows by one.
+    await assertFails(reassign(PM, LEAD, LEAD, { viaWorkstreamId: 'w1' }));
+    await assertFails(up(PM, APR, { approverUid: LEAD.uid }));
+    await assertFails(up(PM, APR, { approverUid: LEAD.uid, reassignLog: [logEntry(OWNER, PM, LEAD, { viaWorkstreamId: 'w1' })] }));
+    // Not the PM / an Owner: denied.
+    await assertFails(reassign(LEAD, PM, DEPUTY));
+    await assertFails(reassign(ASG, PM, DEPUTY));
+    // To the requester / someone outside the program: denied.
+    await assertFails(reassign(PM, PM, ASG));
+    await assertFails(reassign(PM, PM, PM2));
+    await assertSucceeds(reassign(PM, PM, LEAD, { viaWorkstreamId: 'w1' }));
+    // plan_import: only to an Owner.
+    await seedDoc(APR, req('plan_import', LEAD, OWNER));
+    await assertFails(reassign(PM, OWNER, PM));
+    await assertFails(reassign(OWNER, OWNER, LEAD));
+    await assertSucceeds(reassign(PM, OWNER, OWNER2));
+  });
+
+  it('P3-37b OWNER reassigns mitigation_done to DEPUTY; a second reassign must keep the first entry', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertSucceeds(reassign(OWNER, PM, DEPUTY));
+    const first = logEntry(OWNER, PM, DEPUTY);
+    const second = logEntry(PM, DEPUTY, OWNER);
+    await assertFails(up(PM, APR, { version: 3, approverUid: OWNER.uid, reassignLog: [second] }));
+    await assertSucceeds(up(PM, APR, { version: 3, approverUid: OWNER.uid, reassignLog: [second, first] }));
+  });
+
+  it('P3-38 OWNER deletes a request: denied; requester edits payload after create: denied', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertFails(deleteDoc(doc(await as(OWNER), APR)));
+    await assertFails(deleteDoc(doc(await as(ASG), APR)));
+    await assertFails(up(ASG, APR, { payload: { k: 2 } }));
+    await assertFails(up(ASG, APR, { title: 'changed' }));
+    await assertFails(up(OWNER, APR, { payload: { k: 2 } }));
+    // Reads: project readers yes, others no; a v1 project no.
+    await assertSucceeds(getDoc(doc(await as(VIEWER), APR)));
+    await assertFails(getDoc(doc(await as(OUTSIDER), APR)));
+    await seedDoc(P1, project({ schemaVersion: 1 }));
+    await assertFails(getDoc(doc(await as(VIEWER), APR)));
+    await assertFails(withdraw(ASG));
+    await seedDoc(P1, project());
+    await assertSucceeds(withdraw(ASG));
+  });
+});
+
+describe('P3 approvals realistic payloads (client shape)', () => {
+  beforeEach(resetData);
+  afterAll(cleanup);
+
+  for (const s of approvalScenarios) {
+    it(`P3-RA ${s.name}: allowed`, async () => {
+      await seedApprovalScenario(seedDoc, s);
+      await assertSucceeds(writeApprovalScenario(await as(s.actor), s));
     });
   }
 });

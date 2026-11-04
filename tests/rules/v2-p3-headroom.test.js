@@ -2,7 +2,10 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, setDoc } from 'firebase/firestore';
-import { scenarios, seedScenario, writeScenario } from './p3-scenarios.js';
+import {
+  scenarios, seedScenario, writeScenario,
+  approvalScenarios, seedApprovalScenario, writeApprovalScenario,
+} from './p3-scenarios.js';
 
 // P3 review round 1: expression-limit headroom (CI only).
 // Loads firestore.rules with k "pad units" injected in front of the task
@@ -13,6 +16,10 @@ import { scenarios, seedScenario, writeScenario } from './p3-scenarios.js';
 // MIN_UNITS units (~100 extra expressions) on top. The largest k that still
 // passes is logged per scenario; the /users write (a near-empty rule) gives
 // the cost of one unit: ~1000 / kMax(users) expressions.
+// P3 Task 4: the same k units are also injected in front of the approvals
+// create / update paths (approvalCreateWith, approvalUpdateWith); task writes
+// never evaluate them, so the task numbers are unaffected, and the approvals
+// scenarios (approvalScenarios) are measured the same way.
 
 const MIN_UNITS = 8;
 const MAX_UNITS = 160;
@@ -34,6 +41,14 @@ function paddedRules(k) {
   const before = s;
   s = s.replace(/(function taskUpdateWith\(wid, pid, ch, s0, s1, cl, rv\) \{\r?\n\s*return )/, '$1padOk(wid) && ');
   if (s === before) throw new Error('taskUpdateWith not found');
+  for (const re of [
+    /(function approvalCreateWith\(wid, pid, n, p\) \{\r?\n\s*return )/,
+    /(function approvalUpdateWith\(wid, pid, ch, o, n\) \{\r?\n\s*return )/,
+  ]) {
+    const b = s;
+    s = s.replace(re, '$1padOk(wid) && ');
+    if (s === b) throw new Error(`${re} not found`);
+  }
   const before2 = s;
   s = s.replace(/(match \/users\/\{uid\} \{\r?\n\s*allow read, write: if )/, '$1padOk(uid) && ');
   if (s === before2) throw new Error('/users rule not found');
@@ -80,6 +95,12 @@ const scenarioProbe = (s) => async (env) => {
   await writeScenario(db, s);
 };
 
+const approvalProbe = (s) => async (env) => {
+  await seedApprovalScenario(seedWith(env), s);
+  const db = env.authenticatedContext(s.actor.uid, { email: s.actor.email, email_verified: true }).firestore();
+  await writeApprovalScenario(db, s);
+};
+
 const usersProbe = async (env) => {
   const db = env.authenticatedContext('u_cal', { email: 'cal@smartosc.com', email_verified: true }).firestore();
   await setDoc(doc(db, 'users/u_cal'), { currentProjectId: 'p1' });
@@ -107,9 +128,11 @@ describe('P3 expression headroom (padded rules)', () => {
     const perUnit = 1000 / (cal + 1);
     const rows = [];
     const results = [];
-    for (const s of scenarios) {
-      const ok0 = await passes(0, scenarioProbe(s));
-      const k = ok0 ? await maxUnits(scenarioProbe(s), 0) : -1;
+    const probes = scenarios.map((s) => ({ s, probe: scenarioProbe(s) }))
+      .concat(approvalScenarios.map((s) => ({ s, probe: approvalProbe(s) })));
+    for (const { s, probe } of probes) {
+      const ok0 = await passes(0, probe);
+      const k = ok0 ? await maxUnits(probe, 0) : -1;
       results.push({ s, k });
       rows.push(`${s.name}: max units ${k}${k === MAX_UNITS ? '+' : ''} ~ ${Math.round(k * perUnit)} expressions headroom`);
     }
