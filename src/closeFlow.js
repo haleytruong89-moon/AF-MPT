@@ -67,7 +67,10 @@ export function eligibleApprovers(roles, taskId, requesterUid) {
   const add = (u) => { if (u && u !== requesterUid && !out.includes(u)) out.push(u); };
   if (!isPMOrDeputy(m, requesterUid)) {
     const ws = wsOf(roles, info.workstreamId);
-    for (const u of [ws?.leadUid, m.pmUid, m.deputyUid]) if (u && !contrib.includes(u)) add(u);
+    // A lead whose WS program is not in programMeta never passes leadOfWs, so
+    // could never decide: left out (rules eligibleWith alone would accept them).
+    const lead = ws && ws.programId != null && hasOwn(roles.programs || {}, ws.programId) ? ws.leadUid : null;
+    for (const u of [lead, m.pmUid, m.deputyUid]) if (u && !contrib.includes(u)) add(u);
   }
   for (const u of roles.ownerUids || []) add(u);
   return out;
@@ -328,18 +331,25 @@ export function closeEventsFor(oldTask, newTask, nameOf = (u) => u) {
   return [];
 }
 
-// P3-10: the new date lies within the task's WS window (null bound = no limit).
-function withinWsWindow(roles, taskId, newDate) {
+// P3-10: the task { start: taskStart, end: newDate } lies within its WS window,
+// exactly as rules withinWs(t, w) tests it: t.start >= w.start and t.end <= w.end,
+// a null bound or a null task date passing that side.
+const day = (v) => (v == null || v === '' ? null : String(v).slice(0, 10));
+function withinWsWindow(roles, taskId, newDate, taskStart) {
   const ws = wsOf(roles, taskInfo(roles, taskId).workstreamId);
   if (!ws || !newDate) return false;
-  const d = String(newDate).slice(0, 10);
-  return (ws.start == null || d >= ws.start) && (ws.end == null || d <= ws.end);
+  const s = day(taskStart);
+  const e = day(newDate);
+  return (s == null || ws.start == null || s >= ws.start) && (ws.end == null || e <= ws.end);
 }
 
-/** Approver of a task deadline request (P3-10): direct manager inside the WS window, else an Owner. */
-export function deadlineApprover(roles, taskId, newDate, requesterUid) {
+/**
+ * Approver of a task deadline request (P3-10): direct manager when the task
+ * (taskStart, newDate) stays inside the WS window, else an Owner.
+ */
+export function deadlineApprover(roles, taskId, newDate, requesterUid, taskStart = null) {
   if (!roles || isOwnerUid(roles, requesterUid)) return null;
-  if (withinWsWindow(roles, taskId, newDate)) return directApprover(roles, taskId, requesterUid);
+  if (withinWsWindow(roles, taskId, newDate, taskStart)) return directApprover(roles, taskId, requesterUid);
   return (roles.ownerUids || []).find((u) => u !== requesterUid) ?? null;
 }
 
@@ -355,7 +365,7 @@ export function canApproveDeadline(roles, task, uid) {
   if (req.requestedByUid && req.requestedByUid === uid) return false;
   if (isOwnerUid(roles, uid)) return true;
   if (!req.requestedByUid) return false;
-  if (!withinWsWindow(roles, task.id, req.newDate)) return false;
+  if (!withinWsWindow(roles, task.id, req.newDate, task.start)) return false;
   return managerLevel(roles, task.id, uid) !== null && eligibleApprovers(roles, task.id, req.requestedByUid).includes(uid);
 }
 
@@ -392,7 +402,8 @@ export function canEditCreditFields(role, task) {
 
 /** mitigation_done approver on create (P3-9, P3-C8): PM, else Deputy, else an Owner. */
 export function mitigationApprover(roles, programId, requesterUid) {
-  if (!roles) return null;
+  // Rules approvalCreateWith: scope.programId must be in programMeta.
+  if (!roles || programId == null || !hasOwn(roles.programs || {}, programId)) return null;
   const m = programOf(roles, programId);
   if (!isPMOrDeputy(m, requesterUid)) {
     for (const u of [m.pmUid, m.deputyUid]) if (u && u !== requesterUid) return u;

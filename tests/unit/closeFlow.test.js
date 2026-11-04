@@ -85,6 +85,11 @@ describe('eligibleApprovers (mirror of rules eligibleApprover / eligibleWith)', 
     const r = withRoles((b) => ({ tasks: { ...b.tasks, tX: info('A', { contributorUids: ['L', 'P', 'O'] }) } }));
     expect(eligibleApprovers(r, 'tX', 'A')).toEqual(['D', 'O']);
   });
+  it('excludes a lead whose WS program is not in programMeta (can never decide)', () => {
+    const r = withRoles((b) => ({ workstreams: { ...b.workstreams, w1: { ...b.workstreams.w1, programId: 'zz' } } }));
+    expect(eligibleApprovers(r, 'tA', 'A')).toEqual(['P', 'D', 'O']);
+    expect(directApprover(r, 'tA', 'A')).toBe('P');
+  });
   it('unique, never the requester', () => {
     const r = withRoles((b) => ({ ownerUids: ['O', 'P'], programs: { ...b.programs, p1: { pmUid: 'P', deputyUid: 'P' } } }));
     expect(eligibleApprovers(r, 'tA', 'A')).toEqual(['L', 'P', 'O']);
@@ -410,7 +415,8 @@ describe('deadline routing (P3-10)', () => {
   it('within WS window -> direct manager; outside -> Owner', () => {
     expect(deadlineApprover(R, 'tA', '2026-11-30', 'A')).toBe('L');
     expect(deadlineApprover(R, 'tA', '2027-01-15', 'A')).toBe('O');
-    expect(deadlineApprover(R, 'tA', '2025-12-31', 'A')).toBe('O');
+    // rules withinWs tests end <= ws.end and start >= ws.start only (no task start = passes).
+    expect(deadlineApprover(R, 'tA', '2025-12-31', 'A')).toBe('L');
     expect(deadlineApprover(R, 'tL', '2026-11-30', 'L')).toBe('P');
   });
   it('null bound = no limit', () => {
@@ -418,6 +424,15 @@ describe('deadline routing (P3-10)', () => {
     expect(deadlineApprover(r, 'tA', '2030-01-01', 'A')).toBe('L');
   });
   it('Owner requester -> null', () => expect(deadlineApprover(R, 'tO', '2026-11-30', 'O')).toBe(null));
+  it('task start before the WS start -> Owner (rules withinWs checks both bounds)', () => {
+    expect(deadlineApprover(R, 'tA', '2026-11-30', 'A', '2025-12-01')).toBe('O');
+    expect(deadlineApprover(R, 'tA', '2026-11-30', 'A', '2026-02-01')).toBe('L');
+    expect(deadlineApprover(R, 'tA', '2026-11-30', 'A', null)).toBe('L');
+    const t = task('tA', 'InProgress', { start: '2025-12-01', deadlineRequest: { newDate: '2026-11-30', requestedByUid: 'A' } });
+    expect(canApproveDeadline(R, t, 'L')).toBe(false);
+    expect(canApproveDeadline(R, t, 'O')).toBe(true);
+    expect(canApproveDeadline(R, { ...t, start: '2026-03-01' }, 'L')).toBe(true);
+  });
   it('canApproveDeadline', () => {
     const t = (newDate, requestedByUid) => task('tA', 'InProgress', { deadlineRequest: { newDate, requestedByUid, requestedBy: 'Name A' } });
     expect(canApproveDeadline(R, t('2026-11-30', 'A'), 'L')).toBe(true);
@@ -473,6 +488,10 @@ describe('approvals docs helpers (mitigation_done, C7 / C8)', () => {
     const r = withRoles((b) => ({ programs: { ...b.programs, p1: { pmUid: null, deputyUid: 'D' } } }));
     expect(mitigationApprover(r, 'p1', 'A')).toBe('D');
     expect(mitigationApprover(R, 'p1', 'L')).toBe('P');
+  });
+  it('mitigationApprover: program not in programMeta -> null', () => {
+    expect(mitigationApprover(R, 'nope', 'A')).toBe(null);
+    expect(mitigationApprover(R, null, 'A')).toBe(null);
   });
   it('canDecideApproval mirrors approvalDeciderOk', () => {
     expect(canDecideApproval(R, mit('A', 'D'), 'D')).toBe(true);

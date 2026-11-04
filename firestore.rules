@@ -736,7 +736,9 @@ service cloud.firestore {
 
     // From Submitted (c0 = old request, c1 = new request):
     //   withdraw (requester, -> open), approve (status == outcome, stamped),
-    //   reject (-> InProgress, reason), reassign (PM; approverUid only).
+    //   reject (-> InProgress, reason), reassign (PM; approverUid only; never
+    //   the requester, Ruling P3-C7 - the Owner branch still bypasses, and the
+    //   client never creates a request for the Owner's own task).
     // r = role map (see closeTransitionOk).
     function closeFromSubmitted(wid, pid, s1, c0, c1, r) {
       return c0 is map && (
@@ -752,6 +754,7 @@ service cloud.firestore {
           && c0.get('requestedByUid', null) == request.auth.uid
           && histOk('Withdrawn'))
         || (r.pm && s1 == 'Submitted' && c1 is map
+          && c0.get('requestedByUid', null) != request.auth.uid
           && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
           && histOk('Reassigned')
           && eligibleApprover(wid, pid, resource.data, c1.get('approverUid', null),
