@@ -154,7 +154,7 @@ export const carryDoc = (kind, oldData, data) => mapEntryLists(kind, oldData, da
 // remain keep their relative order (non-decreasing stored `order`: concurrent
 // prepends can tie), reuse it and slot new docs around them; otherwise keep the
 // split's index renumbering.
-function keepOrder(stored, next) {
+export function keepOrder(stored, next) {
   const orderOf = (id) => stored.get(id)?.data?.order;
   const ords = next.filter((d) => stored.has(d.id)).map((d) => orderOf(d.id));
   if (!ords.length || !ords.every((o) => typeof o === 'number' && Number.isFinite(o))) return next;

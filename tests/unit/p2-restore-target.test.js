@@ -85,6 +85,13 @@ describe('buildRestoreTarget', () => {
     ]);
   });
 
+  it('T-8: a target that does not survive split/assemble blocks round-trip', () => {
+    const live = liveTree();
+    const backup = structuredClone(live);
+    backup.decisions.push('not an object');
+    expect(buildRestoreTarget(backup, live, { pid: PID }).blocked.map((b) => b.code)).toEqual(['round-trip']);
+  });
+
   it('T-7: raid not an array in the backup blocks; inputs are not mutated', () => {
     const live = liveTree();
     const backup = structuredClone(live);

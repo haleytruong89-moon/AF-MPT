@@ -1,8 +1,9 @@
 // P2.4b Task 2: pure restore plan for one v2 project. Diffs the restore target (backup
 // tree + retained live items, restore-target.mjs) doc by doc against the live v2 docs:
 // create / update only, never delete (Ruling P4b-3). Keeps the live v2-only fields with
-// the App planner's own helpers (Rulings P4b-4, P4b-14), never patches access fields
-// (P4b-5), reports history loss (P4b-6), hashes the plan with the live fingerprint
+// the App planner's own helpers (carryDoc, overlay, keepOrder, META_SKIP, KEEP_PROGRAM;
+// Rulings P4b-4, P4b-14, P4b-15), never patches access fields (P4b-5), reports history
+// loss (P4b-6, P4b-16), edited entries (P4b-16) and credit loss (P4b-17), hashes the plan with the live fingerprint
 // (P4b-9) and builds the snapshot file (P4b-10). No I/O, never mutates its inputs.
 //
 // Live = { meta: object, docs: { [kind]: Array<{ id, data }> } } with plain-JSON data
@@ -10,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { assembleProject, splitProject } from '../../src/migrateV2.js';
-import { carryDoc, overlay, META_SKIP, KEEP_PROGRAM } from '../../src/planV2Save.js';
+import { carryDoc, overlay, keepOrder, META_SKIP, KEEP_PROGRAM } from '../../src/planV2Save.js';
 import { appValueFromV2 } from '../../src/readV2.js';
 import { stableJson } from './migrate-normalise.mjs';
 import { SUBCOLS, MAX_PROJECT_DOC_BYTES } from './migrate-checks.mjs';
@@ -27,6 +28,8 @@ const STAMPS = ['version', 'updatedBy', 'updatedAt', 'viaProgramId', 'viaWorkstr
 const RETAINED_KIND = { workstream: 'workstreams', task: 'tasks', action: 'actions', decision: 'decisions' };
 const ENTRY_LISTS = { tasks: ['updates', 'checkIns'], actions: ['updates'] };
 const PREVIEW_CHARS = 60;
+const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
+const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -93,69 +96,59 @@ function preview(e) {
 }
 const describeEntries = (list) => list.map((e) => ({ id: isObj(e) && e.id != null ? String(e.id) : null, preview: preview(e) }));
 
+// Per entry list: entries lost (live, not next) block (P4b-6); entries matched by id
+// whose content changed are reported only (Ruling P4b-16), compared without the
+// nested lists that are checked on their own and without authorUid.
+function diffList(out, kind, id, list, oldList, newList, nested = []) {
+  const lost = lostEntries(oldList, newList);
+  if (lost.length) out.historyLost.push({ kind, id, list, entries: describeEntries(lost) });
+  const shallow = (e) => {
+    const o = withoutAuthor(e);
+    for (const k of nested) delete o[k];
+    return o;
+  };
+  const edited = [];
+  for (const e of arr(oldList)) {
+    if (!isObj(e) || e.id == null) continue;
+    const n = arr(newList).find((x) => isObj(x) && x.id === e.id);
+    if (n && !isDeepStrictEqual(shallow(e), shallow(n))) edited.push(n);
+  }
+  if (edited.length) out.editedEntries.push({ kind, id, list, entries: describeEntries(edited) });
+  return lost;
+}
+
 function collectLosses(kind, id, old, next, out) {
-  const add = (list, lost) => { if (lost.length) out.historyLost.push({ kind, id, list, entries: describeEntries(lost) }); };
-  for (const k of ENTRY_LISTS[kind] || []) add(k, lostEntries(old[k], next[k]));
+  for (const k of ENTRY_LISTS[kind] || []) diffList(out, kind, id, k, old[k], next[k]);
   if (kind !== 'raid') return;
-  const lostItems = lostEntries(old.items, next.items);
-  out.raidItemsLost += lostItems.length;
-  add('items', lostItems);
+  out.raidItemsLost += diffList(out, kind, id, 'items', old.items, next.items, ['history', 'mitigationActions']).length;
   for (const item of arr(old.items)) {
     if (!isObj(item) || item.id == null) continue;
     const ni = arr(next.items).find((x) => isObj(x) && x.id === item.id);
     if (!ni) continue;
-    add(`items[${item.id}].history`, lostEntries(item.history, ni.history));
+    diffList(out, kind, id, `items[${item.id}].history`, item.history, ni.history);
+    diffList(out, kind, id, `items[${item.id}].mitigationActions`, item.mitigationActions, ni.mitigationActions, ['comments']);
     arr(item.mitigationActions).forEach((m, mi) => {
       if (!isObj(m)) return;
       const nm = m.id != null
         ? arr(ni.mitigationActions).find((x) => isObj(x) && x.id === m.id)
         : arr(ni.mitigationActions)[mi];
+      if (m.id != null && !isObj(nm)) return; // the whole mitigation action is reported as lost
       const label = m.id != null ? m.id : mi;
-      add(`items[${item.id}].mitigationActions[${label}].comments`, lostEntries(m.comments, isObj(nm) ? nm.comments : []));
+      diffList(out, kind, id, `items[${item.id}].mitigationActions[${label}].comments`, m.comments, isObj(nm) ? nm.comments : []);
     });
   }
-}
-
-// Actions / decisions keep their stored `order` while the stored docs keep their relative
-// order (same rule as the App planner's keepOrder, Ruling AD I2), so a backup equal to the
-// live tree plans no order-only updates. New docs are slotted around the stored ones.
-function keepStoredOrder(stored, next) {
-  const orderOf = (id) => stored.get(id)?.order;
-  const ords = next.filter((d) => stored.has(d.id)).map((d) => orderOf(d.id));
-  if (!ords.length || !ords.every((o) => typeof o === 'number' && Number.isFinite(o))) return next;
-  if (!ords.every((o, i) => i === 0 || ords[i - 1] <= o)) return next;
-  const out = next.map((d) => ({ id: d.id, data: { ...d.data } }));
-  let prev = null;
-  let run = [];
-  const flush = (nextOrd) => {
-    run.forEach((d, j) => {
-      if (prev == null) d.data.order = nextOrd - run.length + j;
-      else if (nextOrd == null) d.data.order = prev + 1 + j;
-      else d.data.order = prev + ((nextOrd - prev) * (j + 1)) / (run.length + 1);
-    });
-    run = [];
-  };
-  for (const d of out) {
-    if (!stored.has(d.id)) { run.push(d); continue; }
-    flush(orderOf(d.id));
-    d.data.order = orderOf(d.id);
-    prev = d.data.order;
-  }
-  flush(null);
-  return out;
 }
 
 const emptyReport = () => ({
   perKind: Object.fromEntries(SUBCOLS.map((k) => [k, { create: 0, update: 0, unchanged: 0, retained: 0 }])),
-  retained: [], kept: [], historyLost: [], raidItemsLost: 0, programMeta: [], meta: [],
+  retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [],
   access: null, backupMemberIdsDiff: null, idMap: [], removedNulls: [], backupActivityCount: 0,
 });
 
 export function planRestore({
   pid, live, backupProject, dirIndex = null, uidByEmail = new Map(), allowHistoryLoss = false,
-  hasMigrationRecord = false, backupSha256 = null, backupName = null, backupActivityCount = 0,
+  hasMigrationRecord = false, backupSha256 = null, backupActivityCount = 0,
 } = {}) {
-  void backupName;
   const blocked = [];
   const warnings = [];
   const block = (code, detail) => blocked.push({ code, detail: String(detail) });
@@ -218,7 +211,9 @@ export function planRestore({
 
   const split = splitProject(target.tree, { wid: 'main', dirIndex, uidByEmail });
   const stored = Object.fromEntries(SUBCOLS.map((k) => [k, new Map(liveDocs[k].map((d) => [d.id, d.data || {}]))]));
-  for (const kind of ['actions', 'decisions']) split[kind] = keepStoredOrder(stored[kind], split[kind]);
+  for (const kind of ['actions', 'decisions']) {
+    split[kind] = keepOrder(new Map(liveDocs[kind].map((d) => [d.id, { data: d.data || {} }])), split[kind]);
+  }
   const unresolvedPic = new Set(split.report.unresolved
     .filter((u) => u.field === 'task.pic' || u.field === 'action.pic')
     .map((u) => `${u.field === 'task.pic' ? 'tasks' : 'actions'}/${u.where}`));
@@ -226,7 +221,8 @@ export function planRestore({
   const ops = [];
   const nextDocs = Object.fromEntries(SUBCOLS.map((k) => [k, []]));
   const skippedRaid = new Set();
-  const losses = { historyLost: report.historyLost, raidItemsLost: 0 };
+  const losses = { historyLost: report.historyLost, editedEntries: report.editedEntries, raidItemsLost: 0 };
+  const retainedTasks = new Set(target.retained.filter((r) => r.kind === 'task').map((r) => r.id));
   for (const kind of SUBCOLS) {
     const pk = report.perKind[kind];
     const seen = new Set();
@@ -238,6 +234,13 @@ export function planRestore({
         if ((kind === 'tasks' || kind === 'actions') && unresolvedPic.has(`${kind}/${id}`)
           && (!old || !isDeepStrictEqual(old.pic, fin.pic))) warn('pic-unresolved', `${kind}/${id}`);
       };
+      // Ruling AH (as the App planner): without the directory a changed or new person
+      // cannot be resolved; never write null uids for it.
+      const personCheck = (fin, old) => {
+        if (dirIndex || (kind !== 'tasks' && kind !== 'actions')) return;
+        const changed = (k) => (!old || !isDeepStrictEqual(old[k], fin[k])) && hasPerson(fin[k]);
+        if (changed('pic') || (kind === 'tasks' && changed('contributors'))) block('directory-unavailable', `${kind}/${id}`);
+      };
       if (lv) {
         const old = strip(lv);
         const fin = carryDoc(kind, old, overlay(kind, old, nd));
@@ -248,6 +251,10 @@ export function planRestore({
         }
         pk.update++;
         picWarn(fin, old);
+        personCheck(fin, old);
+        if (kind === 'tasks' && old.status === 'Completed' && fin.status !== 'Completed') {
+          report.creditLoss.push({ id, name: fin.name ?? null, from: old.status, to: fin.status ?? null, retained: retainedTasks.has(id) });
+        }
         collectLosses(kind, id, old, fin, losses);
         ops.push({ kind, op: 'update', id, data: fin, expectVersion: versionOf(lv) });
         nextDocs[kind].push({ id, data: fin });
@@ -256,6 +263,7 @@ export function planRestore({
         if (kind === 'raid' && Array.isArray(nd.items) && nd.items.length === 0) { skippedRaid.add(id); continue; }
         pk.create++;
         picWarn(nd, null);
+        personCheck(nd, null);
         ops.push({ kind, op: 'create', id, data: nd, expectVersion: null });
         nextDocs[kind].push({ id, data: nd });
       }
@@ -269,6 +277,7 @@ export function planRestore({
   }
   report.raidItemsLost = losses.raidItemsLost;
   ops.sort(byKindId);
+  report.creditLoss.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   // Project doc: never deletes a field; access / bookkeeping keys are skipped.
   const metaPatch = {};
@@ -279,6 +288,10 @@ export function planRestore({
       metaPatch[k] = nm[k];
       report.meta.push({ field: k, from: hasOwn(lm, k) ? lm[k] : null, to: nm[k] });
     }
+  }
+  // Live-only keys stay (no field delete); listed so HOD sees them.
+  for (const k of Object.keys(lm)) {
+    if (!META_SKIP.has(k) && !hasOwn(nm, k)) report.meta.push({ field: k, kept: true });
   }
   const storedPM = isObj(lm.programMeta) ? lm.programMeta : {};
   const nextPM = {};

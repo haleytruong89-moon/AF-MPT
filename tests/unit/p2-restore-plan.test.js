@@ -7,7 +7,7 @@ import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { readBackupProject } from '../../scripts/lib/restore-target.mjs';
 import {
   planRestore, planHashOf, liveFingerprint, expectedAfter, buildSnapshot,
-  RESTORE_STAMP, MAX_TX_OPS, RESTORES_PATH, restoreIdOf, TASK_DROPPED, ACTION_CANCELLED,
+  RESTORE_STAMP, MAX_TX_OPS, MAX_PROJECT_DOC_BYTES, RESTORES_PATH, restoreIdOf, TASK_DROPPED, ACTION_CANCELLED,
 } from '../../scripts/lib/restore-plan.mjs';
 
 const PID = 'proj_fx';
@@ -318,5 +318,126 @@ describe('planRestore', () => {
     expect(readBackupProject(snap, PID).blocked).toEqual([]);
     // Restoring the snapshot onto the unchanged live state is a noop.
     expect(plan(live, readBackupProject(snap, PID).project).mode).toBe('noop');
+  });
+
+  it('P-12: lost mitigation actions block as history; edited entries are reported only', () => {
+    const live = makeLive();
+    doc(live, 'raid', 'pg1').items = [{
+      id: 'r1', title: 'Delay',
+      mitigationActions: [{ id: 'm1', text: 'Buffer', comments: [] }, { id: 'm2', text: 'Escalate', comments: [] }],
+    }];
+    doc(live, 'tasks', 't2').updates = [{ id: 'u7', text: 'x', authorUid: 'uidZ', resolvedAt: '2026-11-02', resolvedBy: 'uid1' }];
+    const b = backupOf(live);
+    b.programs.find((x) => x.id === 'pg1').raid[0].mitigationActions = [{ id: 'm1', text: 'Buffer', comments: [] }];
+    task(b, 't2').updates = [{ id: 'u7', text: 'x' }];
+    const p = plan(live, b);
+    expect(p.refused).toBe('history-loss');
+    expect(p.report.historyLost).toEqual([
+      { kind: 'raid', id: 'pg1', list: 'items[r1].mitigationActions', entries: [{ id: 'm2', preview: 'Escalate' }] },
+    ]);
+    expect(p.report.editedEntries).toEqual([
+      { kind: 'tasks', id: 't2', list: 'updates', entries: [{ id: 'u7', preview: 'x' }] },
+    ]);
+    expect(p.ops.find((o) => o.id === 't2').data.updates).toEqual([{ id: 'u7', text: 'x', authorUid: 'uidZ' }]);
+    expect(plan(live, b, { allowHistoryLoss: true }).refused).toBeNull();
+  });
+
+  it('P-13: Completed -> other status is listed as credit loss (updates and retained)', () => {
+    const live = makeLive();
+    doc(live, 'tasks', 't1').status = 'Completed';
+    live.docs.tasks.push({
+      id: 't9',
+      data: {
+        id: 't9', name: 'Late task', status: 'Completed', workspaceId: 'main', projectId: PID, programId: 'pg1',
+        workstreamId: 'w2', order: 0, picUid: null, picEmail: null, contributorUids: [], version: 1,
+      },
+    });
+    const b = backupOf(live);
+    task(b, 't1').status = 'In Progress';
+    wsOf(b, 'w2').tasks = [];
+    const p = plan(live, b);
+    expect(p.refused).toBeNull();
+    expect(p.mode).toBe('restore');
+    expect(p.report.creditLoss).toEqual([
+      { id: 't1', name: 'Task 1', from: 'Completed', to: 'In Progress', retained: false },
+      { id: 't9', name: 'Late task', from: 'Completed', to: 'Dropped', retained: true },
+    ]);
+  });
+
+  it('P-14: live-only meta keys are kept and reported', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    live.meta.extraNote = 'added later';
+    const p = plan(live, b);
+    expect(p.metaPatch).toBeNull();
+    expect(p.report.meta).toEqual([{ field: 'extraNote', kept: true }]);
+    expect(p.target.extraNote).toBe('added later');
+  });
+
+  it('P-15: directory-unavailable blocks a changed or new person without dirIndex', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    task(b, 't1').pic = 'Bob';
+    expect(codes(plan(live, b, { dirIndex: null }).blocked)).toContain('directory-unavailable');
+    const b2 = backupOf(live);
+    wsOf(b2, 'w2').tasks.push({ id: 'tN', name: 'New', status: 'Not Started', contributors: ['Bob'] });
+    expect(codes(plan(live, b2, { dirIndex: null }).blocked)).toContain('directory-unavailable');
+    const b3 = backupOf(live);
+    task(b3, 't1').end = '2026-03-01';
+    const ok = plan(live, b3, { dirIndex: null });
+    expect(ok.blocked).toEqual([]);
+    expect(ok.ops.find((o) => o.id === 't1').data.picUid).toBe('uid1');
+  });
+
+  it('P-16: doc-too-large blocks', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    b.notes = 'x'.repeat(MAX_PROJECT_DOC_BYTES);
+    const p = plan(live, b);
+    expect(codes(p.blocked)).toContain('doc-too-large');
+    expect(p.planHash).toBeNull();
+  });
+
+  it('P-17: round-trip failure blocks', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    b.decisions.push('not an object');
+    const p = plan(live, b);
+    expect(codes(p.blocked)).toContain('round-trip');
+    expect(p.mode).toBe('blocked');
+  });
+
+  it('P-18: a live RAID doc with no counterpart is kept, not deleted', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    delete b.programs.find((x) => x.id === 'pg1').raid;
+    const p = plan(live, b);
+    expect(p.report.kept).toEqual([{ kind: 'raid', id: 'pg1' }]);
+    expect(p.ops.some((o) => o.kind === 'raid')).toBe(false);
+    expect(p.refused).toBeNull();
+  });
+
+  it('P-19: refused and allowed plans for the same backup hash differently', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    b.programs.find((x) => x.id === 'pg1').raid = [];
+    const refused = plan(live, b);
+    const allowed = plan(live, b, { allowHistoryLoss: true });
+    expect(refused.refused).toBe('history-loss');
+    expect(allowed.refused).toBeNull();
+    expect(refused.ops).toEqual(allowed.ops);
+    expect(refused.planHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(allowed.planHash).not.toBe(refused.planHash);
+  });
+
+  it('P-20: action / decision orders reuse the App planner keepOrder (fractional orders stay)', () => {
+    const live = makeLive();
+    doc(live, 'actions', 'a1').order = -1;
+    doc(live, 'actions', 'a2').order = 0.5;
+    const b = backupOf(live);
+    b.actionItems.splice(1, 0, { id: 'aN', title: 'From backup', status: 'Pending' });
+    const p = plan(live, b);
+    expect(p.ops.map((o) => o.id)).toEqual(['aN']);
+    expect(p.ops[0].data.order).toBe(-0.25);
   });
 });
