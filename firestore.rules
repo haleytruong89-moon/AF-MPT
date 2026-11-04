@@ -459,7 +459,7 @@ service cloud.firestore {
     // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
     // project doc has schemaVersion 2. After a rollback (schemaVersion back to
     // 1/absent) every client read, create, update and delete on workstreams,
-    // tasks, actions, raid, decisions and activity is denied, so a stale v2
+    // tasks, actions, raid, decisions, approvals and activity is denied, so a stale v2
     // tab cannot write data nobody reads. Admin scripts bypass rules.
     // get(): the project doc, the same one canReadProject / v2Project /
     // isPM / raidWriterOk read (counted once per distinct doc), so it adds a
@@ -1109,6 +1109,188 @@ service cloud.firestore {
           && isPMIn(v2Project(wid, pid), resource.data.viaProgramId)
           && isActiveMember(wid))
       );
+    }
+
+    // ─────── v2: approvals (P3 Task 4; Rulings P3-2, P3-4, P3-9, P3-20, P3-C3) ───────
+    // approvals/{reqId} = { workspaceId, projectId, type, scope: { programId,
+    //   workstreamId?, taskId? }, title, payload, requestedByUid, requestedBy,
+    //   approverUid, status, createdAt, decidedByUid, decidedAt, reason,
+    //   reassignLog: [], version, updatedBy, updatedAt }.
+    // Kinds: plan_import / scope_deadline (scopeTypes) and mitigation_done.
+    // Create (requester == caller, Pending, createdAt == server time, not
+    //   decided, empty reassignLog, approver != caller, scope.programId in
+    //   programMeta, caller can read the project):
+    //   plan_import / scope_deadline: approver in ownerUids (P3-20); caller
+    //     is the PM / Deputy of scope.programId (a scope.workstreamId, if
+    //     any, must be a ws of that program) or the Sub-PM of
+    //     scope.workstreamId, a ws of scope.programId.
+    //   mitigation_done (P3-9): any project reader; approver = the PM /
+    //     Deputy of scope.programId or an Owner.
+    // Update, only while Pending (a decided request is final):
+    //   withdraw: requester only, -> Withdrawn, stamped decidedByUid == me,
+    //     decidedAt == server time.
+    //   decide (P3-4): -> Approved / Rejected (a non-empty reason), same
+    //     stamp. plan_import / scope_deadline: an Owner. mitigation_done: the
+    //     named approver, or the PM / Deputy of the program when the requester
+    //     is neither of them, or an Owner. Never the requester, except an
+    //     Owner (Ruling P3-C3). A non-Owner decider is an active member.
+    //   reassign: stays Pending; caller = the PM / Deputy of the program or
+    //     an Owner; new approver != requester and valid for the type as on
+    //     create, plus (mitigation_done) the Sub-PM of a ws of the program
+    //     named by the claim reassignLog[0].viaWorkstreamId; reassignLog gets
+    //     exactly one entry prepended { byUid: me, from: old approver, to: new
+    //     approver } (old entries kept as the suffix).
+    // Payload, scope, type, requester and createdAt never change (keys
+    // allow-lists). Never deleted (P3-2).
+    // No self-credit check (judged per kind): none of the kinds changes a
+    // task's credit fields in this write; plan_import, which may, is decided
+    // by an Owner only (P3-C3), and mitigation_done touches RAID, which earns
+    // no credit (isTaskCredited counts tasks only).
+    // get(): read = workspace, members/{me}, project = 3; create = those +
+    //   the scope ws = 4; update = workspace, members/{me}, project + the
+    //   claim ws (reassign) = 4. projectIsV2 shares the project get.
+    function scopeTypes() {
+      return ['plan_import', 'scope_deadline'];
+    }
+
+    function ownerUidIn(wid, a) {
+      return inList(v2Workspace(wid).get('ownerUids', []), a);
+    }
+
+    // mitigation_done approver (create): the PM / Deputy of the program (m =
+    // its programMeta entry) or an Owner. a is a string (checked by callers).
+    function mitApproverOk(wid, m, a) {
+      return isPMOrDeputyUid(m, a) || ownerUidIn(wid, a);
+    }
+
+    function approvalCreateOk(wid, pid) {
+      return approvalCreateWith(wid, pid, request.resource.data, v2Project(wid, pid));
+    }
+
+    function approvalCreateWith(wid, pid, n, p) {
+      return n.get('requestedByUid', null) == request.auth.uid
+        && n.get('status', null) == 'Pending'
+        && n.get('createdAt', null) == request.time
+        && n.get('decidedByUid', null) == null
+        && n.get('reassignLog', null) == []
+        && n.get('approverUid', null) is string
+        && n.approverUid != request.auth.uid
+        && n.get('scope', null) is map
+        && n.scope.get('programId', null) is string
+        && n.scope.programId in p.get('programMeta', {})
+        && approvalKindOk(wid, pid, n, p, n.scope.programId)
+        && canReadProject(wid, pid);
+    }
+
+    function approvalKindOk(wid, pid, n, p, prg) {
+      return (n.get('type', null) in scopeTypes()
+          && ownerUidIn(wid, n.approverUid)
+          && scopeRequesterOk(wid, pid, p, prg, n.scope.get('workstreamId', null)))
+        || (n.get('type', null) == 'mitigation_done'
+          && mitApproverOk(wid, prgMetaOf(p, prg), n.approverUid));
+    }
+
+    // The caller is the PM / Deputy of prg (any ws of prg, or none) or the
+    // Sub-PM of ws wsId of prg. The active-member check is canReadProject's.
+    function scopeRequesterOk(wid, pid, p, prg, wsId) {
+      return (isPMIn(p, prg) && (wsId == null || wsInProgram(wid, pid, wsId, prg)))
+        || (wsInProgram(wid, pid, wsId, prg)
+          && v2WsData(wid, pid, wsId).get('leadUid', null) == request.auth.uid);
+    }
+
+    function approvalUpdateOk(wid, pid) {
+      return approvalUpdateWith(wid, pid, changedKeys(), resource.data, request.resource.data);
+    }
+
+    function approvalUpdateWith(wid, pid, ch, o, n) {
+      return o.get('status', null) == 'Pending' && (
+        (n.get('status', null) == 'Pending'
+          && ch.hasOnly(['approverUid', 'reassignLog', 'version', 'updatedBy', 'updatedAt'])
+          && approvalReassignOk(wid, pid, o, n, v2Project(wid, pid)))
+        || (n.get('decidedByUid', null) == request.auth.uid
+          && n.get('decidedAt', null) == request.time
+          && approvalCloseOk(wid, pid, ch, o, n.get('status', null)))
+      );
+    }
+
+    // s1 = the new status. Withdraw: requester only. Decide: see header.
+    function approvalCloseOk(wid, pid, ch, o, s1) {
+      return (s1 == 'Withdrawn'
+          && ch.hasOnly(['status', 'decidedByUid', 'decidedAt', 'version', 'updatedBy', 'updatedAt'])
+          && o.get('requestedByUid', null) == request.auth.uid
+          && (activeMemberDoc(wid) || isWsOwner(wid)))
+        || (s1 in ['Approved', 'Rejected']
+          && ch.hasOnly(['status', 'decidedByUid', 'decidedAt', 'reason', 'version', 'updatedBy', 'updatedAt'])
+          && (s1 == 'Approved' || reasonOk(request.resource.data))
+          && approvalDeciderOk(wid, pid, o));
+    }
+
+    // Ruling P3-4. The Owner check runs last (an error in the branch before,
+    // e.g. no members doc, still ends here: error || true is true).
+    function approvalDeciderOk(wid, pid, o) {
+      return (o.get('type', null) == 'mitigation_done'
+          && o.get('requestedByUid', null) != request.auth.uid
+          && activeMemberDoc(wid)
+          && (o.get('approverUid', null) == request.auth.uid
+            || pmDecides(prgMetaOf(v2Project(wid, pid), o.scope.get('programId', null)), o)))
+        || isWsOwner(wid);
+    }
+
+    // The caller is the PM / Deputy (m) and the requester is neither.
+    function pmDecides(m, o) {
+      return isPMOrDeputyUid(m, request.auth.uid)
+        && !isPMOrDeputyUid(m, o.get('requestedByUid', null));
+    }
+
+    function approvalReassignOk(wid, pid, o, n, p) {
+      return n.get('approverUid', null) is string
+        && n.approverUid != o.get('requestedByUid', null)
+        && reassignLogOk(o, n, o.get('reassignLog', []), n.get('reassignLog', []))
+        && approverForTypeOk(wid, pid, o, n, prgMetaOf(p, o.scope.get('programId', null)))
+        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid))
+          || isWsOwner(wid));
+    }
+
+    // Exactly one entry prepended (old entries kept as the suffix), by me,
+    // from the old approver to the new one.
+    function reassignLogOk(o, n, ol, nl) {
+      return ol is list && nl is list
+        && nl.size() == ol.size() + 1
+        && (ol.size() == 0 || nl[1:nl.size()] == ol)
+        && nl[0] is map
+        && nl[0].get('byUid', null) == request.auth.uid
+        && nl[0].get('from', null) == o.get('approverUid', null)
+        && nl[0].get('to', null) == n.approverUid;
+    }
+
+    function approverForTypeOk(wid, pid, o, n, m) {
+      return (o.get('type', null) in scopeTypes() && ownerUidIn(wid, n.approverUid))
+        || (o.get('type', null) == 'mitigation_done'
+          && (mitApproverOk(wid, m, n.approverUid)
+            || leadClaimOk(wid, pid, n.reassignLog[0].get('viaWorkstreamId', null),
+                           o.scope.get('programId', null), n.approverUid)));
+    }
+
+    // a leads ws wsId, a ws of program prg.
+    function leadClaimOk(wid, pid, wsId, prg, a) {
+      return wsInProgram(wid, pid, wsId, prg)
+        && v2WsData(wid, pid, wsId).get('leadUid', null) == a;
+    }
+
+    match /workspaces/{wid}/projects/{pid}/approvals/{reqId} {
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
+
+      // get(): up to 4.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionOnCreate() && stampedByMe() && approvalCreateOk(wid, pid);
+
+      // get(): up to 4.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionBumped() && stampedByMe() && approvalUpdateOk(wid, pid);
+
+      // Never deleted (P3-2): Withdrawn / Rejected stay as the record.
+      allow delete: if false;
     }
 
     // ─────── v2: activity (one event per doc, append-only) ───────
