@@ -93,7 +93,7 @@ describe('runCloseFlow', () => {
     const initial = closeIntentFor({ roles: R, oldTask, nextTask, ...base });
     const saveStep = vi.fn(async () => 'ok');
     const getRoles = vi.fn(() => R);
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles, flush: async () => false, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles, flush: async () => null, saveStep });
     expect(r).toMatchObject({ status: 'ok', outcome: 'direct' });
     expect(saveStep).toHaveBeenCalledTimes(1);
     expect(saveStep.mock.calls[0][0]).toBe(initial.task);
@@ -106,7 +106,7 @@ describe('runCloseFlow', () => {
     // The flushed edit made L the PIC: L must submit now.
     const fresh = mkRoles({ tasks: { tA: info('L') } });
     const saveStep = vi.fn(async () => 'ok');
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => fresh, flush: async () => true, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => fresh, flush: async () => 'ok', saveStep });
     expect(r.outcome).toBe('submit');
     expect(r.task.status).toBe('Submitted');
     expect(r.task.closeRequest.approverUid).toBe('P');
@@ -118,7 +118,7 @@ describe('runCloseFlow', () => {
     const initial = closeIntentFor({ roles: R, oldTask, nextTask, ...base });
     const noLead = mkRoles({ workstreams: { w1: { programId: 'p1', leadUid: 'X', start: null, end: null } } });
     const saveStep = vi.fn(async () => 'ok');
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => noLead, flush: async () => true, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => noLead, flush: async () => 'ok', saveStep });
     expect(r).toMatchObject({ status: 'denied', outcome: 'denied', task: oldTask });
     expect(saveStep).not.toHaveBeenCalled();
   });
@@ -136,7 +136,7 @@ describe('runCloseFlow', () => {
       if (saved.length === 1) roles = mkRoles({ tasks: { tA: info('A', { contributorUids: ['L'] }) } });
       return 'ok';
     };
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => roles, flush: async () => false, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => roles, flush: async () => null, saveStep });
     expect(saved).toHaveLength(2);
     expect(saved[0]).toMatchObject({ status: 'InProgress', contributors: ['Name L'] });
     expect(saved[0].approvedByUid).toBeUndefined();
@@ -150,7 +150,7 @@ describe('runCloseFlow', () => {
     const nextTask = task('tA', 'Completed', { contributors: ['Name X'] });
     const initial = closeIntentFor({ roles: R, oldTask, nextTask, ...base });
     const saved = [];
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => R, flush: async () => false, saveStep: async (t) => { saved.push(t); return 'ok'; } });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => R, flush: async () => null, saveStep: async (t) => { saved.push(t); return 'ok'; } });
     expect(r.outcome).toBe('direct');
     expect(saved.map((t) => t.status)).toEqual(['InProgress', 'Completed']);
     expect(saved[1]).toMatchObject({ approvedByUid: 'L', contributors: ['Name X'] });
@@ -160,9 +160,18 @@ describe('runCloseFlow', () => {
     const nextTask = task('tA', 'Completed', { contributors: ['Name X'] });
     const initial = closeIntentFor({ roles: R, oldTask, nextTask, ...base });
     const saveStep = vi.fn(async () => 'denied');
-    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => R, flush: async () => false, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => R, flush: async () => null, saveStep });
     expect(r).toMatchObject({ status: 'save-failed', saveStatus: 'denied', task: oldTask });
     expect(saveStep).toHaveBeenCalledTimes(1);
+  });
+  it('flush failed -> no step, no ok (the close is aborted, nothing written)', async () => {
+    const oldTask = task('tA', 'InProgress');
+    const nextTask = task('tA', 'Completed');
+    const initial = closeIntentFor({ roles: R, oldTask, nextTask, ...base });
+    const saveStep = vi.fn(async () => 'ok');
+    const r = await runCloseFlow({ ...base, initial, oldTask, nextTask, getRoles: () => R, flush: async () => 'denied', saveStep });
+    expect(r).toMatchObject({ status: 'flush-failed', saveStatus: 'denied', task: oldTask });
+    expect(saveStep).not.toHaveBeenCalled();
   });
   it('a prepared reject (CloseControl) saves once', async () => {
     const sub = applyCloseIntent({ roles: R, oldTask: task('tA', 'InProgress'), nextTask: task('tA', 'Completed'), me: me('A'), now: NOW }).task;
@@ -170,7 +179,7 @@ describe('runCloseFlow', () => {
     const initial = closeIntentFor({ roles: R, oldTask: sub, nextTask: rej, ...base });
     expect(initial.outcome).toBe('prepared');
     const saveStep = vi.fn(async () => 'ok');
-    const r = await runCloseFlow({ ...base, initial, oldTask: sub, nextTask: rej, getRoles: () => R, flush: async () => true, saveStep });
+    const r = await runCloseFlow({ ...base, initial, oldTask: sub, nextTask: rej, getRoles: () => R, flush: async () => 'ok', saveStep });
     expect(r.outcome).toBe('prepared');
     expect(saveStep).toHaveBeenCalledWith(rej);
   });

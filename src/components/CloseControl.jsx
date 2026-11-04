@@ -6,7 +6,7 @@
 import { useContext } from 'react';
 import { MeContext } from './meContext';
 import { applyCloseIntent, reassignClose } from '../closeFlow.js';
-import { closeControlModel, DENIED_MESSAGE } from '../closeWiring.js';
+import { closeControlModel, chokeMessage } from '../closeWiring.js';
 
 const FONT = '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 const C = {
@@ -79,7 +79,7 @@ export function CloseControl({ task, roles, onUpdate, dialogs }) {
       if (reason === null || reason === undefined) return;
       const r = applyCloseIntent({ roles, oldTask: task, nextTask: { ...task, status: 'InProgress' }, me: { uid: me.uid, name: me.name }, now: now(), reason });
       if (r.outcome === 'reject') onUpdate(r.task);
-      else me.notify(DENIED_MESSAGE);
+      else me.notify(chokeMessage(r.outcome) || chokeMessage('denied'));
     }
   };
 

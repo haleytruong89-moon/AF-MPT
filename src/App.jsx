@@ -4983,6 +4983,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 }
 
 function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid }) {
+  const me = useContext(MeContext);
   const dirIndex = useContext(DirectoryIndexContext);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -5053,6 +5054,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   }, [actions]);
 
   const saveAction = (a, opts = {}) => {
+    if (me.readOnly) { me.onReadOnly(); return; } // P3-16: no action, no Chat post in View as
     const wasEditing = !!editing;
     const next = editing ? actions.map((x) => x.id === a.id ? a : x) : [a, ...actions];
     onProjectUpdate({ ...project, actionItems: next });
@@ -12943,22 +12945,22 @@ export default function App() {
   }, [refreshV2Roles]);
 
   // P3 (carry 2, 3): save a pending debounced edit of this project now (before a
-  // close step), or wait for one in flight. true when something was saved.
+  // close step), or wait for one in flight. -> that save's status, or null when nothing was pending.
   const flushProjectSave = useCallback(async (pid) => {
     if (saveTimers.current[pid]) {
       clearTimeout(saveTimers.current[pid]);
       delete saveTimers.current[pid];
       const tree = pendingTree.current[pid];
       delete pendingTree.current[pid];
-      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return false; }
+      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return null; }
       const status = await saveProject(tree);
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
       setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
       refreshV2Roles(pid);
-      return true;
+      return status;
     }
-    if (inflightSaves.current[pid]) { await inflightSaves.current[pid]; return true; }
-    return false;
+    if (inflightSaves.current[pid]) return await inflightSaves.current[pid];
+    return null;
   }, [refreshV2Roles]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
@@ -13045,13 +13047,24 @@ export default function App() {
       flush: () => flushProjectSave(projectId),
       saveStep: async (step) => {
         // Last-saved state + this step only: other unsaved edits never ride in a close write.
-        const tree = replaceTask(v2SavedTree(projectId) || projectsRef.current[projectId], oldTask.id, step);
+        const saved = v2SavedTree(projectId);
+        // The task must be in the saved tree (else replaceTask would write nothing useful).
+        if (!saved || !findTaskInProject(saved, oldTask.id)) {
+          setSaveState((prev) => nextSaveState(prev, projectId, 'error', projectsRef.current[projectId]?.name || 'project'));
+          return 'error';
+        }
+        const tree = replaceTask(saved, oldTask.id, step);
         const status = await saveProject(tree);
         setSaveState((prev) => nextSaveState(prev, projectId, status, tree.name || 'project'));
         refreshV2Roles(projectId);
         return status;
       },
     });
+    if (res.status === 'flush-failed') {
+      // The pending edit was not saved (banner shows it): drop the optimistic close.
+      setTask(oldTask);
+      return;
+    }
     if (res.status === 'denied' || res.status === 'needs-reason') {
       // Re-planned after a flush and refused before any write: undo the optimistic change.
       setTask(res.task);
@@ -13106,7 +13119,9 @@ export default function App() {
       if (intent.outcome === 'denied' && !retried && !rolesNowFor(projectId)?.tasks?.[oldTask.id]) {
         // A task created this session has no roles entry until its first save:
         // save it now, refresh roles, and try once more.
-        flushProjectSave(projectId).then(() => applyTaskUpdateRef.current(updatedTask, projectId, source, '', true));
+        flushProjectSave(projectId).then((st) => {
+          if (st == null || st === 'ok') applyTaskUpdateRef.current(updatedTask, projectId, source, actingAs, true);
+        });
         return 'retry';
       }
       if (intent.outcome === 'denied' || intent.outcome === 'needs-reason') {

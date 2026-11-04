@@ -64,8 +64,9 @@ export function closeIntentFor({ roles, oldTask, nextTask, me, now, reason, isAc
 /**
  * Save a close transition step by step (carry 2, 3).
  * - flush(): persists any pending debounced edit of the project first; returns
- *   true when something was saved (then the intent is re-planned against the
- *   refreshed roles, from the same oldTask -> nextTask).
+ *   null when nothing was pending, else that save's status. 'ok' -> the intent is
+ *   re-planned against the refreshed roles (same oldTask -> nextTask); any other
+ *   status aborts with 'flush-failed' and nothing is saved.
  * - saveStep(task): saves the project tree with this task state; returns the
  *   save status ('ok' | 'denied' | ...). One call per step, in order; a failed
  *   step stops the rest.
@@ -73,10 +74,12 @@ export function closeIntentFor({ roles, oldTask, nextTask, me, now, reason, isAc
  *   saved state with fresh roles: a manager who became PIC / contributor
  *   submits instead (rules check the new contributorUids).
  * Returns { status, outcome, task }: task = the last state saved (oldTask when
- * nothing was saved); status = 'ok', 'save-failed' (saveStatus = the save's status), or 'denied' / 'needs-reason' (refused before any write).
+ * nothing was saved); status = 'ok', 'flush-failed' / 'save-failed' (saveStatus = that save's status), or 'denied' / 'needs-reason' (refused before any write).
  */
 export async function runCloseFlow({ initial, oldTask, nextTask, me, now, getRoles, flush, saveStep, isActive }) {
   const flushed = await flush();
+  // A failed pre-close save aborts the close: nothing is written on top of it.
+  if (flushed && flushed !== 'ok') return { status: 'flush-failed', saveStatus: flushed, outcome: initial.outcome, task: oldTask };
   const r = flushed ? closeIntentFor({ roles: getRoles(), oldTask, nextTask, me, now, isActive }) : initial;
   if (!r.steps.length) return { status: r.outcome, outcome: r.outcome, task: oldTask };
   let outcome = r.outcome;
