@@ -565,4 +565,25 @@ describe('planRestore', () => {
       b1: r1, b2: { resolvedAt: '2026-11-02T00:00:00.000Z', resolvedBy: 'Bob', resolution: null, authorUid: 'p2-restore' },
     });
   });
+
+  it('P-27: a backup entry unresolved while the live map has its key -> warning resolution-kept (task + update ids)', () => {
+    const live = makeLive();
+    const t2 = doc(live, 'tasks', 't2');
+    const blk = (id) => ({ id, text: `blocked ${id}`, isBlocker: true, authorUid: 'uid2' });
+    t2.updates = [blk('b2'), blk('b1'), ...t2.updates];
+    const r = (n) => ({ resolvedAt: `2026-11-0${n}T00:00:00.000Z`, resolvedBy: 'Bob', resolution: String(n), authorUid: 'uid2' });
+    t2.blockerResolutions = { b1: r(1), b2: r(2) };
+    // Current backup: resolutions folded in -> no warning.
+    expect(plan(live, backupOf(live)).warnings.filter((w) => w.code === 'resolution-kept')).toEqual([]);
+    // Older backup: both blockers unresolved (nothing else changed) -> kept resolved, warned.
+    const old = backupOf(live);
+    task(old, 't2').updates = task(old, 't2').updates.map((u) => {
+      const { resolvedAt: _a, resolvedBy: _b, resolution: _c, ...raw } = u;
+      void _a; void _b; void _c;
+      return raw;
+    });
+    const p = plan(live, old);
+    expect(p.warnings.filter((w) => w.code === 'resolution-kept')).toEqual([{ code: 'resolution-kept', detail: 'tasks/t2: b2, b1' }]);
+    expect(p.ops).toEqual([]);
+  });
 });

@@ -46,7 +46,8 @@ const pick = (o) => {
  * nextFolded = the task data from the App tree. Each next entry whose stored entry
  * (same id) is unresolved but carries a resolution gets its raw form back; the
  * resolution goes to blockerResolutions[id] (unchanged when it equals the stored
- * value, else { ...fields, authorUid: uid }). The map is emitted only when it is
+ * value, else { ...fields, authorUid: cur.authorUid ?? uid }: an edit keeps the
+ * original resolver). The map is emitted only when it is
  * non-empty or was stored (a stored map is always re-sent; never null / {} created).
  */
 export function unfoldResolutions(storedRaw, nextFolded, uid) {
@@ -71,7 +72,8 @@ export function unfoldResolutions(storedRaw, nextFolded, uid) {
       const fields = pick(e);
       const cur = map[key];
       if (!(isObj(cur) && same(pick(cur), fields))) {
-        map[key] = { ...fields, authorUid: uid };
+        // An edit keeps the original resolver; a new key is stamped with the caller.
+        map[key] = { ...fields, authorUid: (isObj(cur) ? cur.authorUid : undefined) ?? uid };
         changed = true;
       }
       const raw = { ...e };

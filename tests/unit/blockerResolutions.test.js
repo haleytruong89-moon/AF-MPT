@@ -85,13 +85,24 @@ describe('unfoldResolutions', () => {
     expect(Object.keys(u.blockerResolutions)).toEqual(['u1']);
   });
 
-  it('a changed resolution of a stored key is rewritten with the caller as authorUid (an edit)', () => {
+  it('a changed resolution of a stored key keeps the original resolver authorUid (an edit)', () => {
     const t = storedTask();
     const f = foldResolutions(t);
     f.updates[2] = { ...f.updates[2], resolvedBy: 'renamed@smartosc.com' };
     const u = unfoldResolutions(t, f, 'uPM');
-    expect(u.blockerResolutions.u1).toEqual({ ...res('renamed@smartosc.com', 'uPM') });
+    expect(u.blockerResolutions.u1).toEqual({ ...res('renamed@smartosc.com', 'uA') });
     expect(newResolutionKeys(t, u)).toEqual([]);
+  });
+
+  it('an edit of a stored key without authorUid stamps the caller', () => {
+    const t = storedTask();
+    const { authorUid: _a, ...noAuthor } = t.blockerResolutions.u1;
+    void _a;
+    t.blockerResolutions.u1 = noAuthor;
+    const f = foldResolutions(t);
+    f.updates[2] = { ...f.updates[2], resolution: 'edited' };
+    const u = unfoldResolutions(t, f, 'uPM');
+    expect(u.blockerResolutions.u1).toEqual(res('a@smartosc.com', 'uPM', { resolution: 'edited' }));
   });
 
   it('new entries, legacy in-place and id-less entries stay as they are', () => {

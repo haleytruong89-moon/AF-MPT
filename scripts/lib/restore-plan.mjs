@@ -169,6 +169,16 @@ function fieldChanges(kind, id, old, fin, out, list) {
   }
 }
 
+// Update ids of `fin` (the backup task) still unresolved while the live map
+// `old.blockerResolutions` has their key: the restore keeps them resolved.
+function resolutionKept(old, fin) {
+  const map = isObj(old.blockerResolutions) ? old.blockerResolutions : null;
+  if (!map || !Array.isArray(fin.updates)) return [];
+  return fin.updates
+    .filter((u) => isObj(u) && u.id != null && u.resolvedAt == null && hasOwn(map, String(u.id)))
+    .map((u) => String(u.id));
+}
+
 const emptyReport = () => ({
   perKind: Object.fromEntries(SUBCOLS.map((k) => [k, { create: 0, update: 0, unchanged: 0, retained: 0 }])),
   retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
@@ -286,7 +296,12 @@ export function planRestore({
         // (folded); move them back to the live append-only map as the App planner does.
         // The map never loses a key; a resolution new to it is stamped RESTORE_STAMP.
         let fin = overlay(kind, old, nd);
-        if (kind === 'tasks') fin = unfoldResolutions(old, fin, RESTORE_STAMP);
+        if (kind === 'tasks') {
+          // Ruling P3-8: the map never loses a key, so these stay resolved; say so in the preview.
+          const kept = resolutionKept(old, fin);
+          if (kept.length) warn('resolution-kept', `tasks/${id}: ${kept.join(', ')}`);
+          fin = unfoldResolutions(old, fin, RESTORE_STAMP);
+        }
         fin = carryDoc(kind, old, fin);
         if (isDeepStrictEqual(fin, old)) {
           pk.unchanged++;
