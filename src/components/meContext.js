@@ -10,4 +10,6 @@ export const MeContext = React.createContext({
   readOnly: false,
   nameOf: (uid) => uid,
   isActive: () => true,
+  onReadOnly: () => {},
+  notify: () => {},
 });

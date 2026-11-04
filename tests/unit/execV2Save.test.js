@@ -199,4 +199,10 @@ describe('applyWritten (shim cache refresh)', () => {
     expect(loaded.docs.workstreams.has('w1')).toBe(false);
     expect(loaded.meta).toEqual({ name: 'b' });
   });
+
+  it('dotted metaPatch keys update nested programMeta fields; DELETE_FIELD removes the nested key', () => {
+    const loaded = { meta: { programMeta: { A: { name: 'a', pmUid: 'P', __absent: ['raid'] }, B: { name: 'b' } } }, docs: { workstreams: new Map(), tasks: new Map(), actions: new Map(), raid: new Map(), decisions: new Map() } };
+    applyWritten(loaded, [], { 'programMeta.A.name': 'a2', 'programMeta.A.__absent': DELETE_FIELD, 'programMeta.B': DELETE_FIELD, 'programMeta.C': { name: 'c' } });
+    expect(loaded.meta.programMeta).toEqual({ A: { name: 'a2', pmUid: 'P' }, C: { name: 'c' } });
+  });
 });

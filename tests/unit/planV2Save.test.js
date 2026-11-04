@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fixture from '../fixtures/v1-project.json';
 import { splitProject, assembleProject } from '../../src/migrateV2.js';
 import { buildDirectoryIndex } from '../../src/directory.js';
-import { planV2Save, DELETE_FIELD } from '../../src/planV2Save.js';
+import { planV2Save, DELETE_FIELD, programMetaPatch } from '../../src/planV2Save.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const dirIndex = buildDirectoryIndex([
@@ -231,8 +231,8 @@ describe('planV2Save', () => {
     tree.programs[1].raid = [{ id: 'rN', title: 'New risk' }];
     const own = planV2Save(loaded, tree, ctx({ isOwner: true }));
     expect(allOps(own)).toEqual([{ kind: 'raid', op: 'create', id: 'pg2', data: expect.objectContaining({ programId: 'pg2', version: 1 }) }]);
-    expect(own.metaPatch.programMeta.pg2).not.toHaveProperty('__absent');
-    expect(own.metaPatch.programMeta.pg1).toEqual(loaded.meta.programMeta.pg1);
+    // Dotted field patch: only the cleared flag, nothing else of pg1 / pg2.
+    expect(own.metaPatch).toEqual({ 'programMeta.pg2.__absent': DELETE_FIELD });
     const other = planV2Save(loaded, tree, ctx());
     expect(allOps(other)).toHaveLength(1);
     expect(other.metaPatch).toBeNull();
@@ -270,15 +270,13 @@ describe('planV2Save', () => {
     expect(planV2Save(loaded, tree, ctx({ isOwner: true })).metaPatch).toEqual({ projectLead: DELETE_FIELD });
   });
 
-  it('programMeta change (program renamed) -> metaPatch.programMeta keeps pmUid', () => {
+  it('programMeta change (program renamed) -> one dotted name field, pmUid / deputyUid untouched', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
     tree.programs[0].name = 'Program Renamed';
     const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
     expect(r.batches).toEqual([]);
-    expect(Object.keys(r.metaPatch)).toEqual(['programMeta']);
-    expect(r.metaPatch.programMeta.pg1).toMatchObject({ name: 'Program Renamed', pmUid: 'uidPM' });
-    expect(r.metaPatch.programMeta.pg2.deputyUid).toBe('uidPM2');
+    expect(r.metaPatch).toEqual({ 'programMeta.pg1.name': 'Program Renamed' });
   });
 
   it('keeps stored picUid when pic text is unchanged; orphans are never deleted', () => {
@@ -498,5 +496,38 @@ describe('planV2Save', () => {
     planV2Save(loaded, tree, ctx());
     expect(tree).toEqual(snapTree);
     expect(loaded.docs.tasks.get('t2')).toEqual(snapT2);
+  });
+});
+
+describe('planV2Save programMeta (dotted patches)', () => {
+  it('stale loaded copy (no pmUid) renames a program -> only programMeta.<id>.name, pmUid untouched', () => {
+    const loaded = makeLoaded();
+    delete loaded.meta.programMeta.pg1.pmUid; // this tab loaded before the admin script set it
+    const tree = treeOf(loaded);
+    tree.programs[0].name = 'Renamed program';
+    const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
+    expect(r.metaPatch).toEqual({ 'programMeta.pg1.name': 'Renamed program' });
+  });
+});
+
+describe('programMetaPatch', () => {
+  it('changed fields only; new program whole; deleted program key deleted', () => {
+    const stored = { A: { name: 'a', order: 1, pmUid: 'P' }, B: { name: 'b' }, C: { name: 'c', __absent: ['raid'] } };
+    const next = { A: { name: 'a2', order: 1, pmUid: 'P' }, C: { name: 'c' }, D: { name: 'd', order: 4 } };
+    expect(programMetaPatch(stored, next)).toEqual({
+      'programMeta.A.name': 'a2',
+      'programMeta.B': DELETE_FIELD,
+      'programMeta.C.__absent': DELETE_FIELD,
+      'programMeta.D': { name: 'd', order: 4 },
+    });
+  });
+  it('a KEEP field absent or null in the next entry is left alone (never deleted / nulled)', () => {
+    expect(programMetaPatch({ A: { name: 'a', pmUid: 'P', start: '2026-01-01' } }, { A: { name: 'a' } })).toEqual({});
+    expect(programMetaPatch({ A: { name: 'a' } }, { A: { name: 'a', pmUid: null, deputyUid: null } })).toEqual({});
+    expect(programMetaPatch({ A: { name: 'a', pmUid: 'P' } }, { A: { name: 'a', pmUid: 'Q' } })).toEqual({ 'programMeta.A.pmUid': 'Q' });
+  });
+  it('unchanged -> {}; unsafe key -> whole programMeta', () => {
+    expect(programMetaPatch({ A: { name: 'a' } }, { A: { name: 'a' } })).toEqual({});
+    expect(programMetaPatch({ 'a.b': { name: 'x' } }, { 'a.b': { name: 'y' } })).toEqual({ programMeta: { 'a.b': { name: 'y' } } });
   });
 });

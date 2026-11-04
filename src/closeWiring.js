@@ -3,7 +3,7 @@
 // sequencing (flush, step saves, re-check after a credit step) is unit-tested.
 import { statusOf, OPEN_STATUSES } from './taskStatus.js';
 import {
-  applyCloseIntent, eligibleApprovers, canCloseDirectly, canDecideClose, managerLevel,
+  applyCloseIntent, eligibleApprovers, canCloseDirectly, canDecideClose, managerLevel, canSubmit,
 } from './closeFlow.js';
 
 export const DENIED_MESSAGE = "You can't change this task's status — ask your Sub-PM or PM.";
@@ -17,6 +17,12 @@ export function chokeMessage(outcome, approverName) {
   if (outcome === 'needs-reason') return NEEDS_REASON_MESSAGE;
   if (outcome === 'submit') return `Submitted for approval — ${approverName || 'your approver'} will review.`;
   return null;
+}
+
+/** Toast when a re-plan after a flush changed the outcome (submit -> direct says "Closed"). */
+export function replanMessage(outcome, approverName) {
+  if (outcome === 'direct') return 'Closed';
+  return chokeMessage(outcome, approverName);
 }
 
 /** An outcome that writes a close transition (v2), as opposed to a plain edit. */
@@ -113,7 +119,7 @@ export function replaceTask(project, taskId, task) {
 /**
  * What CloseControl shows. buttons: ids in display order —
  * open: 'Planned', 'InProgress', then 'Completed' + 'Dropped' (direct) or
- * 'submit-done' + 'submit-dropped'; Submitted: 'withdraw' (requester),
+ * 'submit-done' + 'submit-dropped' (only when canSubmit); Submitted: 'withdraw' (requester),
  * 'approve' + 'reject' (canDecideClose), 'reassign' (Owner or PM/Deputy, not the
  * requester, with an active eligible target); closed: 'reopen' (managers).
  * readOnly: no buttons.
@@ -127,9 +133,9 @@ export function closeControlModel({ task, roles, me, readOnly = false, isActive 
   const out = { kind, status, buttons: [], pending, reassignTargets: [] };
   if (readOnly || !uid) return out;
   if (kind === 'open') {
-    out.buttons = canCloseDirectly(roles, task.id, uid)
-      ? ['Planned', 'InProgress', 'Completed', 'Dropped']
-      : ['Planned', 'InProgress', 'submit-done', 'submit-dropped'];
+    if (canCloseDirectly(roles, task.id, uid)) out.buttons = ['Planned', 'InProgress', 'Completed', 'Dropped'];
+    else if (canSubmit(roles, task.id, uid)) out.buttons = ['Planned', 'InProgress', 'submit-done', 'submit-dropped'];
+    else out.buttons = ['Planned', 'InProgress'];
     return out;
   }
   if (kind === 'submitted') {

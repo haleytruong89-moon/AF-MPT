@@ -13,7 +13,8 @@
 //     updatedBy, updatedAt;
 //   - create: conflict if the doc exists; set data (version 1) + updatedBy, updatedAt;
 //   - delete: skipped if the doc is already gone; conflict on a version mismatch.
-// metaPatch (batch 1 only): tx.update on the project doc + updatedAt.
+// metaPatch (batch 1 only): tx.update on the project doc + updatedAt. Dotted keys
+// (programMeta.<id>.<field>) are field paths, so only those nested fields change.
 // A conflict writes nothing in that batch. Rules denial of any write fails the whole
 // batch (Firestore transactions are atomic) -> 'denied'.
 //
@@ -99,8 +100,16 @@ export function applyWritten(loaded, written, metaPatch = null) {
   if (metaPatch) {
     const meta = { ...loaded.meta };
     for (const [k, v] of Object.entries(metaPatch)) {
-      if (v === DELETE_FIELD) delete meta[k];
-      else meta[k] = v;
+      // Dotted keys (programMeta.<id>[.<field>]) are nested field paths, as in tx.update.
+      const path = k.split('.');
+      let o = meta;
+      for (const p of path.slice(0, -1)) {
+        o[p] = o[p] && typeof o[p] === 'object' ? { ...o[p] } : {};
+        o = o[p];
+      }
+      const last = path[path.length - 1];
+      if (v === DELETE_FIELD) delete o[last];
+      else o[last] = v;
     }
     loaded.meta = meta;
   }

@@ -312,4 +312,18 @@ describe('P2.3 v2 save executor against the rules', () => {
     const end = await save(ASG, (t) => { taskIn(t, 't1').end = '2026-12-15'; });
     expect(end.r.status).toBe('denied');
   });
+  it('EXEC-PM stale Owner tab renames a program: only programMeta.<id>.name changes; pmUid / deputyUid set meanwhile survive', async () => {
+    const db = await asUser(OWNER.uid, OWNER.email);
+    const stale = await load(db); // loaded before the admin script
+    const e = await getEnv();
+    await e.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), PV), { 'programMeta.prg1.deputyUid': 'u_dep', 'programMeta.prg2.pmUid': 'u_pm2' });
+    });
+    const { r, plan } = await save(OWNER, (t) => { t.programs[0].name = 'Program 1 renamed'; }, { loadedState: stale });
+    expect(plan.metaPatch).toEqual({ 'programMeta.prg1.name': 'Program 1 renamed' });
+    expect(r.status).toBe('ok');
+    const pv = await serverDoc(PV);
+    expect(pv.programMeta.prg1).toMatchObject({ name: 'Program 1 renamed', pmUid: PM.uid, deputyUid: 'u_dep' });
+    expect(pv.programMeta.prg2.pmUid).toBe('u_pm2');
+  });
 });

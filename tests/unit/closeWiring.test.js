@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chokeMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeControlModel,
+  chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeControlModel,
   DENIED_MESSAGE, NEEDS_REASON_MESSAGE,
 } from '../../src/closeWiring.js';
 import { applyCloseIntent, reassignClose } from '../../src/closeFlow.js';
@@ -34,6 +34,14 @@ describe('chokeMessage (verbatim copy)', () => {
   it('isCloseOutcome: plain edits and refusals are not close writes', () => {
     for (const o of ['legacy', 'unchanged', 'denied', 'needs-reason']) expect(isCloseOutcome(o)).toBe(false);
     for (const o of ['submit', 'direct', 'approve', 'reject', 'withdraw', 'reopen', 'prepared']) expect(isCloseOutcome(o)).toBe(true);
+  });
+});
+
+describe('replanMessage (outcome changed after a flush)', () => {
+  it('submit -> direct says Closed; direct -> submit names the approver; others as chokeMessage', () => {
+    expect(replanMessage('direct')).toBe('Closed');
+    expect(replanMessage('submit', 'lybk')).toBe('Submitted for approval — lybk will review.');
+    expect(replanMessage('approve')).toBe(null);
   });
 });
 
@@ -192,6 +200,9 @@ describe('closeControlModel', () => {
   });
   it('a contributor-manager submits (P3-C2)', () => {
     expect(closeControlModel({ task: task('tC', 'Planned'), roles: R, me: me('L') }).buttons).toContain('submit-done');
+  });
+  it('no Submit buttons for someone who can neither close nor submit (not PIC, not a manager)', () => {
+    expect(closeControlModel({ task: task('tA', 'InProgress'), roles: R, me: me('X') }).buttons).toEqual(['Planned', 'InProgress']);
   });
   it('Submitted: requester Withdraw; approver Approve/Reject; PM Approve/Reject/Reassign', () => {
     const a = closeControlModel({ task: sub, roles: R, me: me('A') });

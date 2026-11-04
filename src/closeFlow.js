@@ -112,7 +112,7 @@ export function canDecideClose(roles, task, uid) {
 }
 
 // Rules closeSubmitOk: the PIC (Assignee branch) or a manager may submit.
-function canSubmit(roles, taskId, uid) {
+export function canSubmit(roles, taskId, uid) {
   const lvl = managerLevel(roles, taskId, uid);
   return lvl === 'pm' || lvl === 'lead' || (!!uid && taskInfo(roles, taskId).picUid === uid);
 }

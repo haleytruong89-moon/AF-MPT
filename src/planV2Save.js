@@ -11,7 +11,10 @@
 //   - create data carries version 1; update data is the full doc without
 //     version / updatedBy / updatedAt (the executor writes version = expectVersion + 1).
 //   - metaPatch: changed project-doc fields (DELETE_FIELD = remove the field);
-//     programMeta, when changed, is given whole.
+//     programMeta as dotted field updates (programMeta.<id>.<field>, a new
+//     program whole as programMeta.<id>, a removed one deleted), only for fields
+//     that differ from loaded, so a stale tab never clears pmUid / deputyUid set
+//     by another writer (programMetaPatch).
 //   - refused: 'task-delete' (tasks are never deleted, CLAUDE.md), 'history-wipe'
 //     (a non-empty updates list would become empty; guards the ActionForm bug) or
 //     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
@@ -51,6 +54,38 @@ const STEP_LISTS = { tasks: ['updates', 'checkIns'], actions: ['updates'] };
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// Firestore dotted-path segment we can write without FieldPath escaping.
+const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * programMeta changes as dotted update keys (Firestore tx.update field paths):
+ * a changed field -> 'programMeta.<id>.<field>' (DELETE_FIELD when removed), a new
+ * program -> 'programMeta.<id>' whole, a removed program -> 'programMeta.<id>'
+ * DELETE_FIELD. KEEP_PROGRAM fields (pmUid / deputyUid / start / end) are written
+ * only when the next entry carries a different non-null value; never deleted or nulled. A key or
+ * field that is not a plain segment falls back to the whole map.
+ */
+export function programMetaPatch(storedPM = {}, nextPM = {}) {
+  const out = {};
+  let unsafe = false;
+  const put = (path, v) => { if (!path.every((p) => SAFE_SEGMENT.test(p))) unsafe = true; out[['programMeta', ...path].join('.')] = v; };
+  for (const id of Object.keys(storedPM)) if (!hasOwn(nextPM, id)) put([id], DELETE_FIELD);
+  for (const [id, e] of Object.entries(nextPM)) {
+    const s = storedPM[id];
+    if (!s || typeof s !== 'object') { if (!deepEqual(s, e)) put([id], e); continue; }
+    for (const k of new Set([...Object.keys(s), ...Object.keys(e || {})])) {
+      const keep = KEEP_PROGRAM.includes(k);
+      // A KEEP field is never deleted or nulled from here: null / absent in the
+      // tree only means this tab never saw a value (e.g. loaded before the script).
+      if (!hasOwn(e || {}, k)) { if (!keep) put([id, k], DELETE_FIELD); continue; }
+      if (keep && e[k] == null) continue;
+      if (!hasOwn(s, k) || !deepEqual(s[k], e[k])) put([id, k], e[k]);
+    }
+  }
+  if (unsafe) return deepEqual(storedPM, nextPM) ? {} : { programMeta: nextPM };
+  return out;
+}
 
 function deepEqual(a, b) {
   if (a === b) return true;
@@ -362,7 +397,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
     }
     nextPM[key] = e;
   }
-  if (!deepEqual(nextPM, storedPM)) metaPatch.programMeta = nextPM;
+  Object.assign(metaPatch, programMetaPatch(storedPM, nextPM));
 
   const out = batches[0].length ? batches : [];
   return { batches: out, metaPatch: Object.keys(metaPatch).length ? metaPatch : null, refused: null };

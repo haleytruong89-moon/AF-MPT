@@ -160,6 +160,22 @@ export function v2RolesNow(pid: string, fallbackOwnerUids?: string[]): ReturnTyp
   return rolesFromLoaded(loaded, ownerUids);
 }
 
+/**
+ * P3 Task 7 (fix round 1): the App value of a v2 project as last read / saved by
+ * this client (assembled from `loaded`). A close step is saved as this tree with
+ * only its task replaced, so other unsaved edits never ride in a close write.
+ */
+export function v2SavedTree(pid: string): Record<string, unknown> | null {
+  const loaded = v2Loaded.get(pid);
+  if (!loaded) return null;
+  const list = (m: Map<string, V2Entry>) => [...m.entries()].map(([id, e]) => ({ id, data: e.data }));
+  const d = loaded.docs;
+  const { project, orphanCount } = assembleFromSnapshots({
+    meta: loaded.meta, ws: list(d.workstreams), tasks: list(d.tasks), actions: list(d.actions), raid: list(d.raid), decisions: list(d.decisions),
+  });
+  return appValueFromV2(project as Record<string, unknown>, pid, orphanCount) as Record<string, unknown>;
+}
+
 // Directory for person -> uid resolution in planV2Save, built like the P2 scripts
 // (members + invites feed the index; uidByEmail from members only). Loaded once; a
 // failed load is retried on the next save, and that save plans without it
