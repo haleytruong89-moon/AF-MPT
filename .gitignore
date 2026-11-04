@@ -52,3 +52,6 @@ p2-*-manifest*.json
 
 # P2.4 rollback lost-data reports (full v2 doc data) - never commit
 p2-*-lost*.json
+
+# P2.4b restore snapshots / manifests (full v2 doc data) - never commit
+p2-restore-*.json
