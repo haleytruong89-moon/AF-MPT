@@ -531,3 +531,102 @@ describe('programMetaPatch', () => {
     expect(programMetaPatch({ 'a.b': { name: 'x' } }, { 'a.b': { name: 'y' } })).toEqual({ programMeta: { 'a.b': { name: 'y' } } });
   });
 });
+
+// P3 Task 8 (Ruling P3-8): blocker resolutions fold on read / unfold on save.
+describe('planV2Save blocker resolutions (append-only map)', () => {
+  const blk = (id) => ({ id, text: `blocker ${id}`, isBlocker: true, author: 'Bob', timestamp: '2026-10-20T00:00:00Z', authorUid: 'uid2' });
+  const resolve = (tree, i, at, note = null) => {
+    const t = ws1(tree).tasks[1];
+    t.updates[i] = { ...t.updates[i], resolvedAt: at, resolvedBy: 'Bob', resolution: note };
+  };
+  const seed = (loaded, map) => {
+    const d = loaded.docs.tasks.get('t2').data;
+    d.updates = [blk('b2'), blk('b1')];
+    if (map) d.blockerResolutions = map;
+    return d;
+  };
+
+  it('planV2Save: Assignee resolving a blocker -> one update op whose data.updates equals stored updates and data.blockerResolutions has one key', () => {
+    const loaded = makeLoaded();
+    const stored = seed(loaded);
+    const tree = treeOf(loaded);
+    resolve(tree, 1, '2026-10-26T00:00:00.000Z', 'Got bank approval');
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.refused).toBeNull();
+    expect(r.batches).toHaveLength(1);
+    expect(r.batches[0]).toHaveLength(1);
+    const op = r.batches[0][0];
+    expect(op).toMatchObject({ kind: 'tasks', op: 'update', id: 't2', expectVersion: 3 });
+    expect(op.data.updates).toEqual(stored.updates);
+    expect(op.data.blockerResolutions).toEqual({
+      b1: { resolvedAt: '2026-10-26T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'Got bank approval', authorUid: 'uid2' },
+    });
+  });
+
+  it('a stored map folds into the tree; the untouched tree is a no-op', () => {
+    const loaded = makeLoaded();
+    seed(loaded, { b1: { resolvedAt: '2026-10-25T00:00:00.000Z', resolvedBy: 'Bob', resolution: null, authorUid: 'uid2' } });
+    const tree = treeOf(loaded);
+    expect(ws1(tree).tasks[1]).not.toHaveProperty('blockerResolutions');
+    expect(ws1(tree).tasks[1].updates[1]).toMatchObject({ id: 'b1', resolvedAt: '2026-10-25T00:00:00.000Z', resolvedBy: 'Bob', resolution: null });
+    expect(planV2Save(loaded, tree, ctx({ uid: 'uid2' }))).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
+  it('two new resolutions -> two sequential single-key batches, oldest first; the stored map is re-sent', () => {
+    const loaded = makeLoaded();
+    const old = { resolvedAt: '2026-10-01T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'x', authorUid: 'uid2' };
+    const stored = seed(loaded, { b0: old });
+    const tree = treeOf(loaded);
+    resolve(tree, 0, '2026-10-26T02:00:00.000Z');
+    resolve(tree, 1, '2026-10-26T01:00:00.000Z');
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches).toHaveLength(2);
+    const [s1, s2] = r.batches.map((b) => b.find((o) => o.id === 't2'));
+    expect(s1.expectVersion).toBe(3);
+    expect(s2.expectVersion).toBe(4);
+    expect(s1.data.updates).toEqual(stored.updates);
+    expect(s2.data.updates).toEqual(stored.updates);
+    expect(Object.keys(s1.data.blockerResolutions).sort()).toEqual(['b0', 'b1']);
+    expect(Object.keys(s2.data.blockerResolutions).sort()).toEqual(['b0', 'b1', 'b2']);
+    expect(s2.data.blockerResolutions.b2).toMatchObject({ resolvedAt: '2026-10-26T02:00:00.000Z', authorUid: 'uid2' });
+  });
+
+  it('resolution + a new update land in one step; other edits on a task with a map keep the map', () => {
+    const loaded = makeLoaded();
+    const map = { b0: { resolvedAt: '2026-10-01T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'x', authorUid: 'uid2' } };
+    const stored = seed(loaded, map);
+    const tree = treeOf(loaded);
+    resolve(tree, 1, '2026-10-26T00:00:00.000Z');
+    ws1(tree).tasks[1].updates.unshift({ id: 'n1', text: 'resolved, moving on' });
+    let r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches).toHaveLength(1);
+    expect(r.batches[0][0].data.updates).toEqual([{ id: 'n1', text: 'resolved, moving on', authorUid: 'uid2' }, ...stored.updates]);
+    expect(Object.keys(r.batches[0][0].data.blockerResolutions).sort()).toEqual(['b0', 'b1']);
+
+    const tree2 = treeOf(loaded);
+    ws1(tree2).tasks[1].name = 'Renamed';
+    r = planV2Save(loaded, tree2, ctx({ uid: 'uid2' }));
+    expect(r.batches[0][0].data.blockerResolutions).toEqual(map);
+  });
+
+  it('a task without a map never gets blockerResolutions (no null, no {})', () => {
+    const loaded = makeLoaded();
+    seed(loaded);
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].name = 'Renamed';
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches[0][0].data).not.toHaveProperty('blockerResolutions');
+  });
+
+  it('a legacy in-place resolution and a resolved new blocker are written in place', () => {
+    const loaded = makeLoaded();
+    const d = seed(loaded);
+    d.updates[1] = { ...d.updates[1], resolvedAt: '2026-10-02T00:00:00Z', resolvedBy: 'Bob', resolution: null };
+    const tree = treeOf(loaded);
+    expect(planV2Save(loaded, tree, ctx({ uid: 'uid2' })).batches).toEqual([]);
+    ws1(tree).tasks[1].updates.unshift({ ...blk('b3'), resolvedAt: '2026-10-26T00:00:00Z', resolvedBy: 'Bob', resolution: null });
+    const op = planV2Save(loaded, tree, ctx({ uid: 'uid2' })).batches[0][0];
+    expect(op.data.updates[0]).toMatchObject({ id: 'b3', resolvedAt: '2026-10-26T00:00:00Z' });
+    expect(op.data).not.toHaveProperty('blockerResolutions');
+  });
+});

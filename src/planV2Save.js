@@ -34,7 +34,13 @@
 // A RAID doc whose items is [] is never created (App ensureProjectRaid placeholder).
 // Ruling X: a task / action list that gains k > 1 entries is written in k steps
 // (rules allow one new entry per write); step 1 sits in batch 1 with every other op.
+// Ruling P3-8 (Task 8): a task's in-place resolution of a stored, unresolved blocker
+// is moved to the append-only blockerResolutions map (unfoldResolutions; the raw
+// updates entry is restored, authorUid = uid). k > 1 new map keys are written in k
+// steps like Ruling X (one key per write, oldest resolvedAt first). A stored map is
+// always re-sent on the full-doc set; none is ever created empty or null.
 import { splitProject, assembleProject } from './migrateV2.js';
+import { unfoldResolutions, newResolutionKeys } from './blockerResolutions.js';
 
 export const DELETE_FIELD = Symbol('planV2Save.deleteField');
 
@@ -271,7 +277,9 @@ function steps(kind, oldData, data) {
     const newIdx = flags.map((f, i) => (f ? i : -1)).filter((i) => i >= 0).sort((a, b) => b - a);
     return { k, newIdx };
   });
-  const n = Math.max(1, ...plan.map((p) => p.newIdx.length));
+  // Ruling P3-8: one new blockerResolutions key per step as well.
+  const newKeys = kind === 'tasks' ? newResolutionKeys(oldData, data) : [];
+  const n = Math.max(1, newKeys.length, ...plan.map((p) => p.newIdx.length));
   if (n === 1) return [data];
   const out = [];
   for (let s = 1; s <= n; s++) {
@@ -279,6 +287,10 @@ function steps(kind, oldData, data) {
     for (const { k, newIdx } of plan) {
       const keep = new Set(newIdx.slice(0, s));
       d[k] = data[k].filter((_, i) => !newIdx.includes(i) || keep.has(i));
+    }
+    if (newKeys.length > s) {
+      const later = new Set(newKeys.slice(s));
+      d.blockerResolutions = Object.fromEntries(Object.entries(data.blockerResolutions).filter(([key]) => !later.has(key)));
     }
     out.push(d);
   }
@@ -334,7 +346,9 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         push(0, { kind, op: 'delete', id, expectVersion: versionOf(entry) });
         continue;
       }
-      const data = carryDoc(kind, old, overlay(kind, old, strip(nextById.get(id))));
+      let data = overlay(kind, old, strip(nextById.get(id)));
+      if (kind === 'tasks') data = unfoldResolutions(old, data, uid);
+      data = carryDoc(kind, old, data);
       if (deepEqual(data, old)) continue;
       // Ruling AH: without the directory a changed person cannot be resolved; never
       // write null uids for it.

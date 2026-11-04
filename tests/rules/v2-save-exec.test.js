@@ -326,4 +326,66 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(pv.programMeta.prg1).toMatchObject({ name: 'Program 1 renamed', pmUid: PM.uid, deputyUid: 'u_dep' });
     expect(pv.programMeta.prg2.pmUid).toBe('u_pm2');
   });
+
+  // P3 Task 8 (Ruling P3-8): the App resolves a blocker in place (App.jsx
+  // resolveBlocker); the planner moves it to the append-only map, one key per write.
+  describe('blocker resolutions (fold / unfold)', () => {
+    const blk = (id) => ({ id, text: `blocked ${id}`, isBlocker: true, author: ASG.email, timestamp: '2026-10-20T00:00:00Z', authorUid: ASG.uid });
+    const resolveIn = (t, id, at, note) => {
+      t.updates = t.updates.map((u) => (u.id === id ? { ...u, resolvedAt: at, resolvedBy: ASG.email, resolution: note } : u));
+    };
+    beforeEach(async () => {
+      const e = await getEnv();
+      await e.withSecurityRulesDisabled(async (ctx) => {
+        await updateDoc(doc(ctx.firestore(), `${PV}/tasks/t1`), { updates: [blk('b2'), blk('b1')] });
+      });
+      txCount = 0;
+    });
+
+    it('EXEC-BR1 Assignee resolves a blocker and posts an update in one save: one transaction, map key, raw updates', async () => {
+      const { r, plan } = await save(ASG, (t) => {
+        const task = taskIn(t, 't1');
+        resolveIn(task, 'b1', '2026-10-26T01:00:00.000Z', 'Bank approved');
+        task.updates.unshift(upd(ASG, 'unblocked'));
+      });
+      expect(plan.batches).toHaveLength(1);
+      expect(r.status).toBe('ok');
+      expect(txCount).toBe(1);
+      const t1 = await serverDoc(`${PV}/tasks/t1`);
+      expect(t1.version).toBe(2);
+      expect(t1.updates).toEqual([{ ...upd(ASG, 'unblocked'), authorUid: ASG.uid }, blk('b2'), blk('b1')]);
+      expect(t1.blockerResolutions).toEqual({
+        b1: { resolvedAt: '2026-10-26T01:00:00.000Z', resolvedBy: ASG.email, resolution: 'Bank approved', authorUid: ASG.uid },
+      });
+      // Read path folds it back; the untouched tree is a no-op.
+      const again = await load(await asUser(ASG.uid, ASG.email));
+      expect(taskIn(again.tree, 't1').updates[2]).toMatchObject({ id: 'b1', resolvedAt: '2026-10-26T01:00:00.000Z', resolution: 'Bank approved' });
+      expect(taskIn(again.tree, 't1')).not.toHaveProperty('blockerResolutions');
+      expect(planV2Save(again.loaded, again.tree, { uid: ASG.uid, wid: WID, pid: PID, dirIndex, uidByEmail }))
+        .toEqual({ batches: [], metaPatch: null, refused: null });
+    });
+
+    it('EXEC-BR2 Assignee resolves two blockers in one save: split into two single-key writes, both land', async () => {
+      const { r, plan } = await save(ASG, (t) => {
+        const task = taskIn(t, 't1');
+        resolveIn(task, 'b2', '2026-10-26T02:00:00.000Z', null);
+        resolveIn(task, 'b1', '2026-10-26T01:00:00.000Z', 'first');
+      });
+      expect(plan.batches).toHaveLength(2);
+      expect(r.status).toBe('ok');
+      expect(txCount).toBe(2);
+      const t1 = await serverDoc(`${PV}/tasks/t1`);
+      expect(t1.version).toBe(3);
+      expect(t1.updates).toEqual([blk('b2'), blk('b1')]);
+      expect(Object.keys(t1.blockerResolutions).sort()).toEqual(['b1', 'b2']);
+      expect(t1.blockerResolutions.b2).toMatchObject({ resolution: null, authorUid: ASG.uid });
+    });
+
+    it('EXEC-BR3 a non-PIC, non-contributor cannot resolve: denied, nothing written', async () => {
+      const before = await serverDoc(`${PV}/tasks/t1`);
+      const { r } = await save(ASG2, (t) => { resolveIn(taskIn(t, 't1'), 'b1', '2026-10-26T01:00:00.000Z', 'x'); });
+      expect(r.status).toBe('denied');
+      expect(await serverDoc(`${PV}/tasks/t1`)).toEqual(before);
+    });
+  });
 });
