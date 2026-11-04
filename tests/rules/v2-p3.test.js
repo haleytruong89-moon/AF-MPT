@@ -666,6 +666,60 @@ describe('P3 approvals requests', () => {
     await assertSucceeds(up(PM, APR, { version: 3, approverUid: OWNER.uid, reassignLog: [second, first] }));
   });
 
+  // ── Task 4 review, fix round 1 ──
+  it('P3-37c P3-C7: the requester never reassigns their own request (no Owner exception)', async () => {
+    await seedDoc(APR, req('mitigation_done', PM, OWNER));
+    await assertFails(reassign(PM, OWNER, DEPUTY));
+    await assertSucceeds(reassign(OWNER, OWNER, OWNER2));
+    await seedDoc(APR, req('plan_import', PM, OWNER));
+    await assertFails(reassign(PM, OWNER, OWNER2));
+    await assertSucceeds(reassign(OWNER, OWNER, OWNER2));
+    await seedDoc(APR, req('mitigation_done', OWNER, PM));
+    await assertFails(reassign(OWNER, PM, DEPUTY));
+    await assertSucceeds(reassign(PM, PM, OWNER2));
+  });
+
+  it('P3-37d P3-C8: a mitigation approver is not the requester\'s PM / Deputy partner (create and reassign)', async () => {
+    await assertFails(create(PM, req('mitigation_done', PM, DEPUTY)));
+    await assertFails(create(DEPUTY, req('mitigation_done', DEPUTY, PM)));
+    await assertSucceeds(create(PM, req('mitigation_done', PM, OWNER)));
+    await seedDoc(APR, req('mitigation_done', DEPUTY, OWNER));
+    await assertFails(reassign(OWNER, OWNER, PM));
+    await assertFails(reassign(OWNER, OWNER, LEAD, { viaWorkstreamId: 'w1' }));
+    await assertSucceeds(reassign(OWNER, OWNER, OWNER2));
+    // ASG's request may still go to the PM / Deputy / a claimed Sub-PM.
+    await seedDoc(APR, req('mitigation_done', ASG, OWNER));
+    await assertSucceeds(reassign(OWNER, OWNER, DEPUTY));
+  });
+
+  it('P3-37e a blank approver is denied on create and reassign', async () => {
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { approverUid: '' })));
+    await assertSucceeds(create(ASG, req('mitigation_done', ASG, PM)));
+    await assertFails(reassign(PM, PM, { uid: '' }));
+    await assertSucceeds(reassign(PM, PM, DEPUTY));
+  });
+
+  it('P3-32c create shape: no prefilled reason / decidedAt, no extra keys, requestedBy = caller email', async () => {
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { reason: 'x' })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { decidedAt: '2026-10-25T00:00:00Z' })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { approvedByUid: ASG.uid })));
+    await assertFails(create(ASG, req('mitigation_done', ASG, PM, { requestedBy: PM.email })));
+    // requestedBy may be absent; the full shape with updatedAt is fine.
+    const { requestedBy, ...noName } = req('mitigation_done', ASG, PM);
+    void requestedBy;
+    await assertSucceeds(create(ASG, noName));
+    await assertSucceeds(create(ASG, req('mitigation_done', ASG, PM, { updatedAt: serverTimestamp() }), `${P1}/approvals/r2`));
+  });
+
+  it('P3-35b Approved: reason absent / null / non-empty string only', async () => {
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertFails(decide(PM, 'Approved', ''));
+    await assertFails(decide(PM, 'Approved', 5));
+    await assertSucceeds(decide(PM, 'Approved', 'Evidence attached'));
+    await seedDoc(APR, req('mitigation_done', ASG, PM));
+    await assertSucceeds(decide(PM, 'Approved', null));
+  });
+
   it('P3-38 OWNER deletes a request: denied; requester edits payload after create: denied', async () => {
     await seedDoc(APR, req('mitigation_done', ASG, PM));
     await assertFails(deleteDoc(doc(await as(OWNER), APR)));
