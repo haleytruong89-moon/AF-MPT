@@ -85,7 +85,7 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     pid, assignments: null, now: Timestamp.now(), Timestamp, FieldValue, writeManifest: () => {},
   });
   const T9 = {
-    name: 'Late task', status: 'Completed', pic: '', contributors: [],
+    id: 't9', name: 'Late task', status: 'Completed', pic: '', contributors: [],
     updates: [{ id: 'u9', text: 'done it', authorUid: 'uidZ' }],
     workspaceId: 'main', projectId: PID, programId: 'pg1', workstreamId: 'w1', order: 99,
     picUid: null, picEmail: null, contributorUids: [], version: 1, updatedBy: 'uidZ',
