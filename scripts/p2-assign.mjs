@@ -581,9 +581,15 @@ async function main() {
     });
   } catch (e) {
     console.error(`${e.code ? `[${e.code}] ` : ''}${e.message || e}`);
+    // Only STATE_CHANGED proves nothing committed; any other error may follow a landed
+    // commit (verify read, ambiguous UNAVAILABLE/DEADLINE_EXCEEDED), so keep the rollback file.
     if (fs.existsSync(manifestPath)) {
-      fs.unlinkSync(manifestPath);
-      console.error(`Manifest ${manifestPath} removed: the transaction did not commit.`);
+      if (e.code === 'STATE_CHANGED') {
+        fs.unlinkSync(manifestPath);
+        console.error(`Manifest ${manifestPath} removed: the transaction did not commit.`);
+      } else {
+        console.error(`Commit status unknown; manifest kept: ${manifestPath}. Re-run the preview: if it is a noop the apply landed (keep the manifest for --rollback).`);
+      }
     }
     process.exit(1);
   }
