@@ -143,6 +143,23 @@ export async function ownerUidsNow(): Promise<string[]> {
   return m && Array.isArray(m.ownerUids) ? m.ownerUids.filter((u): u is string => typeof u === 'string') : [];
 }
 
+/**
+ * P3 Task 7: role data rebuilt from the current `loaded` cache, which every v2
+ * read replaces and every v2 save refreshes (applyWritten). Picks up in-session
+ * PIC / contributor edits and tasks created in this session. null for a v1 (or
+ * not yet loaded) project. Owner uids from the workspace doc as last read, else
+ * `fallbackOwnerUids` (the project's read-time roles).
+ */
+export function v2RolesNow(pid: string, fallbackOwnerUids?: string[]): ReturnType<typeof rolesFromLoaded> | null {
+  const loaded = v2Loaded.get(pid);
+  if (!loaded) return null;
+  const m = wsMetaCache;
+  const ownerUids = m && Array.isArray(m.ownerUids)
+    ? m.ownerUids.filter((u): u is string => typeof u === 'string')
+    : fallbackOwnerUids;
+  return rolesFromLoaded(loaded, ownerUids);
+}
+
 // Directory for person -> uid resolution in planV2Save, built like the P2 scripts
 // (members + invites feed the index; uidByEmail from members only). Loaded once; a
 // failed load is retried on the next save, and that save plans without it

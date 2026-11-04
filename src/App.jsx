@@ -22,6 +22,12 @@ import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, banner
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
+// P3 Task 7: close flow choke point, task-panel close control, View as read-only.
+import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields } from './closeFlow';
+import { closeIntentFor, runCloseFlow, chokeMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
+import { v2RolesNow } from './storage-shim';
+import { MeContext } from './components/meContext';
+import { CloseControl } from './components/CloseControl';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
 const DirectoryIndexContext = React.createContext(null);
@@ -2017,7 +2023,7 @@ function SaveBanner({ saveState }) {
         {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
-        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (closing a task needs your Sub-PM or PM). Reload to continue — edits made after this are not saved either. </>}
+        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (use Submit as done to close a task). Reload to continue — edits made after this are not saved either. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
       </span>
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
@@ -3119,7 +3125,9 @@ function CreditSharesEditor({ task, onChange, locked, isOwner }) {
 
 /* ═════════ DEADLINE REQUEST (v27) ═════════ */
 // Modal for non-owners to submit a deadline change request.
-function DeadlineRequestDialog({ task, currentEnd, author, onClose, onSubmit }) {
+// P3-10: `uid` (v2 projects only) is stored as requestedByUid, so the request can
+// be routed by uid (deadlineApprover / canApproveDeadline, Task 12).
+function DeadlineRequestDialog({ task, currentEnd, author, uid: myUid = null, onClose, onSubmit }) {
   const [newDate, setNewDate] = useState(currentEnd || '');
   const [reason, setReason] = useState('');
   const days = (newDate && currentEnd) ? daysBetween(currentEnd, newDate) : 0;
@@ -3132,6 +3140,7 @@ function DeadlineRequestDialog({ task, currentEnd, author, onClose, onSubmit }) 
       newDate,
       reason: reason.trim(),
       requestedBy: author,
+      ...(myUid ? { requestedByUid: myUid } : {}),
       requestedAt: new Date().toISOString(),
       days,
       action: action || 'extend',
@@ -3229,6 +3238,9 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 /* ═════════ TASK DETAIL PANEL ═════════ */
 function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  const me = useContext(MeContext);
+  // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
+  const [creditNote, setCreditNote] = useState(null);
   const loc = useMemo(() => findTaskInProject(project, taskId), [project, taskId]);
   // ── All hooks declared before any early return (Rules of Hooks)
   // Panel tab state
@@ -3265,6 +3277,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     setEditing(false);
     setDraft(loc?.task || null);
     setShowDeadlineRequest(false);
+    setCreditNote(null);
   }, [taskId]); // eslint-disable-line
 
   // Decisions linked to this milestone (task is in relatedTaskIds)
@@ -3298,6 +3311,23 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
   if (!loc) return null;
   const { task, workstream, program } = loc;
+  // P3 (v2 only), carry 4: credit split = Owner only (C6'); PIC / contributors =
+  // Owner at any status, PM / Sub-PM while open (C5). v1 keeps today's gating.
+  const v2Roles = project.__v2 ? project.__v2.roles || null : null;
+  const v2Role = v2Roles ? managerLevel(v2Roles, task.id, me.uid) : null;
+  const canSplitCredit = project.__v2 ? canEditCreditSplit(v2Role, task) : isOwner;
+  const canEditPeople = project.__v2 ? canEditCreditFields(v2Role, task) : true;
+  // A manager may not produce manual mode (PIC removed / 3+ contributors): block it.
+  const autoCreditOrBlock = (next, pic, contributors) => {
+    if ((next.creditSharesMode || 'auto') !== 'auto') return next;
+    const def = computeDefaultCreditShares(pic, contributors);
+    if (def) return { ...next, creditShares: def };
+    if (project.__v2 && !canSplitCredit) {
+      setCreditNote(pic ? `${MANUAL_SPLIT_MESSAGE} (3+ contributors).` : `${MANUAL_SPLIT_MESSAGE}: keep a PIC on the task.`);
+      return null;
+    }
+    return { ...next, creditSharesMode: 'manual' };
+  };
 
   // Fields the edit form does NOT control but other UI elements mutate inline
   // via direct onUpdate calls (references, posted updates, status pill, weight
@@ -3312,6 +3342,12 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     'deadlineRequestHistory',
     'status',
     'weight',
+    // P3: the close flow (CloseControl) may change these while the form is open.
+    'closeRequest',
+    'closeRequestHistory',
+    'approvedByUid',
+    'approvedAt',
+    'closedByUid',
   ];
 
   const save = () => {
@@ -3526,6 +3562,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         <div style={{ margin: '16px 0' }}>
           <FieldLabel>Status</FieldLabel>
+          {project.__v2 ? <CloseControl task={task} roles={project.__v2.roles} onUpdate={onUpdate} dialogs={dialogs} /> : (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {STATUSES.map((s) => {
               const active = (task.status || 'Planned') === s;
@@ -3546,6 +3583,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               );
             })}
           </div>
+          )}
         </div>
 
         {/* RAG health (manual) — independent from status */}
@@ -3585,18 +3623,15 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         {editing ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {canEditPeople ? (<>
             <div>
               <FieldLabel>PIC <span style={{ color: TOK.subtle, fontWeight: 400 }}>(team member with email)</span></FieldLabel>
               <PicEditor
                 value={draft.pic}
                 onChange={(v) => {
-                  const next = { ...draft, pic: v };
-                  const m = draft.creditSharesMode || 'auto';
-                  if (m === 'auto') {
-                    const def = computeDefaultCreditShares(v, draft.contributors || []);
-                    if (def) next.creditShares = def;
-                    else next.creditSharesMode = 'manual';
-                  }
+                  const next = autoCreditOrBlock({ ...draft, pic: v }, v, draft.contributors || []);
+                  if (!next) return;
+                  setCreditNote(null);
                   setDraft(next);
                 }}
                 teamMembersList={teamMembers || []}
@@ -3606,13 +3641,9 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
             <ContributorEditor
               contributors={draft.contributors || []}
               onChange={(arr) => {
-                const next = { ...draft, contributors: arr };
-                const m = draft.creditSharesMode || 'auto';
-                if (m === 'auto') {
-                  const def = computeDefaultCreditShares(draft.pic, arr);
-                  if (def) next.creditShares = def;
-                  else next.creditSharesMode = 'manual';
-                }
+                const next = autoCreditOrBlock({ ...draft, contributors: arr }, draft.pic, arr);
+                if (!next) return;
+                setCreditNote(null);
                 setDraft(next);
               }}
               suggestions={contributorSuggestions}
@@ -3620,6 +3651,16 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               project={project}
               teamMembersList={teamMembers || []}
             />
+            {creditNote && <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg }}>{creditNote}</div>}
+            </>) : (
+              <div style={{ fontSize: 12 }}>
+                <Row k="PIC" v={draft.pic || '—'} />
+                <Row k="Contributors" v={(draft.contributors || []).join(', ') || '—'} />
+                <div style={{ fontSize: 10, color: TOK.subtle, marginTop: 3 }}>
+                  PIC and contributors: Owner, or PM / Sub-PM while the task is open.
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
               <div style={{ flex: 1 }}><FieldLabel>Start</FieldLabel><Input type="date" value={draft.start || ''} onChange={(v) => setDraft({ ...draft, start: v || null })} /></div>
               <div style={{ flex: 1 }}>
@@ -3679,7 +3720,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               task={draft}
               onChange={({ shares, mode }) => setDraft({ ...draft, creditShares: shares, creditSharesMode: mode || draft.creditSharesMode || 'auto' })}
               locked={!!project.weightsLocked}
-              isOwner={isOwner}
+              isOwner={canSplitCredit}
             />
           </div>
         ) : (
@@ -3903,6 +3944,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           task={task}
           currentEnd={task.end}
           author={author}
+          uid={project.__v2 ? me.uid : null}
           onClose={() => setShowDeadlineRequest(false)}
           onSubmit={submitDeadlineRequest}
         />
@@ -8348,7 +8390,7 @@ function ImpersonationBanner({ actingAs, realAuthor, onExit }) {
       <div style={{ flex: 1, fontSize: 13, color: TOK.mention }}>
         <strong>Viewing as {actingAs}</strong>
         <span style={{ marginLeft: 8, opacity: 0.85 }}>
-          Actions will log as "acting as {actingAs}: ...". Signed in: {realAuthor}.
+          Read-only: changes are not saved (exit to edit). Signed in: {realAuthor}.
         </span>
       </div>
       <Btn size="sm" variant="primary" onClick={onExit}>Exit impersonation</Btn>
@@ -11130,11 +11172,15 @@ function ByProjectView({
 function MyWorkView({
   projects, author, authorEmail = null, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
-  onTaskUpdate, onActionUpdate, onDecisionUpdate, onProjectUpdate,
+  onTaskUpdate: onTaskUpdateProp, onActionUpdate: onActionUpdateProp, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
   onNavigateRaid,
 }) {
+  // P3-16: the App passes null handlers while "View as" is on; a write attempt toasts.
+  const readOnlyWrite = () => { if (showToast) showToast(READ_ONLY_MESSAGE); };
+  const onTaskUpdate = onTaskUpdateProp || readOnlyWrite;
+  const onActionUpdate = onActionUpdateProp || readOnlyWrite;
   const dirIndex = useContext(DirectoryIndexContext);
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
@@ -11176,7 +11222,9 @@ function MyWorkView({
 
   const handleStatusChange = (task, project, newStatus) => {
     const prevStatus = task.status || 'Planned';
-    onTaskUpdate({ ...task, status: newStatus }, project.id);
+    const outcome = onTaskUpdate({ ...task, status: newStatus }, project.id);
+    // P3: a v2 submit / refusal keeps the choke point's own toast (no Undo).
+    if (outcome && outcome !== 'direct' && outcome !== 'legacy') return;
     // B4: completing a task from My Work is one click — offer Undo.
     if (newStatus === 'Completed' && prevStatus !== 'Completed' && showToast) {
       showToast(`Marked “${task.name}” done`, { label: 'Undo', onClick: () => {
@@ -12790,6 +12838,24 @@ export default function App() {
     setToast({ message, id, action });
     setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), action ? 6000 : 3500);
   };
+  // Refs so the write choke points below stay stable callbacks.
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+  // P3-16: View as is read-only.
+  const impersonatingRef = useRef(impersonatingAs);
+  impersonatingRef.current = impersonatingAs;
+  // P3 Task 7: who acts (CloseControl, choke point); names / active status by uid.
+  const dirByUid = useMemo(() => directoryByUid(dirEntries), [dirEntries]);
+  const meValue = useMemo(() => ({
+    uid: authUser?.uid || null,
+    name: author,
+    isOwner,
+    readOnly: !!impersonatingAs,
+    nameOf: dirByUid.nameOf,
+    isActive: dirByUid.isActive,
+  }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
+  const meRef = useRef(meValue);
+  meRef.current = meValue;
 
   // P2.3: Owner-only notice, once per project, when a v2 project loaded with orphans.
   const orphanToastShown = useRef(new Set());
@@ -12807,18 +12873,70 @@ export default function App() {
     }
   }, [isOwner, projects]);
 
+  // P3 Task 7 (carry 1): after a v2 save, role data comes from the shim's refreshed
+  // `loaded` cache (in-session PIC / contributor edits, tasks created this session).
+  const rolesNowFor = useCallback((pid) => {
+    const p = projectsRef.current[pid];
+    if (!p?.__v2) return null;
+    return v2RolesNow(pid, p.__v2.roles?.ownerUids) || p.__v2.roles || null;
+  }, []);
+  const refreshV2Roles = useCallback((pid) => {
+    const roles = rolesNowFor(pid);
+    if (!roles) return;
+    setProjects((prev) => {
+      const p = prev[pid];
+      if (!p?.__v2 || JSON.stringify(p.__v2.roles) === JSON.stringify(roles)) return prev;
+      return { ...prev, [pid]: { ...p, __v2: { ...p.__v2, roles } } };
+    });
+  }, [rolesNowFor]);
+
   // Debounced save of a project. Failures surface in the save banner (B2/B3).
+  // P3: the pending tree / in-flight save are tracked so a v2 close can flush them
+  // first, and a debounced save waits while a close is being saved step by step.
+  const pendingTree = useRef({});
+  const inflightSaves = useRef({});
+  const closeBusy = useRef({});
   const persistProject = useCallback((p) => {
     if (!p) return;
     if (!saveTimers.current[p.id]) pendingSaves.current += 1;
     clearTimeout(saveTimers.current[p.id]);
-    saveTimers.current[p.id] = setTimeout(async () => {
+    pendingTree.current[p.id] = p;
+    const fire = async (waited = false) => {
+      if (closeBusy.current[p.id]) { saveTimers.current[p.id] = setTimeout(() => fire(true), 400); return; }
       delete saveTimers.current[p.id];
-      const status = await saveProject(p);
+      // After waiting for a close, save the latest state (the close may have been
+      // re-planned, e.g. direct -> submit), not the snapshot taken before it.
+      const tree = (waited && p.__v2 && projectsRef.current[p.id]) || pendingTree.current[p.id] || p;
+      delete pendingTree.current[p.id];
+      const pr = saveProject(tree);
+      inflightSaves.current[p.id] = pr;
+      const status = await pr;
+      if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
-      setSaveState((prev) => nextSaveState(prev, p.id, status, p.name || 'project'));
-    }, 400);
-  }, []);
+      setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
+      refreshV2Roles(p.id);
+    };
+    saveTimers.current[p.id] = setTimeout(fire, 400);
+  }, [refreshV2Roles]);
+
+  // P3 (carry 2, 3): save a pending debounced edit of this project now (before a
+  // close step), or wait for one in flight. true when something was saved.
+  const flushProjectSave = useCallback(async (pid) => {
+    if (saveTimers.current[pid]) {
+      clearTimeout(saveTimers.current[pid]);
+      delete saveTimers.current[pid];
+      const tree = pendingTree.current[pid];
+      delete pendingTree.current[pid];
+      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return false; }
+      const status = await saveProject(tree);
+      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
+      refreshV2Roles(pid);
+      return true;
+    }
+    if (inflightSaves.current[pid]) { await inflightSaves.current[pid]; return true; }
+    return false;
+  }, [refreshV2Roles]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
@@ -12832,11 +12950,13 @@ export default function App() {
   }, [saveState]);
 
   const updateProject = useCallback((updated) => {
+    if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     setProjects((prev) => ({ ...prev, [updated.id]: updated }));
     persistProject(updated);
   }, [persistProject]);
 
   const logActivity = useCallback(async ({ type, description }) => {
+    if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const log = await appendActivity(currentId, entry);
@@ -12845,10 +12965,15 @@ export default function App() {
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
   // across projects, not just currentId). Refresh in-memory feed only if it's
-  // the project currently in view.
-  const logActivityForProject = useCallback(async (projectId, { type, description }) => {
+  // the project currently in view. P3-19: `before` / `after` are kept on the entry.
+  const logActivityForProject = useCallback(async (projectId, { type, description, before, after }) => {
+    if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!projectId || !author) return;
-    const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
+    const entry = {
+      id: uid('act'), timestamp: new Date().toISOString(), author, type, description,
+      ...(before !== undefined ? { before } : {}),
+      ...(after !== undefined ? { after } : {}),
+    };
     await appendActivity(projectId, entry);
     if (projectId === currentId) {
       const log = await loadActivity(projectId);
@@ -12873,15 +12998,99 @@ export default function App() {
     setAuthorEmail(null);
   };
 
+  // P3: replace one task in memory without a save; projectsRef is updated at once so
+  // a close step saved before the next render is built from this state.
+  const setTaskNow = useCallback((projectId, taskId, t) => {
+    const cur = projectsRef.current[projectId];
+    if (cur) projectsRef.current = { ...projectsRef.current, [projectId]: replaceTask(cur, taskId, t) };
+    setProjects((prev) => (prev[projectId]
+      ? { ...prev, [projectId]: replaceTask(prev[projectId], taskId, t) } : prev));
+  }, []);
+
+  // P3 Task 7: save a v2 close transition. Flush pending edits first, then one
+  // save per step in order (carry 2, 3; closeWiring.runCloseFlow), then log the
+  // close events (P3-19). In-memory state already shows `intent.task`.
+  // Closes of one project run one after another (closeChain); debounced saves of
+  // that project wait meanwhile (closeBusy).
+  const closeChain = useRef({});
+  const runV2CloseNow = useCallback(async ({ projectId, oldTask, nextTask, intent, me, now, tag }) => {
+    const setTask = (t) => setTaskNow(projectId, oldTask.id, t);
+    const res = await runCloseFlow({
+      initial: intent, oldTask, nextTask, me, now,
+      isActive: meRef.current.isActive,
+      getRoles: () => rolesNowFor(projectId),
+      flush: () => flushProjectSave(projectId),
+      saveStep: async (step) => {
+        const tree = replaceTask(projectsRef.current[projectId], oldTask.id, step);
+        const status = await saveProject(tree);
+        setSaveState((prev) => nextSaveState(prev, projectId, status, tree.name || 'project'));
+        refreshV2Roles(projectId);
+        return status;
+      },
+    });
+    if (res.status === 'denied' || res.status === 'needs-reason') {
+      // Re-planned after a flush and refused before any write: undo the optimistic change.
+      setTask(res.task);
+      showToastRef.current(chokeMessage(res.status));
+      return;
+    }
+    if (res.status !== 'ok') return; // the save banner reports it
+    if (res.task !== intent.task) {
+      setTask(res.task);
+      const msg = res.outcome !== intent.outcome ? chokeMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
+      if (msg) showToastRef.current(msg);
+    }
+    for (const ev of closeEventsFor(oldTask, res.task, meRef.current.nameOf)) {
+      logActivityForProject(projectId, { ...ev, description: ev.description + tag });
+    }
+  }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
+  const runV2Close = useCallback((args) => {
+    const pid = args.projectId;
+    closeBusy.current[pid] = (closeBusy.current[pid] || 0) + 1;
+    pendingSaves.current += 1;
+    const done = () => {
+      closeBusy.current[pid] -= 1;
+      if (!closeBusy.current[pid]) delete closeBusy.current[pid];
+      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+    };
+    const run = (closeChain.current[pid] || Promise.resolve())
+      .then(() => runV2CloseNow(args))
+      .catch((e) => console.error('[p3] close save failed:', e))
+      .finally(done);
+    closeChain.current[pid] = run;
+    return run;
+  }, [runV2CloseNow]);
+
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
   // optional suffix (e.g. "My Work") to tag the entry-point in the audit.
+  // P3 choke point: every task change passes applyCloseIntent. v1 (no __v2) ->
+  // 'legacy', and a change that touches no close key -> 'unchanged': both keep the
+  // v30 path below. Returns the outcome (My Work uses it for its Undo toast).
   const applyTaskUpdate = useCallback((updatedTask, projectId, source = '', actingAs = '') => {
+    if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return 'read-only'; } // P3-16
     const targetProj = projectsRef.current[projectId];
     if (!targetProj) return;
     const loc = findTaskInProject(targetProj, updatedTask.id);
     if (!loc) return;
     const oldTask = loc.task;
+    if (targetProj.__v2) {
+      const me = { uid: meRef.current.uid, name: meRef.current.name };
+      const now = new Date().toISOString();
+      const nextTask = { ...oldTask, ...updatedTask };
+      const intent = closeIntentFor({ roles: rolesNowFor(projectId), oldTask, nextTask, me, now, isActive: meRef.current.isActive });
+      if (intent.outcome === 'denied' || intent.outcome === 'needs-reason') {
+        showToastRef.current(chokeMessage(intent.outcome));
+        return intent.outcome;
+      }
+      if (isCloseOutcome(intent.outcome)) {
+        const msg = chokeMessage(intent.outcome, meRef.current.nameOf(intent.task.closeRequest?.approverUid));
+        if (msg) showToastRef.current(msg);
+        setTaskNow(projectId, oldTask.id, intent.task);
+        runV2Close({ projectId, oldTask, nextTask, intent, me, now, tag: source ? ` (from ${source})` : '' });
+        return intent.outcome;
+      }
+    }
     const updated = cloneDeep(targetProj);
     const ul = findTaskInProject(updated, updatedTask.id);
     Object.assign(ul.task, updatedTask);
@@ -12932,7 +13141,7 @@ export default function App() {
     if ((oldTask.deadlineType || 'hard') !== (updatedTask.deadlineType || 'hard')) {
       log({ type: 'deadline_type_change', description: `Changed "${updatedTask.name}" deadline type: ${oldTask.deadlineType || 'hard'} → ${updatedTask.deadlineType || 'hard'}${tag}` });
     }
-  }, [updateProject, logActivityForProject]); // reads projectsRef.current
+  }, [updateProject, logActivityForProject, rolesNowFor, runV2Close, setTaskNow]); // reads projectsRef.current
 
   const onTaskUpdate = (updatedTask) => {
     if (!project) return;
@@ -13484,7 +13693,7 @@ export default function App() {
   const r = project ? rollup(project) : null;
 
   return (
-    <DirectoryIndexContext.Provider value={dirIndex}>
+    <DirectoryIndexContext.Provider value={dirIndex}><MeContext.Provider value={meValue}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
@@ -13701,9 +13910,9 @@ export default function App() {
                     setView('decisions');
                     if (decisionId) setInitialDecisionEditId(decisionId);
                   }}
-                  onDecisionUpdate={(updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work', impersonatingAs || '')}
-                  onTaskUpdate={(updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work', impersonatingAs || '')}
-                  onActionUpdate={(updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work', impersonatingAs || '')}
+                  onDecisionUpdate={impersonatingAs ? null : (updatedDecision, projectId) => applyDecisionUpdate(updatedDecision, projectId, 'My Work')}
+                  onTaskUpdate={impersonatingAs ? null : (updatedTask, projectId) => applyTaskUpdate(updatedTask, projectId, 'My Work')}
+                  onActionUpdate={impersonatingAs ? null : (updatedAction, projectId) => applyActionUpdate(updatedAction, projectId, 'My Work')}
                   onProjectUpdate={updateProject}
                   onApproveDeadline={impersonatingAs ? null : myWorkApproveDeadline}
                   onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
@@ -13729,11 +13938,11 @@ export default function App() {
                   teamMembers={teamMembers}
                   scopeProgramId={raidScopeProgramId || scopeProgramId}
                   onApplyRaidUpdate={(item, projectId, programId, source) =>
-                    applyRaidUpdate(item, projectId, programId, source || 'raid', impersonatingAs || '')
+                    applyRaidUpdate(item, projectId, programId, source || 'raid')
                   }
                   onRaidNavigate={{
                     deleteHandler: (itemId, projectId, programId) =>
-                      deleteRaidItem(itemId, projectId, programId, 'raid', impersonatingAs || ''),
+                      deleteRaidItem(itemId, projectId, programId, 'raid'),
                   }}
                   dialogs={dialogs}
                 />
@@ -13805,7 +14014,7 @@ export default function App() {
             defaultPic={actionCreate.defaultPic || null}
             teamMembers={teamMembers}
             onClose={() => setActionCreate(null)}
-            onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, impersonatingAs || '', opts)}
+            onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
         <SaveBanner saveState={saveState} />
@@ -14017,7 +14226,7 @@ export default function App() {
           />
         )}
       </div>
-    </DirectoryIndexContext.Provider>
+    </MeContext.Provider></DirectoryIndexContext.Provider>
   );
 }
 
