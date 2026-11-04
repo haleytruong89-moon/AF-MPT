@@ -243,13 +243,13 @@ export function previewSheets(prep, { pid, nameOfUid = (u) => u, assignmentsGive
 
 // ---------------------------------------------------------------- I/O shell
 
-const docsOf = async (db, path) => {
+export const docsOf = async (db, path) => {
   const out = [];
   (await db.collection(path).get()).forEach((d) => out.push({ id: d.id, path: `${path}/${d.id}`, data: d.data() }));
   return out;
 };
 
-async function readDirectory(db) {
+export async function readDirectory(db) {
   const members = await docsOf(db, `${WS}/members`);
   const invites = await docsOf(db, `${WS}/invites`);
   return { ...directoryFrom(members, invites), members };
@@ -763,20 +763,20 @@ async function rollbackMain(o) {
   process.exit(0);
 }
 
-async function openDb(keyPath) {
+export async function openDb(keyPath) {
   if (!fs.existsSync(keyPath)) {
     console.error(`Missing service-account key: ${keyPath} (Firebase Console > Project settings > Service accounts). Nothing was read or written.`);
     process.exit(1);
   }
   const { initializeApp, cert } = await import('firebase-admin/app');
-  const { getFirestore, FieldValue, Timestamp } = await import('firebase-admin/firestore');
+  const { getFirestore, FieldValue, FieldPath, Timestamp } = await import('firebase-admin/firestore');
   let key;
   try { key = JSON.parse(fs.readFileSync(keyPath, 'utf8')); } catch { console.error('Invalid service-account key file'); process.exit(1); }
   initializeApp({ credential: cert(key) });
-  return { db: getFirestore(), FieldValue, Timestamp };
+  return { db: getFirestore(), FieldValue, FieldPath, Timestamp };
 }
 
-function nameLookup(members) {
+export function nameLookup(members) {
   const byUid = new Map(members.map((m) => [m.id, m.data || {}]));
   return (uid) => {
     const m = byUid.get(uid);
@@ -784,7 +784,7 @@ function nameLookup(members) {
   };
 }
 
-function writePreviewXlsx(path, sheets) {
+export function writePreviewXlsx(path, sheets) {
   const wb = XLSX.utils.book_new();
   for (const [name, rows] of Object.entries(sheets)) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ '(none)': '' }]), name);
