@@ -13,6 +13,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { assembleProject, splitProject } from '../../src/migrateV2.js';
 import { carryDoc, overlay, keepOrder, META_SKIP, KEEP_PROGRAM } from '../../src/planV2Save.js';
 import { appValueFromV2 } from '../../src/readV2.js';
+import { unfoldResolutions } from '../../src/blockerResolutions.js';
 import { stableJson } from './migrate-normalise.mjs';
 import { SUBCOLS, MAX_PROJECT_DOC_BYTES } from './migrate-checks.mjs';
 import { buildRestoreTarget, TASK_DROPPED, ACTION_CANCELLED } from './restore-target.mjs';
@@ -281,7 +282,12 @@ export function planRestore({
       };
       if (lv) {
         const old = strip(lv);
-        const fin = carryDoc(kind, old, overlay(kind, old, nd));
+        // P3 Task 8 (Ruling P3-8): the backup tree carries blocker resolutions in place
+        // (folded); move them back to the live append-only map as the App planner does.
+        // The map never loses a key; a resolution new to it is stamped RESTORE_STAMP.
+        let fin = overlay(kind, old, nd);
+        if (kind === 'tasks') fin = unfoldResolutions(old, fin, RESTORE_STAMP);
+        fin = carryDoc(kind, old, fin);
         if (isDeepStrictEqual(fin, old)) {
           pk.unchanged++;
           nextDocs[kind].push({ id, data: lv });

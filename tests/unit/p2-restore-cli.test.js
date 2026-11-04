@@ -203,12 +203,12 @@ describe('formatRestorePreview', () => {
 
   it('CLI-10: history-loss wording covers entries, removed fields and map keys', () => {
     const live = makeLive();
-    live.docs.tasks.find((d) => d.id === 't2').data.blockerResolutions = { b1: { note: 'one' } };
+    live.docs.tasks.find((d) => d.id === 't2').data.someLog = { b1: { note: 'one' } };
     const b = backupOf(live);
-    tasksOf(b).find((t) => t.id === 't2').blockerResolutions = {};
+    tasksOf(b).find((t) => t.id === 't2').someLog = {};
     const text = formatRestorePreview(prepOf(plan(live, b), live), { pid: PID }).join('\n');
     expect(text).toMatch(/History loss: 1 item in 1 list\/field \(entries, removed fields or map keys\)/);
-    expect(text).toContain('blockerResolutions.b1 (key removed)');
+    expect(text).toContain('someLog.b1 (key removed)');
     expect(text).toContain('REFUSED (exit 3): this restore would delete history (entries, fields or map keys listed above)');
   });
 });
