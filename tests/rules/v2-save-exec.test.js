@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc, getDocs, collection, runTransaction, serverTimestamp, deleteField } from 'firebase/firestore';
+import { doc, setDoc, getDoc, getDocs, updateDoc, collection, runTransaction, serverTimestamp, deleteField } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup, getEnv } from './helpers.js';
 import { splitProject } from '../../src/migrateV2.js';
 import { buildDirectoryIndex } from '../../src/directory.js';
@@ -280,6 +280,27 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(lead.plan.batches[0][0].data).toMatchObject({ viaWorkstreamId: 'w1' });
     expect(lead.r.status).toBe('ok');
     expect(await serverDoc(`${PV}/raid/prg2`)).toMatchObject({ version: 3, updatedBy: LEAD.uid });
+  });
+
+  // P2.4 fix round 1: a tab loaded while v2 saves after a rollback (project
+  // back to v1): the executor sees schemaVersion !== 2 and returns conflict
+  // (reload banner) without writing; the rules would deny the writes anyway.
+  it('EXEC-RB stale v2 tab after a rollback: conflict, nothing written', async () => {
+    const pmState = await load(await asUser(PM.uid, PM.email));
+    const e = await getEnv();
+    await e.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), PV), { schemaVersion: deleteField(), programMeta: deleteField() });
+    });
+    const before = await serverDoc(`${PV}/tasks/t1`);
+    const projBefore = await serverDoc(PV);
+    const { r, plan } = await save(PM, (t) => {
+      taskIn(t, 't1').name = 'stale';
+      t.programs[0].raid[0].title = 'stale';
+    }, { loadedState: pmState });
+    expect(plan.batches.flat().length).toBeGreaterThan(0);
+    expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, written: [], metaWritten: false });
+    expect(await serverDoc(`${PV}/tasks/t1`)).toEqual(before);
+    expect(await serverDoc(PV)).toEqual(projBefore);
   });
 
   it('EXEC-AE Assignee adds a reference and requests a deadline change -> ok; end change denied', async () => {

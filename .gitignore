@@ -49,3 +49,6 @@ p2-*.xlsx
 
 # P2 Admin-script manifests (before-images) - never commit
 p2-*-manifest*.json
+
+# P2.4 rollback lost-data reports (full v2 doc data) - never commit
+p2-*-lost*.json

@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:rules": "firebase emulators:exec --only firestore --project demo-afmpt \"vitest run --config vitest.rules.config.js\"",
     "p1:dryrun": "node scripts/p1-identity-dryrun.mjs",
-    "p2:dryrun": "node scripts/p2-migrate-dryrun.mjs"
+    "p2:dryrun": "node scripts/p2-migrate-dryrun.mjs",
+    "p2:migrate": "node scripts/p2-migrate.mjs"
   },
   "dependencies": {
     "firebase": "^11.0.0",
