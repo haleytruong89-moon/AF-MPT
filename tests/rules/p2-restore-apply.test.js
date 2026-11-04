@@ -4,8 +4,8 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { assertFails } from '@firebase/rules-unit-testing';
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
-import { applyMigration } from '../../scripts/p2-migrate.mjs';
-import { prepareRestore, readLive, applyRestore, restoreExitCode } from '../../scripts/p2-restore.mjs';
+import { applyMigration, prepareRollback } from '../../scripts/p2-migrate.mjs';
+import { prepareRestore, readLive, applyRestore, restoreExitCode, formatRestorePreview } from '../../scripts/p2-restore.mjs';
 import { buildSnapshot, RESTORES_PATH, restoreIdOf, RESTORE_STAMP } from '../../scripts/lib/restore-plan.mjs';
 import { loadV2Lists, assembleFromSnapshots, appValueFromV2 } from '../../src/readV2.js';
 import { resetData, cleanup, asUser } from './helpers.js';
@@ -274,13 +274,52 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     expect(rec.counts.historyLost).toBe(1);
   });
 
-  it('RS-6: restoring from the snapshot of an apply reverses it (u7 back, t9 Completed, w1 live name)', async () => {
+  // Assembled App value of the live project (the Backup JSON project shape).
+  const liveTree = async () => buildSnapshot((await readLive(db, PID, null, Timestamp)).live, { ops: [] }, { pid: PID }).projects[PID];
+  const versions = async () => {
+    const { live } = await readLive(db, PID, null, Timestamp);
+    return Object.fromEntries(Object.entries(live.docs).flatMap(([k, list]) => list.map((d) => [`${k}/${d.id}`, d.data.version])));
+  };
+  const activityCount = async () => (await db.collection(`${BASE}/activity`).get()).size;
+
+  it('RS-6: a re-run after an apply is a noop that writes nothing; the preview says Nothing to restore (exit 0)', async () => {
+    const backup = await seedApply();
+    const p = await prep(backup);
+    await apply(backup, { expectHash: p.planHash });
+    const before = { versions: await versions(), activity: await activityCount(), records: await restoresCount(), all: await dumpAll() };
+
+    const again = await prep(backup);
+    expect(again.mode).toBe('noop');
+    expect(again.planHash).toBeNull();
+    let called = 0;
+    // noop returns before the hash check: even a stale hash writes nothing.
+    const r = await apply(backup, { expectHash: p.planHash, writeSnapshot: () => { called++; } });
+    expect(r).toMatchObject({ mode: 'noop', restoreId: null, written: 0, verify: { ok: true, diffs: [] } });
+    expect(restoreExitCode(r)).toBe(0);
+    expect(called).toBe(0);
+    expect(await versions()).toEqual(before.versions);
+    expect(await activityCount()).toBe(before.activity);
+    expect(await restoresCount()).toBe(before.records);
+    expect(await dumpAll()).toEqual(before.all);
+
+    const text = formatRestorePreview(again, { pid: PID }).join('\n');
+    expect(text).toContain('Nothing to restore');
+    expect(text).not.toMatch(/Plan hash:/);
+  });
+
+  it('RS-7: restoring from the snapshot of an apply reverses it; a backup-only task stays Dropped', async () => {
     const backup = await seedApply();
     tasksOfBackup(backup).find((t) => t.id === 't2').updates = [];
+    backup.projects[PID].programs.flatMap((pg) => pg.workstreams).find((w) => w.id === 'w1').tasks
+      .push({ id: 'tN', name: 'Backup only', status: 'Not Started', pic: '', contributors: [] });
+    const treeBefore = await liveTree();
     const allowed = await prep(backup, { allowHistoryLoss: true });
+    expect(allowed.ops.find((o) => o.id === 'tN')).toMatchObject({ kind: 'tasks', op: 'create' });
     const snaps = [];
-    await apply(backup, { allowHistoryLoss: true, expectHash: allowed.planHash, writeSnapshot: (o) => { snaps.push(o); } });
+    const first = await apply(backup, { allowHistoryLoss: true, expectHash: allowed.planHash, writeSnapshot: (o) => { snaps.push(o); } });
+    expect(first.verify.ok).toBe(true);
     expect((await db.doc(`${BASE}/tasks/t9`).get()).data().status).toBe('Dropped');
+    expect((await db.doc(`${BASE}/tasks/tN`).get()).data().status).toBe('Not Started');
 
     // The snapshot file is a Backup JSON (Ruling P4b-10): feed it back as --backup.
     const snapshot = JSON.parse(JSON.stringify(snaps[0]));
@@ -288,6 +327,7 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     expect(back.blocked).toEqual([]);
     expect(back.refused).toBeNull();
     expect(back.mode).toBe('restore');
+    expect(back.report.retained).toEqual([expect.objectContaining({ kind: 'task', id: 'tN', newStatus: 'Dropped' })]);
     const r = await applyRestore(db, {
       pid: PID, backup: snapshot, backupName: 'snap.json', backupSha256: SHA, allowHistoryLoss: false,
       expectHash: back.planHash, FieldValue, Timestamp, writeSnapshot: () => {},
@@ -296,7 +336,33 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     expect((await db.doc(`${BASE}/tasks/t2`).get()).data().updates.map((u) => u.id)).toEqual(['u7']);
     expect((await db.doc(`${BASE}/tasks/t9`).get()).data().status).toBe('Completed');
     expect((await db.doc(`${BASE}/workstreams/w1`).get()).data().name).toBe('WS One (renamed live)');
+    expect((await db.doc(`${BASE}/tasks/tN`).get()).data().status).toBe('Dropped');
+
+    // Every item that existed before the first apply is back as it was; tN is the only extra.
+    const treeAfter = await liveTree();
+    const w1After = treeAfter.programs.flatMap((pg) => pg.workstreams).find((w) => w.id === 'w1');
+    expect(w1After.tasks[w1After.tasks.length - 1].id).toBe('tN');
+    w1After.tasks = w1After.tasks.filter((t) => t.id !== 'tN');
+    expect(treeAfter).toEqual(treeBefore);
+
+    expect(await restoresCount()).toBe(2);
+    const events = (await db.collection(`${BASE}/activity`).get()).docs.filter((d) => d.id.startsWith('restore_'));
+    expect(events.map((d) => d.id).sort()).toEqual([`restore_${allowed.planHash}`, `restore_${back.planHash}`].sort());
     expect((await prepareRestore(db, { pid: PID, backup: snapshot, backupName: 'snap.json', backupSha256: SHA, Timestamp })).mode).toBe('noop');
+  });
+
+  it('RS-8: after a restore, p2-migrate --rollback lists the restored docs as edited and refuses without force', async () => {
+    const backup = await seedApply();
+    const p = await prep(backup);
+    await apply(backup, { expectHash: p.planHash });
+    const rb = await prepareRollback(db, { pid: PID, force: false, deleteDocs: false });
+    expect(rb.blocked).toEqual([]);
+    expect(rb.refused).toBe(true);
+    const edited = Object.fromEntries(rb.edits.edited.map((e) => [`${e.kind}/${e.id}`, e]));
+    expect(edited['workstreams/w1']).toMatchObject({ version: 3, updatedBy: RESTORE_STAMP });
+    expect(edited['tasks/t9']).toMatchObject({ version: 2, updatedBy: RESTORE_STAMP });
+    expect(rb.edits.newActivity).toContain(`restore_${p.planHash}`);
+    expect((await prepareRollback(db, { pid: PID, force: true, deleteDocs: false })).refused).toBe(false);
   });
 
   it('RS-5: a rolled-back project (schemaVersion 1) -> BLOCKED not-v2, nothing written', async () => {

@@ -118,7 +118,7 @@ export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
   const L = [];
   const r = prep.report;
   L.push(`Project:     ${PROJECTS}/${pid}`);
-  L.push(`Mode:        ${prep.mode}${prep.mode === 'noop' ? ' (the project already equals the backup plus retained items; nothing to write)' : ''}`);
+  L.push(`Mode:        ${prep.mode}${prep.mode === 'noop' ? '. Nothing to restore: the project already equals the backup plus retained items (exit 0, nothing written).' : ''}`);
   if (prep.backupName) L.push(`Backup:      ${prep.backupName} (sha256 ${String(prep.backupSha256 || '').slice(0, 12)})`);
   if (prep.mode === 'blocked') {
     L.push(...issueLines('BLOCKING', prep.blocked));
