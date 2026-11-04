@@ -5,7 +5,8 @@ import { assembleProject, splitProject } from '../../src/migrateV2.js';
 import { appValueFromV2 } from '../../src/readV2.js';
 import { normaliseForV2 } from '../../scripts/lib/migrate-normalise.mjs';
 import { planRestore } from '../../scripts/lib/restore-plan.mjs';
-import { parseArgs, formatRestorePreview, restorePreviewSheets } from '../../scripts/p2-restore.mjs';
+import { parseArgs, formatRestorePreview, restorePreviewSheets, restoreExitCode, diffRestore } from '../../scripts/p2-restore.mjs';
+import { expectedAfter } from '../../scripts/lib/restore-plan.mjs';
 
 const PID = 'proj_fx';
 const fixture = () => JSON.parse(readFileSync(new URL('../fixtures/v1-project.json', import.meta.url), 'utf8'));
@@ -124,5 +125,35 @@ describe('formatRestorePreview', () => {
     expect(Object.keys(s)).toEqual(['Summary', 'Ops', 'Retained', 'History loss', 'Changes']);
     expect(s.Ops).toEqual([expect.objectContaining({ Kind: 'workstreams', Op: 'update', Id: 'w1' })]);
     expect(s.Summary.length).toBeGreaterThan(3);
+  });
+
+  it('CLI-6: exit codes: ok 0, verify mismatch 2, history loss 3, other errors 1', () => {
+    expect(restoreExitCode({ mode: 'restore', verify: { ok: true, diffs: [] } })).toBe(0);
+    expect(restoreExitCode({ mode: 'noop', verify: { ok: true, diffs: [] } })).toBe(0);
+    expect(restoreExitCode({ mode: 'restore', verify: { ok: false, diffs: ['tasks/t1'] } })).toBe(2);
+    expect(restoreExitCode(Object.assign(new Error('x'), { code: 'HISTORY_LOSS' }))).toBe(3);
+    for (const code of ['BLOCKED', 'PLAN_CHANGED', 'STATE_CHANGED', undefined]) {
+      expect(restoreExitCode(Object.assign(new Error('x'), { code }))).toBe(1);
+    }
+  });
+
+  it('CLI-7: diffRestore ignores updatedAt, reports missing / extra / changed docs and meta fields', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    b.programs.flatMap((pg) => pg.workstreams).find((w) => w.id === 'w1').name = 'WS One renamed';
+    const p = plan(live, b);
+    const exp = expectedAfter(live, p);
+    const actual = structuredClone(exp);
+    actual.meta.updatedAt = { __ts: [1, 0] };
+    actual.docs.workstreams.forEach((d) => { d.data.updatedAt = { __ts: [2, 0] }; });
+    actual.docs.tasks.reverse();
+    expect(diffRestore(actual, exp)).toEqual([]);
+    actual.docs.workstreams.find((d) => d.id === 'w1').data.name = 'drift';
+    actual.docs.actions.pop();
+    actual.docs.decisions.push({ id: 'dX', data: {} });
+    actual.meta.name = 'other';
+    const diffs = diffRestore(actual, exp);
+    expect(diffs).toEqual(expect.arrayContaining(['meta.name', 'workstreams/w1', 'decisions/dX (unexpected)']));
+    expect(diffs.some((d) => /^actions/.* (missing)$/.test(d))).toBe(true);
   });
 });
