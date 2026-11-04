@@ -31,11 +31,17 @@ import {
   setDoc,
   serverTimestamp,
   runTransaction,
+  deleteField,
+  orderBy,
+  limit,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { metaForWrite } from './ownership';
+import { metaForWrite, isWorkspaceOwnerEmail } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
 import { assembleFromSnapshots } from './readV2';
+import { planV2Save } from './planV2Save';
+import { executeV2Save, applyWritten } from './execV2Save';
+import { buildDirectoryIndex } from './directory';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -54,10 +60,18 @@ const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a 
 const projectWriteQueue = createKeyedQueue();
 
 // P2.2: a v2 project lives in sub-collections. One getDocs per sub-collection
-// (4 queries per load, never one per task); assembleProject sorts by `order`.
-// Any read failure returns null — never a partial tree. Saves are refused
-// upstream (buildProjectWrite → readonly), so __v2 is never persisted.
-const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'] as const;
+// (5 queries per load, never one per task); assembleProject sorts by `order`.
+// Any read failure returns null — never a partial tree.
+// P2.3: the read also keeps `loaded` (project doc + every doc with its version) per
+// pid; a save of that pid is planned against it (planV2Save) and written per doc
+// (executeV2Save). The v1 write path (buildProjectWrite) still refuses v2 docs.
+const V2_SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'] as const;
+type V2Entry = { version: number; data: Record<string, unknown> };
+type V2Loaded = { meta: Record<string, unknown>; docs: Record<(typeof V2_SUBCOLS)[number], Map<string, V2Entry>> };
+const v2Loaded = new Map<string, V2Loaded>();
+// v2 activity: ids of events known to exist on the server, per pid.
+const v2ActivityKnown = new Map<string, Set<string>>();
+const V2_ACTIVITY_COL = (pid: string) => collection(db, 'workspaces', WORKSPACE, 'projects', pid, 'activity');
 async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
   let lists: Array<Array<{ id: string; data: Record<string, unknown> }>>;
   try {
@@ -69,8 +83,16 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
     console.warn('[storage] v2 sub-collection read failed:', key, e);
     return null;
   }
-  const [ws, tasks, actions, raid] = lists;
-  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid });
+  const [ws, tasks, actions, raid, decisions] = lists;
+  const toMap = (list: Array<{ id: string; data: Record<string, unknown> }>) =>
+    new Map(list.map(({ id, data }) => [id, { version: typeof data.version === 'number' ? data.version : 0, data }]));
+  // Replaces the cached `loaded` object: safe only because the App loads each project once;
+  // a read during an in-flight save would make applyWritten update a discarded object.
+  v2Loaded.set(pid, {
+    meta,
+    docs: { workstreams: toMap(ws), tasks: toMap(tasks), actions: toMap(actions), raid: toMap(raid), decisions: toMap(decisions) },
+  });
+  const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   if (orphanCount > 0) {
     console.warn('[storage] v2 project has orphans:', pid, {
       workstreams: orphans.workstreams.length,
@@ -89,9 +111,91 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
   void _pm; void _mu; void _vi; void _sv; void _va;
   return {
     key,
-    value: JSON.stringify({ id: pid, ...rest, __v2: { readOnly: true, orphans: orphanCount } }),
+    value: JSON.stringify({ id: pid, ...rest, __v2: { orphans: orphanCount } }),
     shared: true,
   };
+}
+
+// Workspace doc as last read (Owner check for the planner: ownerUids or legacy email).
+let wsMetaCache: Record<string, unknown> | null = null;
+async function isOwnerNow(user: UserProfile): Promise<boolean> {
+  if (!wsMetaCache) {
+    try {
+      const s = await getDoc(META_REF());
+      wsMetaCache = s.exists() ? (s.data() as Record<string, unknown>) : {};
+    } catch {
+      return false;
+    }
+  }
+  const m = wsMetaCache;
+  return (Array.isArray(m.ownerUids) && m.ownerUids.includes(user.uid))
+    || isWorkspaceOwnerEmail(m.workspaceOwner, user.email);
+}
+
+// Directory for person -> uid resolution in planV2Save, built like the P2 scripts
+// (members + invites feed the index; uidByEmail from members only). Loaded once; a
+// failed load is retried on the next save, and that save plans without it
+// (people left unchanged keep their stored uids; a changed pic / contributors makes
+// the planner refuse with 'directory-unavailable' -> reported as 'error', Ruling AH).
+type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string> };
+let dirPromise: Promise<PlanDirectory> | null = null;
+function directoryForPlan(): Promise<PlanDirectory> {
+  if (!dirPromise) {
+    dirPromise = Promise.all([
+      getDocs(collection(db, 'workspaces', WORKSPACE, 'members')),
+      getDocs(collection(db, 'workspaces', WORKSPACE, 'invites')),
+    ]).then(([mSnap, iSnap]) => {
+      const entries: Array<Record<string, unknown>> = [];
+      const uidByEmail = new Map<string, string>();
+      mSnap.forEach((d) => {
+        const m = d.data() as Record<string, unknown>;
+        entries.push({ email: m.email, displayName: m.displayName, aliases: m.aliases, status: m.status });
+        if (m.email) uidByEmail.set(String(m.email).toLowerCase(), d.id);
+      });
+      iSnap.forEach((d) => {
+        const m = d.data() as Record<string, unknown>;
+        entries.push({ email: m.email || d.id, displayName: m.displayName, aliases: m.aliases, status: m.status });
+      });
+      return { dirIndex: buildDirectoryIndex(entries), uidByEmail };
+    }).catch((e) => {
+      console.warn('[storage] directory load for v2 save failed:', e);
+      dirPromise = null;
+      return { dirIndex: null, uidByEmail: new Map<string, string>() };
+    });
+  }
+  return dirPromise;
+}
+
+// planV2Save / applyWritten are plain JS; their inferred parameter types come from
+// defaults (e.g. dirIndex = null), so give the shim the real signatures.
+type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Record<string, unknown> | null; refused: string | null };
+const planV2 = planV2Save as unknown as (loaded: V2Loaded, tree: Record<string, unknown>, opts: Record<string, unknown>) => V2Plan;
+const applyV2Written = applyWritten as unknown as (loaded: V2Loaded, written: unknown[], metaPatch: Record<string, unknown> | null) => void;
+
+// P2.3 v2 save: plan against the loaded docs, then one transaction per batch.
+// The cache is refreshed from whatever committed (a later Ruling X step may fail
+// after batch 1 landed); on conflict / denied the rest stays stale until reload.
+async function saveV2Project(key: string, value: string, pid: string, loaded: V2Loaded, user: UserProfile) {
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const { [FORCE_WRITE_FLAG]: _force, ...tree } = parsed;
+  void _force;
+  const [isOwner, dir] = await Promise.all([isOwnerNow(user), directoryForPlan()]);
+  const plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  if (plan.refused) {
+    console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
+    // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
+    const error = plan.refused === 'directory-unavailable' ? 'error' : 'refused';
+    return { key, value, shared: true, error, reason: plan.refused };
+  }
+  if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };
+  const r = await executeV2Save(
+    { runTransaction, doc, serverTimestamp, deleteField },
+    { db, wid: WORKSPACE, pid, uid: user.uid, plan },
+  );
+  if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? plan.metaPatch : null);
+  if (r.status === 'ok') return { key, value, shared: true };
+  console.warn('[storage] v2 save not completed:', pid, r.status, 'batch', r.failedBatch, r.error || '');
+  return { key, value, shared: true, error: r.status };
 }
 
 /** Per-user localStorage key for the "currently selected project". */
@@ -188,6 +292,7 @@ window.storage = {
         const metaSnap = await getDoc(META_REF());
         if (!metaSnap.exists()) return null;
         const baseMeta = metaSnap.data() || {};
+        wsMetaCache = baseMeta;
         const q = query(PROJECTS_COL(), where('memberIds', 'array-contains', user.uid));
         const projSnap = await getDocs(q);
         const projectIds: string[] = [];
@@ -248,6 +353,7 @@ window.storage = {
         void createdAt;
         void updatedAt;
         if (data.schemaVersion === 2) return await getV2Project(key, pid, data);
+        v2Loaded.delete(pid);
         return {
           key,
           value: JSON.stringify({ id: pid, ...rest }),
@@ -257,6 +363,20 @@ window.storage = {
 
       if (key.startsWith('activity:')) {
         const pid = key.substring('activity:'.length);
+        if (v2Loaded.has(pid)) {
+          // P2.3: one doc per event; the newest ACTIVITY_CAP in the v1 array shape.
+          const snap = await getDocs(query(V2_ACTIVITY_COL(pid), orderBy('createdAt', 'desc'), limit(ACTIVITY_CAP)));
+          const entries: Array<Record<string, unknown>> = [];
+          snap.forEach((d) => {
+            const { createdAt, ...e } = d.data() as Record<string, unknown>;
+            const ts = createdAt as { toDate?: () => Date } | null | undefined;
+            if (e.timestamp == null && ts && typeof ts.toDate === 'function') e.timestamp = ts.toDate().toISOString();
+            if (e.id == null) e.id = d.id;
+            entries.push(e);
+          });
+          v2ActivityKnown.set(pid, new Set(snap.docs.map((d) => d.id)));
+          return { key, value: JSON.stringify(entries), shared: true };
+        }
         const snap = await getDoc(ACTIVITY_REF(pid));
         if (!snap.exists()) return { key, value: JSON.stringify([]), shared: true };
         const data = snap.data() as { entries?: Array<Record<string, unknown>> };
@@ -328,6 +448,8 @@ window.storage = {
         // B3 fix: one write per project at a time (see createKeyedQueue).
         return await projectWriteQueue.run(key, async () => {
         const pid = key.substring('project:'.length);
+        const loadedV2 = v2Loaded.get(pid);
+        if (loadedV2) return await saveV2Project(key, value, pid, loadedV2, user);
         const parsed = JSON.parse(value) as Record<string, unknown>;
         // Owner restore from backup explicitly overrides the stale-write guard.
         const force = parsed[FORCE_WRITE_FLAG] === true;
@@ -389,6 +511,24 @@ window.storage = {
 
       if (key.startsWith('activity:')) {
         const pid = key.substring('activity:'.length);
+        if (v2Loaded.has(pid)) {
+          // P2.3: each event not yet on the server becomes activity/{entry.id}
+          // (rules: authorUid == me, createdAt == request.time). Oldest first.
+          const parsedList = JSON.parse(value);
+          const list: Array<Record<string, unknown>> = Array.isArray(parsedList) ? parsedList : [];
+          const known = v2ActivityKnown.get(pid) || new Set<string>();
+          v2ActivityKnown.set(pid, known);
+          const fresh = list.filter((e) => e && typeof e.id === 'string' && e.id && !known.has(e.id)).reverse();
+          for (const e of fresh) {
+            const { createdAt: _c, authorUid: _a, ...entry } = e;
+            void _c; void _a;
+            await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
+              ...entry, authorUid: user.uid, createdAt: serverTimestamp(),
+            });
+            known.add(e.id as string);
+          }
+          return { key, value, shared: true };
+        }
         const incoming = JSON.parse(value);
         let entries: Array<Record<string, unknown>> = Array.isArray(incoming) ? incoming : [];
         // Rule requires entries[0].author == request.auth.token.email. The new

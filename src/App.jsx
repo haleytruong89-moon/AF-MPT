@@ -1530,12 +1530,13 @@ async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
 // Only for owner-field changes (transfer, workspace default view); see metaForWrite().
 async function saveMetaOwnerFields(m) { return ssetShared(K.meta, JSON.stringify({ ...m, [OWNER_WRITE_FLAG]: true })); }
 async function loadProject(id) { const r = await sgetShared(K.project(id)); if (!r) return null; try { return JSON.parse(r); } catch { return null; } }
-// Returns 'ok' | 'conflict' | 'readonly' | 'error' (B2/B3, P2.2). Callers that ignore it keep working.
+// Returns 'ok' | 'conflict' | 'readonly' | 'denied' | 'refused' | 'error' (B2/B3, P2.2, P2.3). Callers that ignore it keep working.
 async function saveProject(p) {
   try {
     const r = await window.storage.set(K.project(p.id), JSON.stringify(p), true);
     if (!r) return 'error';
-    return r.error === 'conflict' ? 'conflict' : r.error === 'readonly' ? 'readonly' : 'ok';
+    if (!r.error) return 'ok';
+    return ['conflict', 'readonly', 'denied', 'refused'].includes(r.error) ? r.error : 'error';
   } catch { return 'error'; }
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
@@ -2005,8 +2006,8 @@ function FieldLabel({ children }) {
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
 function SaveBanner({ saveState }) {
-  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames } = bannerGroups(saveState);
-  if (conflictNames.length + errorNames.length + readonlyNames.length === 0) return null;
+  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames } = bannerGroups(saveState);
+  if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
   return (
     <div role="alert" style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 120, maxWidth: 'calc(100% - 40px)', background: TOK.blockerBg, color: TOK.blocker, border: '1px solid currentColor', borderRadius: 8, padding: '10px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
@@ -2014,6 +2015,8 @@ function SaveBanner({ saveState }) {
         {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
+        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (closing a task needs your Sub-PM or PM). Reload to continue — edits made after this are not saved either. </>}
+        {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
       </span>
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
@@ -4520,7 +4523,11 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
   const canSave = title.trim() && pic.trim();
 
   const submit = () => {
+    // Merge onto the current stored action (fresh from project, else the snapshot) so
+    // fields the form does not edit (updates, subtasks, completedAt…) are kept.
+    const base = (initial && (project?.actionItems || []).find((x) => x.id === initial.id)) || initial || {};
     onSave({
+      ...base,
       id: initial?.id || uid('act'),
       timestamp: initial?.timestamp || new Date().toISOString(),
       title: title.trim(),
@@ -12781,6 +12788,22 @@ export default function App() {
     setToast({ message, id, action });
     setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), action ? 6000 : 3500);
   };
+
+  // P2.3: Owner-only notice, once per project, when a v2 project loaded with orphans.
+  const orphanToastShown = useRef(new Set());
+  useEffect(() => {
+    if (!isOwner) return;
+    for (const p of Object.values(projects || {})) {
+      const n = p?.__v2?.orphans || 0;
+      if (n > 0 && !orphanToastShown.current.has(p.id)) {
+        orphanToastShown.current.add(p.id);
+        const id = uid('t');
+        setToast({ message: `${n} item(s) in this project could not be placed; see the console.`, id });
+        setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), 3500);
+        break;
+      }
+    }
+  }, [isOwner, projects]);
 
   // Debounced save of a project. Failures surface in the save banner (B2/B3).
   const persistProject = useCallback((p) => {

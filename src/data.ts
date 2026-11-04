@@ -14,6 +14,8 @@ import {
   deleteDoc,
   onSnapshot,
   serverTimestamp,
+  arrayUnion,
+  arrayRemove,
   type DocumentReference,
   type CollectionReference,
 } from 'firebase/firestore';
@@ -433,6 +435,14 @@ async function patchProject(pid: string, fields: Record<string, unknown>): Promi
   await updateDoc(PROJECT_REF(pid), { ...fields, updatedAt: serverTimestamp() });
 }
 
+// v2 projects (schemaVersion 2) also carry `memberUids`, which the v2 read rules
+// (canReadProject) use. Keep it in sync atomically with arrayUnion/arrayRemove,
+// never from the snapshot. Owner-only by rules (Ruling P). The helpers receive
+// a Firebase uid (members/{uid}); an invite-only person has no uid yet and
+// cannot reach these helpers, so there is nothing to mirror for them.
+const isV2 = (project: Project): boolean =>
+  (project as { schemaVersion?: number }).schemaVersion === 2;
+
 export async function addProjectMember(
   project: Project,
   userDirEntry: { uid: string },
@@ -441,7 +451,11 @@ export async function addProjectMember(
   if (!project?.id || !userDirEntry?.uid) throw new Error('addProjectMember: bad args');
   const memberIds = Array.from(new Set([...(project.memberIds || []), userDirEntry.uid]));
   const roles = { ...(project.roles || {}), [userDirEntry.uid]: role };
-  await patchProject(project.id, { memberIds, roles });
+  await patchProject(project.id, {
+    memberIds,
+    roles,
+    ...(isV2(project) ? { memberUids: arrayUnion(userDirEntry.uid) } : {}),
+  });
 }
 
 export async function setMemberRole(project: Project, uid: string, role: Role): Promise<void> {
@@ -455,7 +469,11 @@ export async function removeProjectMember(project: Project, uid: string): Promis
   const memberIds = (project.memberIds || []).filter((x) => x !== uid);
   const roles = { ...(project.roles || {}) };
   delete roles[uid];
-  await patchProject(project.id, { memberIds, roles });
+  await patchProject(project.id, {
+    memberIds,
+    roles,
+    ...(isV2(project) ? { memberUids: arrayRemove(uid) } : {}),
+  });
 }
 
 export async function setRelatedParties(

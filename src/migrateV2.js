@@ -9,7 +9,7 @@
 // stripped).
 //
 // Presence flags (so absent v1 keys stay absent):
-//  - meta.v1Absent: ['programs'] and/or ['actionItems'] when the v1 project lacks them.
+//  - meta.v1Absent: ['programs'], ['actionItems'] and/or ['decisions'] when the v1 project lacks them.
 //  - programMeta[k].__absent: subset of ['id', 'workstreams', 'raid'] missing on the v1 program.
 //
 // RAID lives in its own doc per program (doc id = the programMeta key, so duplicate
@@ -43,9 +43,13 @@ export function taskWorkstreamOf(project) {
 }
 
 const PROGRAM_V2 = ['order', 'pmUid', 'deputyUid', 'start', 'end'];
-const WS_V2 = ['workspaceId', 'projectId', 'programId', 'order', 'leadUid', 'start', 'end', 'version'];
-const TASK_V2 = ['workspaceId', 'projectId', 'programId', 'workstreamId', 'order', 'picUid', 'picEmail', 'contributorUids', 'version'];
-const ACTION_V2 = ['workspaceId', 'projectId', 'order', 'picUid', 'picEmail', 'workstreamId', 'version'];
+// Write stamps / claims added by v2 writers. Never part of the v1 tree: assemble strips
+// them; a v1 value with the same name is stashed at split time and restored.
+const STAMPS = ['updatedBy', 'updatedAt', 'viaProgramId', 'viaWorkstreamId'];
+const WS_V2 = ['workspaceId', 'projectId', 'programId', 'order', 'leadUid', 'start', 'end', 'version', ...STAMPS];
+const TASK_V2 = ['workspaceId', 'projectId', 'programId', 'workstreamId', 'order', 'picUid', 'picEmail', 'contributorUids', 'version', ...STAMPS];
+const ACTION_V2 = ['workspaceId', 'projectId', 'order', 'picUid', 'picEmail', 'workstreamId', 'version', ...STAMPS];
+const DECISION_V2 = ['workspaceId', 'projectId', 'order', 'version', ...STAMPS];
 
 // Copy `base`, add v2 fields, parking colliding v1 values in the stash.
 function withV2(base, v2Fields, kind, id, collisions) {
@@ -57,6 +61,16 @@ function withV2(base, v2Fields, kind, id, collisions) {
       collisions.push({ kind, id: id ?? null, key });
     }
     data[key] = v2Fields[key];
+  }
+  // `version` is already a v2 field on docs; the other stamps are reserved names.
+  if (kind !== 'program') {
+    for (const key of STAMPS) {
+      if (hasOwn(base, key) && !hasOwn(stash, key)) {
+        stash[key] = base[key];
+        collisions.push({ kind, id: id ?? null, key });
+        delete data[key];
+      }
+    }
   }
   if (Object.keys(stash).length) data[STASH] = stash;
   return data;
@@ -88,7 +102,7 @@ function makeDocIds() {
 export function splitProject(project, { wid, dirIndex = null, uidByEmail = new Map() } = {}) {
   const projectId = project.id;
   const report = {
-    counts: { programs: 0, workstreams: 0, tasks: 0, actions: 0 },
+    counts: { programs: 0, workstreams: 0, tasks: 0, actions: 0, decisions: 0 },
     unresolved: [],
     duplicateIds: [],
     collisions: [],
@@ -121,10 +135,12 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
   const tasks = [];
   const actions = [];
   const raid = [];
+  const decisions = [];
   const progIds = makeDocIds();
   const wsIds = makeDocIds();
   const taskIds = makeDocIds();
   const actionIds = makeDocIds();
+  const decisionIds = makeDocIds();
   const taskWsDoc = new Map(); // v1 task id -> workstream DOC id (first occurrence wins)
 
   (project.programs || []).forEach((prog, pi) => {
@@ -190,10 +206,20 @@ export function splitProject(project, { wid, dirIndex = null, uidByEmail = new M
     });
   });
 
+  (project.decisions || []).forEach((d, di) => {
+    report.counts.decisions++;
+    const { docId, dup } = decisionIds(d?.id, `__decision_${di}`);
+    if (dup) report.duplicateIds.push(`decision:${d.id}`);
+    decisions.push({
+      id: docId,
+      data: withV2(d, { workspaceId: wid, projectId, order: di, version: 1 }, 'decision', d?.id, report.collisions),
+    });
+  });
+
   const meta = { ...project, programMeta, memberUids: [...memberUids].sort() };
-  const v1Absent = ['programs', 'actionItems'].filter((k) => !hasOwn(project, k));
+  const v1Absent = ['programs', 'actionItems', 'decisions'].filter((k) => !hasOwn(project, k));
   if (v1Absent.length) meta.v1Absent = v1Absent;
-  return { meta, workstreams, tasks, actions, raid, report };
+  return { meta, workstreams, tasks, actions, raid, decisions, report };
 }
 
 const byOrder = (a, b) => (a.data.order ?? 0) - (b.data.order ?? 0);
@@ -206,9 +232,9 @@ const byOrder = (a, b) => (a.data.order ?? 0) - (b.data.order ?? 0);
 // not a workstream doc or is itself an orphan workstream, raid docs whose id is not in
 // programMeta; plus missingRaid = program keys that expected a raid doc but got none.
 // (Action docs always attach; `actions` is kept for symmetry.)
-export function assembleProject(meta, workstreams, tasks, actions, raid = []) {
-  const { programMeta = {}, memberUids: _mu, v1Absent = [], programs: _p, actionItems: _a, ...project } = meta;
-  void _mu; void _p; void _a;
+export function assembleProject(meta, workstreams, tasks, actions, raid = [], decisions = []) {
+  const { programMeta = {}, memberUids: _mu, v1Absent = [], programs: _p, actionItems: _a, decisions: _d, ...project } = meta;
+  void _mu; void _p; void _a; void _d;
   const orphans = { workstreams: [], tasks: [], actions: [], raid: [], missingRaid: [] };
   const wsIdSet = new Set(workstreams.map((w) => w.id));
 
@@ -256,6 +282,9 @@ export function assembleProject(meta, workstreams, tasks, actions, raid = []) {
   }
   if (actions.length || !v1Absent.includes('actionItems')) {
     project.actionItems = [...actions].sort(byOrder).map((a) => unwrap(a.data, ACTION_V2));
+  }
+  if (decisions.length || !v1Absent.includes('decisions')) {
+    project.decisions = [...decisions].sort(byOrder).map((d) => unwrap(d.data, DECISION_V2));
   }
   return { project, orphans };
 }

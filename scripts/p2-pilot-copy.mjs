@@ -8,7 +8,7 @@
 //    visibility 'restricted', schemaVersion 2, rev 0, createdBy HOD.
 //    googleChatWebhook and deletedAt are dropped: a pilot must never post to the
 //    real Chat space.
-//  - workstreams / tasks / actions / raid sub-collections from splitProject, each
+//  - workstreams / tasks / actions / raid / decisions sub-collections from splitProject, each
 //    doc with projectId = newPid, version 1, updatedBy 'p2-pilot-copy'.
 //    The Admin SDK bypasses the rules; updatedBy is a script id (not a uid) BY
 //    DESIGN so the docs are traceable to this script. The first in-app write
@@ -24,21 +24,28 @@
 // deleted (exit 2). p2-*-manifest*.json is gitignored.
 //
 // Usage:
-//   node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--key service-account.json]            (preview, read-only)
-//   node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] --apply [--key service-account.json]
+//   node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--assignments p2-assignments.xlsx] [--key service-account.json]            (preview, read-only)
+//   node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--assignments p2-assignments.xlsx] --apply [--key service-account.json]
 //   node scripts/p2-pilot-copy.mjs --rollback <manifest.json> [--key service-account.json]
+// --assignments (optional): PM / Sub-PM template from p2-migrate-dryrun.mjs. Emails resolve to uids
+// through the workspace directory (unknown or invite-only email = error, nothing written);
+// sets programMeta pmUid/deputyUid and workstream leadUid/start/end; blank cells change nothing.
+// Assigned uids and every task/action picUid go into memberUids AND memberIds (Ruling G).
 // Then: node scripts/p2-compare.mjs <sourcePid> <newPid>
 
 import * as fs from 'node:fs';
+import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { applyWrites, rollbackManifest } from './lib/manifest.mjs';
 import { splitProject } from '../src/migrateV2.js';
 import { buildDirectoryIndex } from '../src/directory.js';
+import { applyAssignments, parseAssignmentsWorkbook, formatPreview } from './lib/assignments.mjs';
 
+XLSX.set_fs(fs); // required for XLSX.readFile in ESM
 const WID = 'main';
 const WS = `workspaces/${WID}`;
 const PROJECTS = `${WS}/projects`;
-export const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid'];
+export const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'];
 export const PILOT_STAMP = 'p2-pilot-copy';
 const norm = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -77,7 +84,7 @@ export function directoryFrom(memberDocs, inviteDocs) {
   return { dirIndex: buildDirectoryIndex(entries), uidByEmail };
 }
 
-// Every path must be the new project doc or a doc of one of its 4 sub-collections,
+// Every path must be the new project doc or a doc of one of its 5 sub-collections,
 // and no segment may be the source pid.
 function assertPathSafe(path, sourcePid, newPid) {
   const segs = path.split('/');
@@ -89,7 +96,7 @@ function assertPathSafe(path, sourcePid, newPid) {
 }
 
 // Pure. sourceProject = the v1 project doc data. -> { writes: [{ path, data }], report }.
-export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirIndex = null, uidByEmail = new Map(), now } = {}) {
+export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirIndex = null, uidByEmail = new Map(), now, assignments = null } = {}) {
   if (!validPid(sourcePid)) throw new Error('sourcePid is required (no "/")');
   if (!validPid(newPid)) throw new Error('newPid is required (no "/")');
   if (newPid === sourcePid) throw new Error('newPid must differ from sourcePid');
@@ -122,10 +129,10 @@ export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirI
 
   const base = `${PROJECTS}/${newPid}`;
   const writes = [{ path: base, data: meta }];
-  const lists = { workstreams: split.workstreams, tasks: split.tasks, actions: split.actions, raid: split.raid };
+  const lists = { workstreams: split.workstreams, tasks: split.tasks, actions: split.actions, raid: split.raid, decisions: split.decisions };
   for (const kind of SUBCOLS) {
     for (const d of lists[kind]) {
-      if (hasOwn(d.data, 'updatedBy')) {
+      if (hasOwn(d.data, 'updatedBy') || (d.data.__v1 && hasOwn(d.data.__v1, 'updatedBy'))) {
         throw new Error(`${kind}/${d.id} already has a v1 updatedBy; the pilot stamp would overwrite it`);
       }
       writes.push({
@@ -134,7 +141,15 @@ export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirI
       });
     }
   }
-  for (const w of writes) assertPathSafe(w.path, sourcePid, newPid);
+  let finalWrites = writes;
+  let assignmentPreview = null;
+  if (assignments) {
+    const r = applyAssignments(writes, assignments, { dirIndex, uidByEmail }, { projectNames: [sourceProject.name, sourcePid] });
+    if (r.errors.length) throw new Error(`Assignments rejected, nothing written:\n  ${r.errors.join('\n  ')}`);
+    finalWrites = r.writes;
+    assignmentPreview = r.preview;
+  }
+  for (const w of finalWrites) assertPathSafe(w.path, sourcePid, newPid);
 
   const report = {
     ...split.report,
@@ -144,10 +159,12 @@ export function planPilotCopy(sourceProject, { sourcePid, newPid, ownerUid, dirI
       tasks: split.tasks.length,
       actions: split.actions.length,
       raid: split.raid.length,
+      decisions: split.decisions.length,
     },
-    totalWrites: writes.length,
+    totalWrites: finalWrites.length,
+    ...(assignmentPreview ? { assignments: assignmentPreview } : {}),
   };
-  return { writes, report };
+  return { writes: finalWrites, report };
 }
 
 // -> { empty: true } | { empty: false, reason }.
@@ -168,7 +185,7 @@ const docsOf = async (db, path) => {
 };
 
 // Reads only. -> { writes, report, ownerUid }.
-export async function preparePilotCopy(db, { sourcePid, newPid = defaultNewPid(sourcePid), now }) {
+export async function preparePilotCopy(db, { sourcePid, newPid = defaultNewPid(sourcePid), now, assignments = null }) {
   const srcSnap = await db.doc(`${PROJECTS}/${sourcePid}`).get();
   if (!srcSnap.exists) throw new Error(`Source project ${PROJECTS}/${sourcePid} not found`);
   const wsSnap = await db.doc(WS).get();
@@ -177,7 +194,7 @@ export async function preparePilotCopy(db, { sourcePid, newPid = defaultNewPid(s
   const owner = resolveOwnerUid(wsSnap.exists ? wsSnap.data() : null, members);
   if (owner.error) throw new Error(owner.error);
   const { dirIndex, uidByEmail } = directoryFrom(members, invites);
-  const { writes, report } = planPilotCopy(srcSnap.data(), { sourcePid, newPid, ownerUid: owner.uid, dirIndex, uidByEmail, now });
+  const { writes, report } = planPilotCopy(srcSnap.data(), { sourcePid, newPid, ownerUid: owner.uid, dirIndex, uidByEmail, now, assignments });
   return { writes, report, ownerUid: owner.uid, newPid };
 }
 
@@ -190,8 +207,8 @@ export const PILOT_NAME_PREFIX = '[v2 pilot] ';
 // before-images just before writing and calls writeManifest before the first
 // write: if any before-image is non-null (a doc appeared at newPid after the
 // emptiness check), we throw there and nothing is written.
-export async function applyPilotCopy(db, { sourcePid, newPid = defaultNewPid(sourcePid), now, Timestamp, writeManifest }) {
-  const prepared = await preparePilotCopy(db, { sourcePid, newPid, now });
+export async function applyPilotCopy(db, { sourcePid, newPid = defaultNewPid(sourcePid), now, Timestamp, writeManifest, assignments = null }) {
+  const prepared = await preparePilotCopy(db, { sourcePid, newPid, now, assignments });
   const t = await targetIsEmpty(db, newPid);
   if (!t.empty) throw new Error(`Refusing to apply: ${t.reason}. Roll back or pick another --new-pid.`);
   const r = await applyWrites(db, prepared.writes, {
@@ -268,7 +285,7 @@ export async function rollbackPilotCopy(db, manifest, { FieldValue, Timestamp })
 }
 
 function parseArgs(argv) {
-  const o = { pos: [], apply: false, key: 'service-account.json', rollback: null, newPid: null };
+  const o = { pos: [], apply: false, key: 'service-account.json', rollback: null, newPid: null, assignments: null };
   const value = (i, flag) => {
     const v = argv[i];
     if (v === undefined || v === '' || v.startsWith('--')) { console.error(`${flag} needs a value`); process.exit(1); }
@@ -280,6 +297,7 @@ function parseArgs(argv) {
     else if (a === '--key') o.key = value(++i, a);
     else if (a === '--rollback') o.rollback = value(++i, a);
     else if (a === '--new-pid') o.newPid = value(++i, a);
+    else if (a === '--assignments') o.assignments = value(++i, a);
     else if (a.startsWith('--')) { console.error(`Unknown argument: ${a}`); process.exit(1); }
     else o.pos.push(a);
   }
@@ -317,14 +335,19 @@ async function main() {
   }
   const [sourcePid] = o.pos;
   if (!sourcePid || o.pos.length > 1) {
-    console.error('Usage: node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--apply] [--key service-account.json] | --rollback <manifest.json>');
+    console.error('Usage: node scripts/p2-pilot-copy.mjs <sourcePid> [--new-pid X] [--assignments p2-assignments.xlsx] [--apply] [--key service-account.json] | --rollback <manifest.json>');
     process.exit(1);
   }
   const newPid = o.newPid || defaultNewPid(sourcePid);
+  let assignments = null;
+  if (o.assignments) {
+    if (!fs.existsSync(o.assignments)) { console.error(`Assignments file not found: ${o.assignments}`); process.exit(1); }
+    assignments = parseAssignmentsWorkbook(XLSX.readFile(o.assignments));
+  }
   // Key check first: nothing below touches Firestore without it.
   const { db, Timestamp } = await openDb(o.key);
   const now = Timestamp.now();
-  const { writes, report, ownerUid } = await preparePilotCopy(db, { sourcePid, newPid, now });
+  const { writes, report, ownerUid } = await preparePilotCopy(db, { sourcePid, newPid, now, assignments });
   const t = await targetIsEmpty(db, newPid);
   // Counts and paths only: no people data is printed.
   console.log(`Source:      ${PROJECTS}/${sourcePid} (read only)`);
@@ -332,13 +355,17 @@ async function main() {
   console.log(`ACL:         owner uid ${ownerUid} only, visibility restricted, schemaVersion 2`);
   console.log(`Docs:        project 1, workstreams ${report.docs.workstreams}, tasks ${report.docs.tasks}, actions ${report.docs.actions}, raid ${report.docs.raid} (total ${report.totalWrites})`);
   console.log(`Split:       programs ${report.counts.programs}, unresolved people ${report.unresolved.length}, duplicate ids ${report.duplicateIds.length}, key collisions ${report.collisions.length}`);
+  if (report.assignments) {
+    console.log('Assignments:');
+    for (const l of formatPreview(report.assignments)) console.log(`  ${l}`);
+  }
   console.log(`Target:      ${t.empty ? 'empty' : `NOT EMPTY (${t.reason})`}`);
   if (!o.apply) { console.log('Dry run: Firestore untouched. Re-run with --apply to write.'); return; }
   if (!t.empty) { console.error(`Refusing to apply: ${t.reason}.`); process.exit(1); }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const manifestPath = `p2-pilot-copy-manifest-${newPid}-${stamp}.json`;
   const r = await applyPilotCopy(db, {
-    sourcePid, newPid, now, Timestamp,
+    sourcePid, newPid, now, Timestamp, assignments,
     writeManifest: (m) => fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2)),
   });
   console.log(`Applied ${r.written} docs under ${PROJECTS}/${newPid}. Manifest: ${manifestPath}`);

@@ -66,6 +66,20 @@ describe('nextSaveState', () => {
     s = nextSaveState(s, 'p1', 'conflict', 'Pilot');
     expect(s.p1.status).toBe('readonly');
   });
+  it('denied and refused are per attempt: a later ok clears them, conflict still wins', () => {
+    let s = nextSaveState({}, 'p1', 'denied', 'Pilot');
+    expect(s).toEqual({ p1: { status: 'denied', name: 'Pilot' } });
+    s = nextSaveState(s, 'p1', 'ok', 'Pilot');
+    expect(s).toEqual({});
+    s = nextSaveState({}, 'p1', 'refused', 'Pilot');
+    expect(s.p1.status).toBe('refused');
+    s = nextSaveState(s, 'p1', 'denied', 'Pilot');
+    expect(s.p1.status).toBe('denied');
+    s = nextSaveState(s, 'p1', 'ok', 'Pilot');
+    expect(s).toEqual({});
+    s = nextSaveState(nextSaveState({}, 'p1', 'conflict', 'Pilot'), 'p1', 'denied', 'Pilot');
+    expect(s.p1.status).toBe('conflict');
+  });
 });
 
 describe('hasUnsavedWork', () => {
@@ -114,13 +128,18 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [] });
+    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: [] });
   });
   it('lists readonly (v2 pilot) projects separately', () => {
     expect(bannerGroups({
       a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'] });
+    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [] });
+  });
+  it('lists denied and refused (P2.3 v2 saves) separately', () => {
+    expect(bannerGroups({
+      a: { status: 'denied', name: 'Pilot' }, b: { status: 'refused', name: 'KR' }, c: { status: 'error', name: 'MA' },
+    })).toEqual({ conflict: [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'] });
   });
 });
 

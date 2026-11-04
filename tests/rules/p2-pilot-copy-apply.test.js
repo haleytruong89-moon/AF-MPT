@@ -53,7 +53,7 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
 
     const copy = await treeUnder(NEW);
     expect(copy.exists).toBe(true);
-    expect(copy.cols).toEqual(['actions', 'raid', 'tasks', 'workstreams']);
+    expect(copy.cols).toEqual(['actions', 'decisions', 'raid', 'tasks', 'workstreams']);
     expect(copy.data.memberIds).toEqual(['u_hod']);
     expect(copy.data.roles).toEqual({ u_hod: 'owner' });
     expect(copy.data.memberUids).toEqual(['u_hod']);
@@ -66,6 +66,10 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
       expect(d.data().projectId).toBe(NEW);
       expect(d.data().updatedBy).toBe('p2-pilot-copy');
     });
+
+    const decs = await db.collection(`${WS}/projects/${NEW}/decisions`).get();
+    expect(decs.docs.map((d) => d.id)).toEqual(["d1"]);
+    expect(decs.docs[0].data()).toMatchObject({ projectId: NEW, version: 1, updatedBy: "p2-pilot-copy", title: "Go" });
 
     // Every manifest entry is a new doc under NEW.
     expect(assertPilotManifest(manifest)).toBe(NEW);
@@ -109,5 +113,37 @@ describe('P2 pilot copy apply / compare / rollback against the emulator', () => 
     await expect(applyPilotCopy(db, { sourcePid: SRC, Timestamp, writeManifest: () => {} }))
       .rejects.toThrow(/sub-collections: tasks/);
     expect((await db.doc(`${WS}/projects/${NEW}`).get()).exists).toBe(false);
+  });
+
+  it('applies PM / Sub-PM assignments: programMeta, leadUid, memberUids; rollback removes everything', async () => {
+    const assignments = {
+      programs: [{ Project: 'Fixture Project', 'Program id': 'pg1', Program: '', 'PM email': 'Alice@smartosc.com', 'Deputy email': '' }],
+      workstreams: [{ Project: 'Fixture Project', 'Workstream id': 'w1', Program: '', Workstream: '', 'Sub-PM email': 'hattt4@smartosc.com', Start: '2026-01-01', End: '2026-06-30' }],
+    };
+    let manifest;
+    const r = await applyPilotCopy(db, {
+      sourcePid: SRC, Timestamp, now: Timestamp.now(), assignments,
+      writeManifest: (m) => { manifest = JSON.parse(JSON.stringify(m)); },
+    });
+    const copy = (await db.doc(`${WS}/projects/${NEW}`).get()).data();
+    expect(copy.programMeta.pg1).toMatchObject({ pmUid: 'uid1', deputyUid: null });
+    expect(copy.memberUids).toEqual(expect.arrayContaining(['u_hod', 'uid1']));
+    expect(copy.memberIds).toEqual(expect.arrayContaining(['u_hod', 'uid1']));
+    const w1 = (await db.doc(`${WS}/projects/${NEW}/workstreams/w1`).get()).data();
+    expect(w1).toMatchObject({ leadUid: 'u_hod', start: '2026-01-01', end: '2026-06-30' });
+
+    const rb = await rollbackPilotCopy(db, manifest, { FieldValue, Timestamp });
+    expect(rb).toMatchObject({ restored: 0, deleted: r.written, newPid: NEW, leftover: [] });
+    expect(await treeUnder(NEW)).toEqual({ exists: false, data: null, cols: [] });
+  });
+
+  it('rejects assignments naming an invite-only email and writes nothing', async () => {
+    const assignments = {
+      programs: [{ Project: 'Fixture Project', 'Program id': 'pg1', 'PM email': 'bob@smartosc.com', 'Deputy email': '' }],
+      workstreams: [],
+    };
+    await expect(applyPilotCopy(db, { sourcePid: SRC, Timestamp, assignments, writeManifest: () => {} }))
+      .rejects.toThrow(/only invited/);
+    expect((await treeUnder(NEW)).exists).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, deleteDoc, deleteField, getDoc, getDocs, collection } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteDoc, deleteField, getDoc, getDocs, collection, serverTimestamp } from 'firebase/firestore';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
 
 // P2.1 Task 4: rules for the v2 sub-collections (workstreams / tasks /
@@ -118,9 +118,11 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   });
 
   // ── Task delete ──
-  it('V2-3 task delete: Owner and PM allowed', async () => {
+  // Ruling AF (P2.3 final review): task delete is workspace-Owner-only (was Owner
+  // and PM); tasks are never hard-deleted by the app (Dropped instead).
+  it('V2-3 task delete: Owner allowed; PM denied (Ruling AF)', async () => {
+    await assertFails(deleteDoc(doc(await as(PM), `${P1}/tasks/t2`)));
     await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/tasks/t1`)));
-    await assertSucceeds(deleteDoc(doc(await as(PM), `${P1}/tasks/t2`)));
   });
 
   it('V2-4 task delete: Sub-PM (must use Dropped), Assignee, PM of another program denied', async () => {
@@ -152,8 +154,8 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   it('V2-7 task update by Assignee: status Planned/InProgress, health, updates, checkIns allowed', async () => {
     const db = await as(ASG);
     await assertSucceeds(up(ASG, `${P1}/tasks/t1`, {
-      status: 'Planned', health: 'Amber', healthNote: 'n', updates: [{ text: 'u' }],
-      checkIns: [{ d: 1 }], updatedAt: 'now', updatedBy: ASG.uid, version: 2,
+      status: 'Planned', health: 'Amber', healthNote: 'n', updates: [{ text: 'u', authorUid: ASG.uid }],
+      checkIns: [{ d: 1, authorUid: ASG.uid }], updatedAt: 'now', updatedBy: ASG.uid, version: 2,
     }));
     await assertSucceeds(up(ASG, `${P1}/tasks/t1`, { status: 'InProgress', version: 3 }));
   });
@@ -234,7 +236,7 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
   });
 
   it('V2-16 action update: PIC may set Done; Owner, PM, Sub-PM may update', async () => {
-    await assertSucceeds(up(ASG, `${P1}/actions/a1`, { status: 'Done', note: 'ok' }));
+    await assertSucceeds(up(ASG, `${P1}/actions/a1`, { status: 'Done', completedAt: '2026-10-23T00:00:00Z' }));
     await assertSucceeds(up(LEAD, `${P1}/actions/a1`, { picUid: VIEWER.uid, version: 3 }));
     await assertSucceeds(up(PM, `${P1}/actions/a1`, { status: 'Cancelled', version: 4 }));
     await assertSucceeds(up(OWNER, `${P1}/actions/a0`, { title: 'x' }));
@@ -296,8 +298,8 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
 
   // ── Activity ──
   it('V2-23 activity: any reader may create with authorUid == me', async () => {
-    await assertSucceeds(setDoc(doc(await as(VIEWER), `${P1}/activity/n1`), { authorUid: VIEWER.uid, type: 'x', projectId: 'p1' }));
-    await assertSucceeds(setDoc(doc(await as(OUTSIDER), `${P2}/activity/n1`), { authorUid: OUTSIDER.uid, type: 'x' }));
+    await assertSucceeds(setDoc(doc(await as(VIEWER), `${P1}/activity/n1`), { authorUid: VIEWER.uid, type: 'x', projectId: 'p1', createdAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(doc(await as(OUTSIDER), `${P2}/activity/n1`), { authorUid: OUTSIDER.uid, type: 'x', createdAt: serverTimestamp() }));
   });
 
   it('V2-24 activity: update, delete, spoofed author, non-reader denied', async () => {
@@ -305,9 +307,9 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
     await assertFails(up(VIEWER, `${P1}/activity/e1`, { type: 'y' }));
     await assertFails(deleteDoc(doc(db, `${P1}/activity/e1`)));
     await assertFails(deleteDoc(doc(await as(OWNER), `${P1}/activity/e1`)));
-    await assertFails(setDoc(doc(db, `${P1}/activity/n1`), { authorUid: ASG.uid, type: 'x' }));
-    await assertFails(setDoc(doc(await as(OUTSIDER), `${P1}/activity/n1`), { authorUid: OUTSIDER.uid, type: 'x' }));
-    await assertFails(setDoc(doc(db, `${P1}/activity/n2`), { authorUid: VIEWER.uid, projectId: 'p2' }));
+    await assertFails(setDoc(doc(db, `${P1}/activity/n1`), { authorUid: ASG.uid, type: 'x', createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(await as(OUTSIDER), `${P1}/activity/n1`), { authorUid: OUTSIDER.uid, type: 'x', createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db, `${P1}/activity/n2`), { authorUid: VIEWER.uid, projectId: 'p2', createdAt: serverTimestamp() }));
   });
 
   // ── Extra guards ──
@@ -366,18 +368,24 @@ describe('P2.1 v2 sub-collection rules (role matrix)', () => {
     await assertSucceeds(up(ASG, `${P1}/tasks/t7`, { health: 'Red', status: 'InProgress' }));
   });
 
-  it('V2-31 Assignee updates / checkIns are append-only; PM may rewrite them', async () => {
-    await seedDoc(`${P1}/tasks/t1`, task({ updates: [{ text: 'a' }], checkIns: [{ d: 1 }] }));
-    const db = await as(ASG);
+  it('V2-31 Assignee updates / checkIns are append-only (newest first, P2.3); PM may rewrite them', async () => {
+    const mine = (o) => ({ ...o, authorUid: ASG.uid });
+    // Old entries are the caller's own, so the denials below are about order / rewrite.
+    await seedDoc(`${P1}/tasks/t1`, task({ updates: [mine({ text: 'a' })], checkIns: [mine({ d: 1 })] }));
     await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [] }));
-    await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [{ text: 'b' }] }));
-    await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [{ text: 'b' }, { text: 'a' }] }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [mine({ text: 'b' })] }));
+    // App prepends: appending at the end (old items as prefix) is denied now.
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [mine({ text: 'a' }), mine({ text: 'b' })] }));
+    // Rewriting an old entry while adding one is denied.
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { updates: [mine({ text: 'b' }), mine({ text: 'x' })] }));
     await assertFails(up(ASG, `${P1}/tasks/t1`, { checkIns: deleteField() }));
-    await assertFails(up(ASG, `${P1}/tasks/t1`, { checkIns: [{ d: 2 }] }));
-    await assertSucceeds(up(ASG, `${P1}/tasks/t1`, { updates: [{ text: 'a' }, { text: 'b' }], checkIns: [{ d: 1 }, { d: 2 }] }));
+    await assertFails(up(ASG, `${P1}/tasks/t1`, { checkIns: [mine({ d: 2 })] }));
+    await assertSucceeds(up(ASG, `${P1}/tasks/t1`, {
+      updates: [mine({ text: 'b' }), mine({ text: 'a' })], checkIns: [mine({ d: 2 }), mine({ d: 1 })],
+    }));
     // Missing array on the old doc counts as [].
     await seedDoc(`${P1}/tasks/t6`, (({ updates, ...rest }) => rest)(task())); // eslint-disable-line no-unused-vars
-    await assertSucceeds(up(ASG, `${P1}/tasks/t6`, { updates: [{ text: 'first' }] }));
+    await assertSucceeds(up(ASG, `${P1}/tasks/t6`, { updates: [mine({ text: 'first' })] }));
     await assertSucceeds(up(PM, `${P1}/tasks/t1`, { updates: [], version: 3 }));
   });
 

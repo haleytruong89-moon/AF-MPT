@@ -169,11 +169,12 @@ service cloud.firestore {
     }
 
     // ─────── Projects ───────
-    // Per-doc read rule: only members. Firestore enforces this on get() and
-    // on list() — but list queries must constrain themselves so Firestore can
-    // prove all returned docs match. The client uses
+    // Per-doc read rule: members (memberIds), plus canReadProject for
+    // schemaVersion 2 docs (Ruling V, below). Firestore enforces this on get()
+    // and on list() — but list queries must constrain themselves so Firestore
+    // can prove all returned docs match. The client lists with
     //     query(projects, where('memberIds', 'array-contains', uid))
-    // which guarantees every result has uid in memberIds.
+    // which passes on the memberIds branch.
     // P2.2 gate (2026-10-23): v2 project fields are workspace-Owner-only
     // (Owner = isOwnerIn(workspaces/main) via isDirectoryOwner(), NOT the v1
     // per-project 'owner' role). Added on top of the v1 rule, never instead.
@@ -195,7 +196,15 @@ service cloud.firestore {
 
     match /workspaces/main/projects/{pid} {
 
-      allow read: if isSmartOSC() && isMember(resource.data);
+      // P2.3 Ruling V: a schemaVersion 2 doc is also readable per
+      // canReadProject (Owner, memberUids, department visibility for active
+      // members). v1 docs unchanged. The memberIds list query still passes
+      // on the first branch. get(): v2 branch = workspace, members/{me},
+      // project = 3.
+      allow read: if isSmartOSC() && (
+        isMember(resource.data)
+        || (resource.data.get('schemaVersion', 1) == 2 && canReadProject('main', pid))
+      );
 
       // CREATE — creator must put themselves as owner; required fields enforced.
       // A non-Owner create may not carry the owner-only v2 keys (get(): 1).
@@ -211,23 +220,34 @@ service cloud.firestore {
       // UPDATE — owners can change anything (must keep at least one owner).
       // Operators can change content but not membership/roles, name,
       // deletedAt, or createdBy.
+      // P2.3 Ruling P: a schemaVersion 2 doc may be updated by the workspace
+      // Owner regardless of per-project roles (any value, including
+      // schemaVersion 1 for rollback). Non-Owners stay denied on v2 docs
+      // via projectGateOk(). get(): workspaces/main = 1.
       allow update: if isSmartOSC() && (
-        // Owner: full update
-        (isOwner(resource.data)
-          && hasAtLeastOneOwner(request.resource.data))
-        ||
-        // Operator: cannot touch ACL / name / deletedAt / createdBy
-        (canEdit(resource.data)
-          && request.resource.data.roles == resource.data.roles
-          && request.resource.data.memberIds == resource.data.memberIds
-          && request.resource.data.name == resource.data.name
-          && request.resource.data.get('deletedAt', null) == resource.data.get('deletedAt', null)
-          && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null))
-      ) && projectGateOk();
+        ((
+          // Owner: full update
+          (isOwner(resource.data)
+            && hasAtLeastOneOwner(request.resource.data))
+          ||
+          // Operator: cannot touch ACL / name / deletedAt / createdBy
+          (canEdit(resource.data)
+            && request.resource.data.roles == resource.data.roles
+            && request.resource.data.memberIds == resource.data.memberIds
+            && request.resource.data.name == resource.data.name
+            && request.resource.data.get('deletedAt', null) == resource.data.get('deletedAt', null)
+            && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null))
+        ) && projectGateOk())
+        || (resource.data.get('schemaVersion', 1) == 2 && isDirectoryOwner())
+      );
 
-      // DELETE (hard) — owners only. Soft delete via update(deletedAt) preferred.
-      // P2.2: unchanged on purpose (per-project owner, also for schemaVersion 2).
-      allow delete: if isSmartOSC() && isOwner(resource.data);
+      // DELETE (hard). v1 doc: per-project owners (soft delete via
+      // update(deletedAt) preferred). P2.3: a schemaVersion 2 doc may be
+      // deleted only by the workspace Owner. get(): workspaces/main = 1.
+      allow delete: if isSmartOSC() && (
+        (resource.data.get('schemaVersion', 1) != 2 && isOwner(resource.data))
+        || (resource.data.get('schemaVersion', 1) == 2 && isDirectoryOwner())
+      );
     }
 
     // ─────── Activity log ───────
@@ -375,17 +395,43 @@ service cloud.firestore {
       return request.resource.data.get('updatedBy', null) == request.auth.uid;
     }
 
-    // List field k is append-only: the old items stay as a prefix (missing = []).
-    // Only evaluated when k is affected. An empty slice (n[0:0]) is an
+    // Ruling Z (P2.3): list field k of d, a missing OR null value read as []
+    // (migrated docs may hold updates: null).
+    function listOrEmpty(d, k) {
+      return d.get(k, null) == null ? [] : d.get(k, null);
+    }
+
+    // List field k is append-only (missing = []). App.jsx PREPENDS new
+    // entries (newest first: `updates: [newU, ...old]`), so the old items
+    // must stay as the SUFFIX and at most one entry is added per write
+    // (P2.3; P2.1 checked a prefix, which never matched real data).
+    // Only evaluated when k is affected. An empty slice is an
     // index-out-of-bound error in the rules runtime, so an empty old list
-    // short-circuits before slicing.
+    // short-circuits before slicing. The new entry's authorUid is checked
+    // by newEntryOk (all writers).
     function appendOnly(ch, k) {
-      let o = resource.data.get(k, []);
-      let n = request.resource.data.get(k, []);
+      let o = listOrEmpty(resource.data, k);
+      let n = listOrEmpty(request.resource.data, k);
       return !ch.hasAny([k])
         || (o is list && n is list
-          && n.size() >= o.size()
-          && (o.size() == 0 || n[0:o.size()] == o));
+          && (n == o
+            || (n.size() == o.size() + 1
+              && (o.size() == 0 || n[1:n.size()] == o))));
+    }
+
+    // Ruling R (P2.3), all writers incl. Owner: a write may add at most one
+    // entry to list k, and an added entry (index 0, App prepends) must carry
+    // authorUid == caller. Same size or shrinking (Owner / PM / Sub-PM
+    // editing history) is not checked here. Rules cannot loop, so nested
+    // lists (RAID items[].history[], mitigation comments[]) are not checked.
+    function newEntryOk(ch, k) {
+      let o = listOrEmpty(resource.data, k);
+      let n = listOrEmpty(request.resource.data, k);
+      return !ch.hasAny([k])
+        || (o is list && n is list
+          && (n.size() <= o.size()
+            || (n.size() == o.size() + 1
+              && n[0].get('authorUid', null) == request.auth.uid)));
     }
 
     // Restricted (default when visibility is absent): Owner + memberUids.
@@ -451,14 +497,21 @@ service cloud.firestore {
     //   are append-only for the Assignee.
     //   Contributor (P2.2): append-only updates, see taskContributorUpdate.
     // All writers: version create = 1 / update = +1; updatedBy must equal
-    //   the caller uid on every write (Ruling I).
-    // Delete: Owner, PM (Sub-PM must set Dropped instead).
+    //   the caller uid on every write (Ruling I); an entry added to updates
+    //   or checkIns (at most one per write) carries authorUid == caller
+    //   (Ruling R, P2.3, newEntryOk - Owner included). Not checked on create.
+    // Delete: workspace Owner only (Ruling AF; others set Dropped instead).
     // Owner writes skip the WS checks (avoids batch-ordering issues in P2.4).
     // get(): create = workspace, members/{me}, project, ws = 4;
     //        update = workspace, members/{me}, project, old ws, new ws = 5;
-    //        delete = 3; read = 3.
+    //        delete = 1; read = 3.
+    // Ruling AE (P2.3): + references and the deadline request flow
+    // (deadlineRequest, deadlineRequestHistory). The due date itself (end)
+    // stays out: it changes only when an approver applies the request.
     function assigneeKeys() {
-      return ['status', 'health', 'healthNote', 'updates', 'checkIns', 'updatedAt', 'updatedBy', 'version'];
+      return ['status', 'health', 'healthNote', 'updates', 'checkIns',
+        'references', 'deadlineRequest', 'deadlineRequestHistory',
+        'updatedAt', 'updatedBy', 'version'];
     }
 
     // The new task data is within its (new) WS's dates.
@@ -517,7 +570,7 @@ service cloud.firestore {
 
     function taskUpdateOk(wid, pid) {
       let ch = changedKeys();
-      return (
+      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && (
         isWsOwner(wid)
         || taskAssigneeUpdate(wid, ch)
         || taskContributorUpdate(wid, ch)
@@ -542,10 +595,9 @@ service cloud.firestore {
       allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 
-      allow delete: if isSmartOSC() && (
-        isWsOwner(wid)
-        || isPM(wid, pid, resource.data.get('programId', null))
-      );
+      // Ruling AF (P2.3): workspace Owner only (tasks are never hard-deleted;
+      // PM / Sub-PM set Dropped).
+      allow delete: if isSmartOSC() && isWsOwner(wid);
     }
 
     // ─────── v2: actions ───────
@@ -553,9 +605,10 @@ service cloud.firestore {
     // Rules cannot iterate programMeta, so an action with workstreamId null
     // is Owner-only (documented limitation).
     // Changing workstreamId requires the manager role on both sides.
-    // Action PIC (picUid == me) may update it and close it as Done, but may
-    // not change picUid/picEmail/pic/workstreamId, cancel it, or touch a
-    // Cancelled action.
+    // Action PIC (picUid == me) may update it and close it as Done, but only
+    // via the actionPicKeys allow-list (P2.3), may not cancel it, and may not
+    // touch a Cancelled action.
+    // Every writer: an added updates entry carries authorUid == me (Ruling R).
     // All writers: version create = 1 / update = +1; updatedBy must equal
     // the caller uid on every write (Ruling I).
     // get(): create/delete = workspace, members/{me}, ws, project = 4;
@@ -566,17 +619,25 @@ service cloud.firestore {
           || isLead(wid, pid, d.workstreamId));
     }
 
+    // P2.3: the PIC may only touch these keys (no title / due / pic / ws...);
+    // updates is append-only for the PIC (like the task Assignee).
+    function actionPicKeys() {
+      // Ruling U: subtasks of their own action (no shape checks).
+      return ['status', 'completedAt', 'subtasks', 'updates', 'updatedAt', 'updatedBy', 'version'];
+    }
+
     function actionPicUpdate(wid, ch) {
       return resource.data.get('picUid', null) == request.auth.uid
-        && !ch.hasAny(['picUid', 'picEmail', 'pic', 'workstreamId'])
+        && ch.hasOnly(actionPicKeys())
         && resource.data.get('status', 'Pending') != 'Cancelled'
         && request.resource.data.get('status', 'Pending') != 'Cancelled'
+        && appendOnly(ch, 'updates')
         && isActiveMember(wid);
     }
 
     function actionUpdateOk(wid, pid) {
       let ch = changedKeys();
-      return (
+      return newEntryOk(ch, 'updates') && (
         isWsOwner(wid)
         || actionPicUpdate(wid, ch)
         || (actionManager(wid, pid, resource.data)
@@ -615,17 +676,24 @@ service cloud.firestore {
     // Delete: Owner only.
     // get(): create/update = workspace, project, members/{me}, ws = 4;
     //        read = 3; delete = 1.
+    // Shared by RAID and decisions: Owner, or the claim in the NEW data
+    // (viaProgramId = a program I am PM/Deputy of, viaWorkstreamId = a ws
+    // in this project I lead).
+    function claimWriterOk(wid, pid, p, n) {
+      return isWsOwner(wid)
+        || (n.get('viaProgramId', null) is string
+          && n.viaProgramId in p.get('programMeta', {})
+          && isPMIn(p, n.viaProgramId)
+          && isActiveMember(wid))
+        || isLead(wid, pid, n.get('viaWorkstreamId', null));
+    }
+
     function raidWriterOk(wid, pid, prg) {
       let p = v2Project(wid, pid);
       let n = request.resource.data;
       return n.get('programId', null) == prg
         && prg in p.get('programMeta', {})
-        && (isWsOwner(wid)
-          || (n.get('viaProgramId', null) is string
-            && n.viaProgramId in p.get('programMeta', {})
-            && isPMIn(p, n.viaProgramId)
-            && isActiveMember(wid))
-          || isLead(wid, pid, n.get('viaWorkstreamId', null)));
+        && claimWriterOk(wid, pid, p, n);
     }
 
     match /workspaces/{wid}/projects/{pid}/raid/{programId} {
@@ -642,8 +710,38 @@ service cloud.firestore {
       allow delete: if isSmartOSC() && isWsOwner(wid);
     }
 
+    // ─────── v2: decisions (one doc per decision, P2.3 Ruling Q) ───────
+    // decisions/{decisionId} = v1 decision object + { workspaceId, projectId,
+    //   order, viaProgramId?, viaWorkstreamId?, updatedBy, version }.
+    // Write: same claims as RAID (claimWriterOk); no programId/doc-id rule.
+    // Path fields, stamping and version apply.
+    // Delete: Owner, or an active PM/Deputy of the STORED viaProgramId
+    // (no new data on delete); Sub-PMs set status instead.
+    // get(): create/update = workspace, project, members/{me}, ws = 4;
+    //        read = 3; delete = workspace, project, members/{me} = 3.
+    match /workspaces/{wid}/projects/{pid}/decisions/{decisionId} {
+      allow read: if canReadProject(wid, pid);
+
+      allow create: if isSmartOSC() && pathFieldsOk(wid, pid)
+        && versionOnCreate() && stampedByMe()
+        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+
+      allow update: if isSmartOSC() && pathFieldsOk(wid, pid)
+        && versionBumped() && stampedByMe()
+        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+
+      allow delete: if isSmartOSC() && (
+        isWsOwner(wid)
+        || (resource.data.get('viaProgramId', null) is string
+          && resource.data.viaProgramId in v2Project(wid, pid).get('programMeta', {})
+          && isPMIn(v2Project(wid, pid), resource.data.viaProgramId)
+          && isActiveMember(wid))
+      );
+    }
+
     // ─────── v2: activity (one event per doc, append-only) ───────
-    // Any reader may append an event authored by themselves.
+    // Any reader may append an event authored by themselves, stamped with
+    // the server time (P2.3: createdAt == request.time, i.e. serverTimestamp()).
     // projectId/workspaceId are optional on events but must match when set.
     // get(): workspace, members/{me}, project = 3.
     match /workspaces/{wid}/projects/{pid}/activity/{eid} {
@@ -651,6 +749,7 @@ service cloud.firestore {
 
       allow create: if canReadProject(wid, pid)
         && request.resource.data.get('authorUid', null) == request.auth.uid
+        && request.resource.data.get('createdAt', null) == request.time
         && request.resource.data.get('projectId', pid) == pid
         && request.resource.data.get('workspaceId', wid) == wid;
 

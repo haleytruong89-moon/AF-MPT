@@ -103,6 +103,8 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
 | Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
 | Chuyển đổi dữ liệu v2 lỗi | Document project cũ giữ nguyên tới M6; đặt lại `schemaVersion: 1` | HOD |
+| Project v2 cần restore | Restore trong app **từ chối** nếu bản backup làm mất task hoặc xóa sạch comment (P2.3, Ruling AA) → restore qua script Admin SDK (preview → HOD duyệt), hoặc đặt lại `schemaVersion: 1` rồi restore v1 | HOD |
+| Pilot copy P2 | `node scripts/p2-pilot-copy.mjs --rollback <manifest>` (chỉ xóa đúng các path đã ghi; từ chối nếu target không phải pilot) | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
 
@@ -110,15 +112,16 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 
 - Phase (vibe-code): **4 — Iterate & Debug**, có loop-back về Phase 1–2 (spec phân quyền v2 đã viết và đã đối chiếu code)
 - Last updated: 23/10/2026
-- Commit production: `1e87bfb` (23/10/2026, merge PR #17; gồm P2.1 #16, #12–#14), Vercel tự deploy từ `main`
-- Firestore rules production: **bản P1** (B1 + `members`/`invites`), HOD publish qua Console 23/10/2026 6:35. Bản trước: B1 22/10/2026 12:15; hoàn tác = chọn lại bản đó trong lịch sử Rules trên Console. **Chưa publish** rules P2.1 (`ownerUids` + v2 sub-collections) dù đã merge — cần publish trước khi chạy `p2-set-owner-uids`
+- Commit production: `796e871` (23/10/2026, P2.2), Vercel tự deploy từ `main`
+- Firestore rules production: **bản P2.2** (gồm P2.1), HOD publish qua Console 23/10/2026. Hoàn tác = chọn lại bản trước trong lịch sử Rules trên Console
+- `workspaces/main.ownerUids` = [uid HOD], ghi 23/10 05:01 (manifest `p2-owner-uids-manifest-2026-10-23T05-01-27-009Z.json`, gitignored). Pilot copy Treasury 2026 (P2.2) đã tạo, so khớp, HOD xem, rồi rollback
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
 - Đã xong: audit 14/10; spec roles-permissions v2 (draft, 4 quyết định chốt); bridge files; **xác minh trên code** (`docs/DESIGN.md` mục 6) — khớp audit, thêm 2 rủi ro mới (#12 reset ACL khi `getDoc` lỗi, #13 restore sửa author log) và tìm ra gốc lỗi trùng tên (DESIGN 6.1)
 - Đã xong (vòng 2): rà soát phân quyền + UI/UX + thị trường (`docs/reviews/2026-10-14-permissions-uiux-market-review.md`); HOD chốt 7 quyết định (uid, `ownerUids[]`, restricted mặc định, duyệt mọi project, nhãn EN, đa workspace trong P2, test trên GitHub Actions)
 - Đã xong: B0 — CI GitHub Actions + harness test rules (PR #2); plan B0+B1 `docs/superpowers/plans/2026-10-14-b0-b1-rules-ci-and-owner-lock.md`
 - Đã xong: B0 merged (PR #2)
 - Đã xong (22/10): đợt B merged + deploy. PR #3 B1 owner lock; #4 B2/B3 save banner + `rev` stale-write guard + ghi tuần tự theo project; #5 B4 task panel resize/expand, Drop thay xóa, Undo, owner-only Restore/Delete project, contrast AA, Esc modal; #7 follow-ups; #8 tay kéo panel nhìn thấy được. Plan: `docs/superpowers/plans/2026-10-14-b2-b4-save-safety-and-task-panel.md`
-- Nợ kỹ thuật từ review đợt B: (1) kiểm `rev` chưa nguyên tử → đổi sang `runTransaction` trước khi onboard cả phòng; (2) helper thành viên trong `data.ts` tính `memberIds`/`roles` từ snapshot → dùng `arrayUnion`/`arrayRemove`/`roles.<uid>`; (3) Esc đóng Modal kể cả form đang sửa dở
+- Nợ kỹ thuật từ review đợt B: (1) kiểm `rev` chưa nguyên tử → đổi sang `runTransaction` trước khi onboard cả phòng; (2) helper thành viên trong `data.ts` tính `memberIds`/`roles` từ snapshot → dùng `arrayUnion`/`arrayRemove`/`roles.<uid>` (P2.3 đã làm cho `memberUids`; `memberIds`/`roles` còn); (3) Esc đóng Modal kể cả form đang sửa dở
 - Đã xong (23/10): **P1** merged (PR #11) + danh bạ ghi lên production 23/10 06:47 (7 `members`, 2 `invites`; manifest `p1-directory-manifest-2026-10-22T23-47-22-726Z.json` ở máy HOD, gitignored). HOD đã đối chiếu Credit/Activity. Tên hiển thị = username (HOD chọn); tên cũ là alias. Còn: HOD deactivate **Vannh** (đã nghỉ) trong People directory; HOD thu hồi service-account key đã dùng (file local đã xóa)
 - Nợ kỹ thuật P1 (Ruling S, T): My Work bỏ sót item lưu dưới tên Google của người thêm sau apply → `isMe` nhận cả `meKey` lẫn `personKey(author)`; lỗi trùng tên Google chặn `--apply` nhưng không nói nguồn → ghi nguồn trong thông báo
 - Đã đo (23/10, backup 22/10): doc lớn nhất CRP = 77 KB / 187 task (giới hạn 1 MiB) → rủi ro #4 thấp
@@ -128,8 +131,10 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong (23/10): Ruling S/T (#13), `runTransaction` + `writeId` cho kiểm `rev` (#14) → nợ kỹ thuật (1) đợt B đã đóng
 - **P2** (roadmap `docs/superpowers/plans/2026-10-23-p2-roadmap.md`, mục "Contract fixed by P2.1" là ràng buộc cho P2.2–P2.4):
   - P2.1 merged (#16): split/assemble, dry-run, `ownerUids` (+ khóa Transfer ownership trong app khi đã set), rules v2 theo vai trò. Còn: HOD publish rules; chạy `p2-set-owner-uids` (preview → duyệt → apply); HOD điền `p2-assignments.xlsx`
-  - P2.2 đang làm trên `feat/p2-2` (PR #18): gate (trường v2 chỉ Owner, RAID docs `raid/{programId}` — Ruling K′, contributor chỉ thêm update), v1 save giữ trường v2 từ server, đọc project v2 (read-only), pilot copy + compare. Pilot: Treasury 2026, chỉ tạo copy SAU khi bản app P2.2 đã live và HOD hard-refresh
+  - P2.2 merged + deploy (#18): gate (trường v2 chỉ Owner, RAID docs `raid/{programId}` — Ruling K′, contributor chỉ thêm update), v1 save giữ trường v2 từ server, đọc project v2 (read-only), pilot copy + compare
+  - P2.3 trên `feat/p2-3` (PR #20, plan `docs/superpowers/plans/2026-10-23-p2-3-write-path.md`): ghi v2 theo từng document trong transaction trên `version` (planner `src/planV2Save.js` + executor `src/execV2Save.js`), Decisions thành docs (Ruling Q), `authorUid` trên entry mới (Ruling R), activity v2 mỗi event 1 doc, MembersModal giữ `memberUids` đồng bộ, pilot copy nhận `--assignments`. Runbook trong PR #20
+  - Giới hạn đã chấp nhận tới P3: Assignee không tự đóng task (A4) và không resolve blocker (Ruling W); PIC biện pháp RAID không tự đánh Done (Ruling AG); đổi tên/trọng số program chỉ Owner; sửa bị từ chối nằm lại trong trang → phải Reload; PM một program không chuyển task sang program khác; sửa `teamMembers`/`contributorRegistry` của project v2 chỉ Owner; restore v2 làm mất task bị từ chối
 - HOD quyết (23/10): Q1 Decisions/RAID do mọi PM/Sub-PM của project ghi; A2/A3 1 PM (+Deputy) / program, 1 Sub-PM / WS; A4 Assignee không tự Completed/Dropped; contributor chỉ thêm update
 - Câu hỏi mở chờ HOD: giả định A1, Q2, Q3, Q6 trong spec v2
-- Tiếp theo: xong P2.2 → plan P2.3 (adapter ghi)
+- Tiếp theo: merge P2.3 → pilot vai trò trên bản copy Treasury 2026 với 3 đồng nghiệp (1 PM, 1 Sub-PM, 1 Assignee) → plan P2.4 (chuyển dữ liệu thật) → onboard; P3 (Submit as done + Approvals) trước khi dùng dữ liệu chấm performance
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2

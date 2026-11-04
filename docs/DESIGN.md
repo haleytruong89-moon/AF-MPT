@@ -40,7 +40,7 @@ Không có trường người phụ trách ở program/workstream. Task: `pic` (
 | # | Mức | Rủi ro | Xử lý ở pha |
 |---|---|---|---|
 | 1 | H bảo mật | Tự thăng Owner (ghi `workspaces/main`) | **B1** |
-| 2 | H dữ liệu | Last-write-wins, ghi đè cả doc | B3 (giảm nhẹ) + transaction (PR #14) → **P2.3** (ghi theo document + `version`, rules đã bắt `version+1` từ P2.1) |
+| 2 | H dữ liệu | Last-write-wins, ghi đè cả doc | B3 (giảm nhẹ) + transaction (PR #14) → **P2.3: đã giải quyết cho project v2** (ghi theo document, mỗi batch 1 transaction kiểm `version`, rules bắt `version+1`). Project v1 vẫn là B3 + transaction cho tới khi chuyển ở P2.4 |
 | 3 | H dữ liệu | Lưu thất bại không báo | **B2** |
 | 4 | H quy mô | 1 MiB/document | **P2** |
 | 5 | M | UI không áp role | P2.1 rules theo vai trò (chưa dùng) → P2.4 + P4 |

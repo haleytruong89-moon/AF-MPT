@@ -203,28 +203,31 @@ describe('P2.2 pre-P2.2 gate rules', () => {
   });
 
   // ── Task contributor branch ──
+  // P2.3: App prepends (newest first) and each added entry carries authorUid.
+  const by = (u, text = 'n') => ({ text, authorUid: u.uid });
+
   it('G-10 contributor may append an update', async () => {
     await assertSucceeds(up(CON, `${P1}/tasks/t1`, {
-      updates: [{ text: 'old' }, { text: 'new' }], updatedAt: 'now',
+      updates: [by(CON, 'new'), { text: 'old' }], updatedAt: 'now',
     }));
   });
 
   it('G-11 contributor: status / health change, rewrite old update, unstamped, non-contributor, deactivated denied', async () => {
     await assertFails(up(CON, `${P1}/tasks/t1`, { status: 'Planned' }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { health: 'Red' }));
-    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [{ text: 'changed' }, { text: 'new' }] }));
+    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON, 'new'), { text: 'changed' }] }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [] }));
-    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [{ text: 'old' }, { text: 'n' }], checkIns: [{ d: 1 }] }));
-    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [{ text: 'old' }, { text: 'n' }], updatedBy: ASG.uid }));
-    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [{ text: 'old' }, { text: 'n' }], version: 3 }));
-    await assertFails(up(VIEWER, `${P1}/tasks/t1`, { updates: [{ text: 'old' }, { text: 'n' }] }));
-    await assertFails(up(DEACT, `${P1}/tasks/t1`, { updates: [{ text: 'old' }, { text: 'n' }] }));
+    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], checkIns: [by(CON)] }));
+    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], updatedBy: ASG.uid }));
+    await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], version: 3 }));
+    await assertFails(up(VIEWER, `${P1}/tasks/t1`, { updates: [by(VIEWER), { text: 'old' }] }));
+    await assertFails(up(DEACT, `${P1}/tasks/t1`, { updates: [by(DEACT), { text: 'old' }] }));
   });
 
   it('G-12 PIC listed as contributor gets no extra rights on a closed task', async () => {
     await seedDoc(`${P1}/tasks/t9`, task({ status: 'Completed' }));
-    await assertFails(up(ASG, `${P1}/tasks/t9`, { updates: [{ text: 'old' }, { text: 'n' }] }));
+    await assertFails(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
     // A contributor (not PIC) may still append on a closed task.
-    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [{ text: 'old' }, { text: 'n' }] }));
+    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), { text: 'old' }] }));
   });
 });

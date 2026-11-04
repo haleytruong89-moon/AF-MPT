@@ -13,7 +13,7 @@ const uidByEmail = new Map([['alice@smartosc.com', 'uid1'], ['bob@smartosc.com',
 // Firestore snapshots come back as plain { id, data } after d.data(); JSON clone mimics that.
 const snapshots = () => {
   const s = splitProject(clone(fixture), { wid: 'main', dirIndex: dir, uidByEmail });
-  return clone({ meta: s.meta, ws: s.workstreams, tasks: s.tasks, actions: s.actions, raid: s.raid });
+  return clone({ meta: s.meta, ws: s.workstreams, tasks: s.tasks, actions: s.actions, raid: s.raid, decisions: s.decisions });
 };
 
 describe('assembleFromSnapshots (P2.2 task 4: v2 read path)', () => {
@@ -26,7 +26,7 @@ describe('assembleFromSnapshots (P2.2 task 4: v2 read path)', () => {
   it('is order-independent (query has no orderBy)', () => {
     const s = snapshots();
     const rev = (a) => [...a].reverse();
-    expect(assembleFromSnapshots({ ...s, ws: rev(s.ws), tasks: rev(s.tasks), actions: rev(s.actions), raid: rev(s.raid) }).project).toStrictEqual(fixture);
+    expect(assembleFromSnapshots({ ...s, ws: rev(s.ws), tasks: rev(s.tasks), actions: rev(s.actions), raid: rev(s.raid), decisions: rev(s.decisions) }).project).toStrictEqual(fixture);
   });
   it('surfaces orphans instead of dropping them silently', () => {
     const s = snapshots();
