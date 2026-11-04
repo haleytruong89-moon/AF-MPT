@@ -20,6 +20,7 @@
 //  - workstream doc .__absent: ['tasks'] when the v1 workstream has no `tasks` key.
 import { canonicalPerson } from './directory.js';
 import { foldName } from './identity.js';
+import { foldResolutions } from './blockerResolutions.js';
 
 // v2-only field names. A v1 key with the same name is not overwritten: its value is
 // parked in `__v1` on the doc (and reported in report.collisions); assembleProject
@@ -47,7 +48,11 @@ const PROGRAM_V2 = ['order', 'pmUid', 'deputyUid', 'start', 'end'];
 // them; a v1 value with the same name is stashed at split time and restored.
 const STAMPS = ['updatedBy', 'updatedAt', 'viaProgramId', 'viaWorkstreamId'];
 const WS_V2 = ['workspaceId', 'projectId', 'programId', 'order', 'leadUid', 'start', 'end', 'version', ...STAMPS];
-const TASK_V2 = ['workspaceId', 'projectId', 'programId', 'workstreamId', 'order', 'picUid', 'picEmail', 'contributorUids', 'version', ...STAMPS];
+// blockerResolutions (P3 Task 8, Ruling P3-8): v2-only append-only map, folded into
+// the matching updates entries on assemble and never part of the v1 tree.
+const TASK_V2 = ['workspaceId', 'projectId', 'programId', 'workstreamId', 'order', 'picUid', 'picEmail', 'contributorUids', 'blockerResolutions', 'version', ...STAMPS];
+// Reserved v2 names a v1 doc of that kind may not carry at top level (stashed on split).
+const RESERVED = { task: ['blockerResolutions'] };
 const ACTION_V2 = ['workspaceId', 'projectId', 'order', 'picUid', 'picEmail', 'workstreamId', 'version', ...STAMPS];
 const DECISION_V2 = ['workspaceId', 'projectId', 'order', 'version', ...STAMPS];
 
@@ -64,7 +69,7 @@ function withV2(base, v2Fields, kind, id, collisions) {
   }
   // `version` is already a v2 field on docs; the other stamps are reserved names.
   if (kind !== 'program') {
-    for (const key of STAMPS) {
+    for (const key of [...STAMPS, ...(RESERVED[kind] || [])]) {
       if (hasOwn(base, key) && !hasOwn(stash, key)) {
         stash[key] = base[key];
         collisions.push({ kind, id: id ?? null, key });
@@ -251,7 +256,7 @@ export function assembleProject(meta, workstreams, tasks, actions, raid = [], de
     const k = t.data.workstreamId;
     if (!wsIdSet.has(k) || orphanWsIds.has(k)) { orphans.tasks.push(t.id); continue; }
     if (!tasksByWs.has(k)) tasksByWs.set(k, []);
-    tasksByWs.get(k).push(unwrap(t.data, TASK_V2));
+    tasksByWs.get(k).push(unwrap(foldResolutions(t.data), TASK_V2));
   }
   const raidByProgram = new Map();
   for (const r of raid) {

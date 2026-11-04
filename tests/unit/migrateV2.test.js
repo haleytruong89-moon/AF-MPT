@@ -319,3 +319,42 @@ describe('P2.3 Task 2: decisions as docs; assemble strips write stamps', () => {
     expect(asm(s).project).toStrictEqual(p);
   });
 });
+
+// P3 Task 8 (Ruling P3-8): blockerResolutions is v2-only; assemble folds it.
+describe('blockerResolutions on assemble', () => {
+  const withBlockers = () => {
+    const p = clone(fixture);
+    p.programs[0].workstreams[0].tasks[1].updates = [
+      { id: 'b2', text: 'blocked', isBlocker: true },
+      { id: 'b1', text: 'legacy', isBlocker: true, resolvedAt: '2026-10-01T00:00:00Z', resolvedBy: 'Bob', resolution: null },
+    ];
+    return p;
+  };
+  it('migrateV2 round trip of all fixtures unchanged', () => {
+    expect(roundTrip(fixture)).toStrictEqual(fixture);
+    expect(roundTrip(withBlockers())).toStrictEqual(withBlockers());
+  });
+  it('folds the map into the matching update and strips it from the tree', () => {
+    const s = run(withBlockers());
+    const t2 = s.tasks.find((t) => t.id === 't2');
+    t2.data.blockerResolutions = {
+      b2: { resolvedAt: '2026-10-26T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'ok', authorUid: 'uid2' },
+      b1: { resolvedAt: '2026-10-27T00:00:00.000Z', resolvedBy: 'Carol', resolution: 'no', authorUid: 'uidZ' },
+    };
+    const { project } = assembleProject(s.meta, s.workstreams, s.tasks, s.actions, s.raid, s.decisions);
+    const task = project.programs[0].workstreams[0].tasks[1];
+    expect(task).not.toHaveProperty('blockerResolutions');
+    expect(task.updates).toEqual([
+      { id: 'b2', text: 'blocked', isBlocker: true, resolvedAt: '2026-10-26T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'ok' },
+      withBlockers().programs[0].workstreams[0].tasks[1].updates[1],
+    ]);
+  });
+  it('a v1 task key named blockerResolutions is stashed and restored, never folded', () => {
+    const p = clone(fixture);
+    p.programs[0].workstreams[0].tasks[0].blockerResolutions = 'v1 value';
+    const s = run(p);
+    expect(s.report.collisions).toContainEqual({ kind: 'task', id: 't1', key: 'blockerResolutions' });
+    expect(s.tasks.find((t) => t.id === 't1').data).not.toHaveProperty('blockerResolutions');
+    expect(roundTrip(p)).toStrictEqual(p);
+  });
+});

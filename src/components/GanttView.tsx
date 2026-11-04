@@ -17,6 +17,7 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { ZoomIn, ZoomOut, AlertTriangle } from 'lucide-react';
 import type { Project, Task, TaskStatus } from '../types';
+import { isOverdueTask } from '../taskStatus';
 
 const TOK = {
   bg: '#F7F5EF',
@@ -705,10 +706,7 @@ function fmt(d: Date): string {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 function isOverdue(t: Task): boolean {
-  if (!t || t.status === 'Completed' || t.status === 'Dropped') return false;
-  const e = parseDate(t.end);
-  if (!e) return false;
-  return e < stripTime(new Date());
+  return isOverdueTask(t, new Date());
 }
 
 function iconBtnStyle(): React.CSSProperties {

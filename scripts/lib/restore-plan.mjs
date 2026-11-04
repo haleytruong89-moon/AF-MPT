@@ -13,6 +13,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { assembleProject, splitProject } from '../../src/migrateV2.js';
 import { carryDoc, overlay, keepOrder, META_SKIP, KEEP_PROGRAM } from '../../src/planV2Save.js';
 import { appValueFromV2 } from '../../src/readV2.js';
+import { unfoldResolutions } from '../../src/blockerResolutions.js';
 import { stableJson } from './migrate-normalise.mjs';
 import { SUBCOLS, MAX_PROJECT_DOC_BYTES } from './migrate-checks.mjs';
 import { buildRestoreTarget, TASK_DROPPED, ACTION_CANCELLED } from './restore-target.mjs';
@@ -168,9 +169,19 @@ function fieldChanges(kind, id, old, fin, out, list) {
   }
 }
 
+// Update ids of `fin` (the backup task) still unresolved while the live map
+// `old.blockerResolutions` has their key: the restore keeps them resolved.
+function resolutionKept(old, fin) {
+  const map = isObj(old.blockerResolutions) ? old.blockerResolutions : null;
+  if (!map || !Array.isArray(fin.updates)) return [];
+  return fin.updates
+    .filter((u) => isObj(u) && u.id != null && u.resolvedAt == null && hasOwn(map, String(u.id)))
+    .map((u) => String(u.id));
+}
+
 const emptyReport = () => ({
   perKind: Object.fromEntries(SUBCOLS.map((k) => [k, { create: 0, update: 0, unchanged: 0, retained: 0 }])),
-  retained: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
+  retained: [], pending: [], kept: [], historyLost: [], raidItemsLost: 0, editedEntries: [], creditLoss: [], programMeta: [], meta: [], fieldChanges: [],
   access: null, backupMemberIdsDiff: null, idMap: [], removedNulls: [], backupActivityCount: 0,
 });
 
@@ -240,6 +251,23 @@ export function planRestore({
   report.idMap = target.idMap;
   report.removedNulls = target.removedNulls;
   for (const r of target.retained) if (RETAINED_KIND[r.kind]) report.perKind[RETAINED_KIND[r.kind]].retained++;
+  // P3.1 final review I2 (P2.4b carry a): pending close requests on the live project.
+  // A restore can overwrite them (task in the backup) or withdraw them (retained as
+  // Dropped), so HOD resolves or withdraws them first.
+  const retainedTaskIds = new Set(target.retained.filter((r) => r.kind === 'task').map((r) => r.id));
+  report.pending = liveDocs.tasks
+    .filter((d) => d.data?.status === 'Submitted')
+    .map((d) => {
+      const cr = isObj(d.data.closeRequest) ? d.data.closeRequest : {};
+      return {
+        id: d.id, name: d.data.name ?? null, outcome: cr.outcome ?? null,
+        requestedByUid: cr.requestedByUid ?? null, approverUid: cr.approverUid ?? null, retained: retainedTaskIds.has(d.id),
+      };
+    })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  if (report.pending.length) {
+    warn('pending-approvals', `${report.pending.length} Submitted task(s) (${report.pending.map((x) => x.id).join(', ')}): resolve or withdraw before restoring`);
+  }
   if (backupProject.name !== lm.name) warn('name-differs', `backup "${backupProject.name}" vs live "${lm.name}"`);
   if (target.idMap.length) warn('ids-generated', target.idMap.length);
   if (target.removedNulls.length) warn('nulls-removed', target.removedNulls.length);
@@ -281,7 +309,17 @@ export function planRestore({
       };
       if (lv) {
         const old = strip(lv);
-        const fin = carryDoc(kind, old, overlay(kind, old, nd));
+        // P3 Task 8 (Ruling P3-8): the backup tree carries blocker resolutions in place
+        // (folded); move them back to the live append-only map as the App planner does.
+        // The map never loses a key; a resolution new to it is stamped RESTORE_STAMP.
+        let fin = overlay(kind, old, nd);
+        if (kind === 'tasks') {
+          // Ruling P3-8: the map never loses a key, so these stay resolved; say so in the preview.
+          const kept = resolutionKept(old, fin);
+          if (kept.length) warn('resolution-kept', `tasks/${id}: ${kept.join(', ')}`);
+          fin = unfoldResolutions(old, fin, RESTORE_STAMP);
+        }
+        fin = carryDoc(kind, old, fin);
         if (isDeepStrictEqual(fin, old)) {
           pk.unchanged++;
           nextDocs[kind].push({ id, data: lv });

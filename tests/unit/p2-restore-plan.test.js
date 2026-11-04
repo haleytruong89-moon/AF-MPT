@@ -459,25 +459,26 @@ describe('planRestore', () => {
   });
 
   it('P-22 (Ruling P4b-19): removed fields are reported; removing a non-empty array or map is history loss', () => {
+    // P3 Task 8: someLog never reaches a backup (folded); use a generic map.
     const live = makeLive();
     Object.assign(doc(live, 'tasks', 't2'), {
       closeRequestHistory: [{ id: 'c1', note: 'asked to close' }],
-      blockerResolutions: { b1: { note: 'resolved' } },
+      someLog: { b1: { note: 'resolved' } },
       emptyList: [], emptyMap: {}, flag: 'x',
     });
     const b = backupOf(live);
     const bt = task(b, 't2');
-    for (const k of ['closeRequestHistory', 'blockerResolutions', 'emptyList', 'emptyMap', 'flag']) delete bt[k];
+    for (const k of ['closeRequestHistory', 'someLog', 'emptyList', 'emptyMap', 'flag']) delete bt[k];
     const p = plan(live, b);
     expect(p.report.fieldChanges).toEqual([{
       kind: 'tasks', id: 't2',
-      changed: ['blockerResolutions', 'closeRequestHistory', 'emptyList', 'emptyMap', 'flag'],
-      removed: ['blockerResolutions', 'closeRequestHistory', 'emptyList', 'emptyMap', 'flag'],
+      changed: ['closeRequestHistory', 'emptyList', 'emptyMap', 'flag', 'someLog'],
+      removed: ['closeRequestHistory', 'emptyList', 'emptyMap', 'flag', 'someLog'],
     }]);
     expect(p.report.historyLost).toEqual([
       // closeRequestHistory is an entry list (checked on its own), so it is not "(field removed)".
       { kind: 'tasks', id: 't2', list: 'closeRequestHistory', entries: [{ id: 'c1', preview: 'asked to close' }] },
-      { kind: 'tasks', id: 't2', list: 'blockerResolutions (field removed)', entries: [{ id: 'b1', preview: 'resolved' }] },
+      { kind: 'tasks', id: 't2', list: 'someLog (field removed)', entries: [{ id: 'b1', preview: 'resolved' }] },
     ]);
     expect(p.refused).toBe('history-loss');
     const allowed = plan(live, b, { allowHistoryLoss: true });
@@ -513,21 +514,105 @@ describe('planRestore', () => {
     expect(p.refused).toBe('history-loss');
   });
 
+  // P3 Task 8: blockerResolutions is folded out of the tree (never in a backup), so the
+  // generic map-key check is exercised with another map field.
   it('P-25: losing a key of a kept non-empty map is history loss, listed as <field>.<key> (key removed)', () => {
     const live = makeLive();
-    doc(live, 'tasks', 't2').blockerResolutions = { b1: { note: 'one' }, b2: { note: 'two' } };
+    doc(live, 'tasks', 't2').someLog = { b1: { note: 'one' }, b2: { note: 'two' } };
     const b = backupOf(live);
-    task(b, 't2').blockerResolutions = { b1: { note: 'one' }, b3: { note: 'new' } };
+    task(b, 't2').someLog = { b1: { note: 'one' }, b3: { note: 'new' } };
     const p = plan(live, b);
     expect(p.report.historyLost).toEqual([
-      { kind: 'tasks', id: 't2', list: 'blockerResolutions.b2 (key removed)', entries: [{ id: 'b2', preview: 'two' }] },
+      { kind: 'tasks', id: 't2', list: 'someLog.b2 (key removed)', entries: [{ id: 'b2', preview: 'two' }] },
     ]);
     expect(p.refused).toBe('history-loss');
     // Adding or editing keys only is not a loss.
     const live2 = makeLive();
-    doc(live2, 'tasks', 't2').blockerResolutions = { b1: { note: 'one' } };
+    doc(live2, 'tasks', 't2').someLog = { b1: { note: 'one' } };
     const b2 = backupOf(live2);
-    task(b2, 't2').blockerResolutions = { b1: { note: 'edited' }, b4: { note: 'x' } };
+    task(b2, 't2').someLog = { b1: { note: 'edited' }, b4: { note: 'x' } };
     expect(plan(live2, b2).report.historyLost).toEqual([]);
+  });
+
+  it('P-26: blockerResolutions survives a restore (Ruling P3-8): unchanged, kept when the backup lacks it, new in-place ones unfolded', () => {
+    const live = makeLive();
+    const t2 = doc(live, 'tasks', 't2');
+    const blk = (id) => ({ id, text: `blocked ${id}`, isBlocker: true, authorUid: 'uid2' });
+    t2.updates = [blk('b3'), blk('b2'), blk('b1'), ...t2.updates];
+    const r1 = { resolvedAt: '2026-11-01T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'one', authorUid: 'uid2' };
+    t2.blockerResolutions = { b1: r1 };
+    const b = backupOf(live);
+    expect(task(b, 't2')).not.toHaveProperty('blockerResolutions');
+    expect(task(b, 't2').updates[2]).toMatchObject({ id: 'b1', resolvedAt: r1.resolvedAt });
+    expect(plan(live, b).ops).toEqual([]);
+    // An older backup without the resolution: the map keeps its key, nothing lost.
+    const old = backupOf(live);
+    const { resolvedAt: _a, resolvedBy: _b, resolution: _c, ...raw } = task(old, 't2').updates[2];
+    void _a; void _b; void _c;
+    task(old, 't2').updates[2] = raw;
+    task(old, 't2').name = 'Renamed';
+    let p = plan(live, old);
+    expect(p.report.historyLost).toEqual([]);
+    expect(p.ops[0].data.blockerResolutions).toEqual({ b1: r1 });
+    expect(p.ops[0].data.updates).toEqual(t2.updates);
+    // A backup with a resolution the live map lacks: unfolded into the map, raw entry kept.
+    const nb = backupOf(live);
+    task(nb, 't2').updates[1] = { ...task(nb, 't2').updates[1], resolvedAt: '2026-11-02T00:00:00.000Z', resolvedBy: 'Bob', resolution: null };
+    p = plan(live, nb);
+    expect(p.report.historyLost).toEqual([]);
+    expect(p.ops[0].data.updates).toEqual(t2.updates);
+    expect(p.ops[0].data.blockerResolutions).toEqual({
+      b1: r1, b2: { resolvedAt: '2026-11-02T00:00:00.000Z', resolvedBy: 'Bob', resolution: null, authorUid: 'p2-restore' },
+    });
+  });
+
+  it('P-27: a backup entry unresolved while the live map has its key -> warning resolution-kept (task + update ids)', () => {
+    const live = makeLive();
+    const t2 = doc(live, 'tasks', 't2');
+    const blk = (id) => ({ id, text: `blocked ${id}`, isBlocker: true, authorUid: 'uid2' });
+    t2.updates = [blk('b2'), blk('b1'), ...t2.updates];
+    const r = (n) => ({ resolvedAt: `2026-11-0${n}T00:00:00.000Z`, resolvedBy: 'Bob', resolution: String(n), authorUid: 'uid2' });
+    t2.blockerResolutions = { b1: r(1), b2: r(2) };
+    // Current backup: resolutions folded in -> no warning.
+    expect(plan(live, backupOf(live)).warnings.filter((w) => w.code === 'resolution-kept')).toEqual([]);
+    // Older backup: both blockers unresolved (nothing else changed) -> kept resolved, warned.
+    const old = backupOf(live);
+    task(old, 't2').updates = task(old, 't2').updates.map((u) => {
+      const { resolvedAt: _a, resolvedBy: _b, resolution: _c, ...raw } = u;
+      void _a; void _b; void _c;
+      return raw;
+    });
+    const p = plan(live, old);
+    expect(p.warnings.filter((w) => w.code === 'resolution-kept')).toEqual([{ code: 'resolution-kept', detail: 'tasks/t2: b2, b1' }]);
+    expect(p.ops).toEqual([]);
+  });
+
+  it('P-28: live Submitted tasks are listed in report.pending with a pending-approvals warning (P3.1 I2)', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    const t1 = doc(live, 'tasks', 't1');
+    Object.assign(t1, { status: 'Submitted', closeRequest: { id: 'cr1', outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1', submittedAt: '2026-11-01T00:00:00.000Z', prevStatus: 'InProgress' } });
+    live.docs.tasks.push({ id: 't9', data: {
+      id: 't9', name: 'Late', status: 'Submitted', updates: [], workspaceId: 'main', projectId: PID, programId: 'pg1', workstreamId: 'w2', order: 0,
+      picUid: null, picEmail: null, contributorUids: [], version: 2,
+      closeRequest: { id: 'cr9', outcome: 'Dropped', requestedByUid: 'uid1', approverUid: 'uid2' },
+    } });
+    const p = plan(live, b);
+    expect(p.report.pending).toEqual([
+      { id: 't1', name: t1.name, outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1', retained: false },
+      { id: 't9', name: 'Late', outcome: 'Dropped', requestedByUid: 'uid1', approverUid: 'uid2', retained: true },
+    ]);
+    expect(p.warnings).toContainEqual({ code: 'pending-approvals', detail: '2 Submitted task(s) (t1, t9): resolve or withdraw before restoring' });
+    // The retained one is written Dropped with its request withdrawn.
+    const op = p.ops.find((o) => o.id === 't9');
+    expect(op.data).toMatchObject({ status: 'Dropped', closeRequest: null });
+    expect(op.data.closeRequestHistory[0]).toMatchObject({ status: 'Withdrawn', decidedByUid: 'p2-restore', reason: 'restore' });
+  });
+
+  it('P-29: no Submitted task -> report.pending [] and no pending-approvals warning', () => {
+    const live = makeLive();
+    const p = plan(live, backupOf(live));
+    expect(p.report.pending).toEqual([]);
+    expect(codes(p.warnings)).not.toContain('pending-approvals');
   });
 });

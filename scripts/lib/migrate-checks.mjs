@@ -9,6 +9,10 @@ import { normaliseForV2 } from './migrate-normalise.mjs';
 export const MIGRATE_STAMP = 'p2-migrate';
 export const MAX_PROJECT_DOC_BYTES = 900 * 1024;
 export const SUBCOLS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'];
+// P3.1 M6: sub-collections a v2 client may write besides SUBCOLS. Never migrated (no
+// record docIds, never MIGRATE_STAMP), so every doc there is a v2 edit; migrate
+// --rollback reads, reports and (forced + --delete-v2-docs) deletes them.
+export const ROLLBACK_SUBCOLS = [...SUBCOLS, 'approvals'];
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -242,7 +246,7 @@ export function countReport({ v1Raw, normalised, live, v1ActivityCount = 0 }) {
 export function detectV2Edits(record, live) {
   const edited = [];
   const deleted = [];
-  for (const kind of SUBCOLS) {
+  for (const kind of ROLLBACK_SUBCOLS) {
     const docs = arr(live.docs?.[kind]);
     for (const d of docs) {
       if (d.data?.version !== 1 || d.data?.updatedBy !== MIGRATE_STAMP) {

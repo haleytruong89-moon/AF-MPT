@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWorkspaceOwnerEmail, transferCandidates, metaForWrite, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from '../../src/ownership.js';
+import { isWorkspaceOwnerEmail, transferCandidates, metaForWrite, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE, ownerUidsAfterRead } from '../../src/ownership.js';
 
 describe('isWorkspaceOwnerEmail', () => {
   it('matches the same email case-insensitively', () => {
@@ -97,5 +97,17 @@ describe('transferLocked', () => {
   });
   it('exposes the message shown to the owner', () => {
     expect(TRANSFER_LOCKED_MESSAGE).toBe('Ownership transfer is handled by an admin until the permission upgrade finishes (P2.5).');
+  });
+});
+
+describe('ownerUidsAfterRead (P3.1 M9)', () => {
+  it('a successful read gives its ownerUids (strings only); [] when unset', () => {
+    expect(ownerUidsAfterRead({ ownerUids: ['u1', 7, 'u2'] }, ['old'])).toEqual(['u1', 'u2']);
+    expect(ownerUidsAfterRead({}, ['old'])).toEqual([]);
+  });
+  it('a failed read (null) keeps the last known list instead of []', () => {
+    expect(ownerUidsAfterRead(null, ['u1'])).toEqual(['u1']);
+    expect(ownerUidsAfterRead(null, [])).toEqual([]);
+    expect(ownerUidsAfterRead(null, undefined)).toEqual([]);
   });
 });

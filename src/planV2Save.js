@@ -11,9 +11,13 @@
 //   - create data carries version 1; update data is the full doc without
 //     version / updatedBy / updatedAt (the executor writes version = expectVersion + 1).
 //   - metaPatch: changed project-doc fields (DELETE_FIELD = remove the field);
-//     programMeta, when changed, is given whole.
+//     programMeta as dotted field updates (programMeta.<id>.<field>, a new
+//     program whole as programMeta.<id>, a removed one deleted), only for fields
+//     that differ from loaded, so a stale tab never clears pmUid / deputyUid set
+//     by another writer (programMetaPatch).
 //   - refused: 'task-delete' (tasks are never deleted, CLAUDE.md), 'history-wipe'
-//     (a non-empty updates list would become empty; guards the ActionForm bug) or
+//     (a non-empty updates list would become empty; guards the ActionForm bug),
+//     'close-history-wipe' (wipesCloseHistory: approval history / close stamps removed) or
 //     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
 //     value changed or was set on a new doc, so its uid cannot be resolved).
 //     A refused plan has no batches and no metaPatch.
@@ -31,7 +35,13 @@
 // A RAID doc whose items is [] is never created (App ensureProjectRaid placeholder).
 // Ruling X: a task / action list that gains k > 1 entries is written in k steps
 // (rules allow one new entry per write); step 1 sits in batch 1 with every other op.
+// Ruling P3-8 (Task 8): a task's in-place resolution of a stored, unresolved blocker
+// is moved to the append-only blockerResolutions map (unfoldResolutions; the raw
+// updates entry is restored, authorUid = uid). k > 1 new map keys are written in k
+// steps like Ruling X (one key per write, oldest resolvedAt first). A stored map is
+// always re-sent on the full-doc set; none is ever created empty or null.
 import { splitProject, assembleProject } from './migrateV2.js';
+import { unfoldResolutions, newResolutionKeys } from './blockerResolutions.js';
 
 export const DELETE_FIELD = Symbol('planV2Save.deleteField');
 
@@ -51,6 +61,38 @@ const STEP_LISTS = { tasks: ['updates', 'checkIns'], actions: ['updates'] };
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// Firestore dotted-path segment we can write without FieldPath escaping.
+const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * programMeta changes as dotted update keys (Firestore tx.update field paths):
+ * a changed field -> 'programMeta.<id>.<field>' (DELETE_FIELD when removed), a new
+ * program -> 'programMeta.<id>' whole, a removed program -> 'programMeta.<id>'
+ * DELETE_FIELD. KEEP_PROGRAM fields (pmUid / deputyUid / start / end) are written
+ * only when the next entry carries a different non-null value; never deleted or nulled. A key or
+ * field that is not a plain segment falls back to the whole map.
+ */
+export function programMetaPatch(storedPM = {}, nextPM = {}) {
+  const out = {};
+  let unsafe = false;
+  const put = (path, v) => { if (!path.every((p) => SAFE_SEGMENT.test(p))) unsafe = true; out[['programMeta', ...path].join('.')] = v; };
+  for (const id of Object.keys(storedPM)) if (!hasOwn(nextPM, id)) put([id], DELETE_FIELD);
+  for (const [id, e] of Object.entries(nextPM)) {
+    const s = storedPM[id];
+    if (!s || typeof s !== 'object') { if (!deepEqual(s, e)) put([id], e); continue; }
+    for (const k of new Set([...Object.keys(s), ...Object.keys(e || {})])) {
+      const keep = KEEP_PROGRAM.includes(k);
+      // A KEEP field is never deleted or nulled from here: null / absent in the
+      // tree only means this tab never saw a value (e.g. loaded before the script).
+      if (!hasOwn(e || {}, k)) { if (!keep) put([id, k], DELETE_FIELD); continue; }
+      if (keep && e[k] == null) continue;
+      if (!hasOwn(s, k) || !deepEqual(s[k], e[k])) put([id, k], e[k]);
+    }
+  }
+  if (unsafe) return deepEqual(storedPM, nextPM) ? {} : { programMeta: nextPM };
+  return out;
+}
 
 function deepEqual(a, b) {
   if (a === b) return true;
@@ -200,6 +242,20 @@ export function overlay(kind, stored, data) {
   return out;
 }
 
+// P3.1 final review I2: approval history feeds performance scoring. A task update
+// must not shrink closeRequestHistory (missing = []) and must not remove a stored
+// approvedByUid / approvedAt / closedByUid while the task stays closed (any status
+// but Planned / InProgress). Reopen (closeFlow: open status + stamps cleared in the
+// same write) passes.
+const CLOSE_STAMPS = ['approvedByUid', 'approvedAt', 'closedByUid'];
+const REOPEN_STATUSES = ['Planned', 'InProgress'];
+const histLen = (d) => (Array.isArray(d?.closeRequestHistory) ? d.closeRequestHistory.length : 0);
+export function wipesCloseHistory(old, data) {
+  if (histLen(data) < histLen(old)) return true;
+  if (!['Completed', 'Dropped'].includes(old?.status) || REOPEN_STATUSES.includes(data?.status)) return false;
+  return CLOSE_STAMPS.some((k) => old[k] != null && data?.[k] == null);
+}
+
 const listOf = (m) => [...(m || new Map()).entries()].map(([id, e]) => ({ id, data: e.data }));
 const versionOf = (e) => (typeof e.version === 'number' ? e.version : e.data?.version);
 
@@ -236,7 +292,9 @@ function steps(kind, oldData, data) {
     const newIdx = flags.map((f, i) => (f ? i : -1)).filter((i) => i >= 0).sort((a, b) => b - a);
     return { k, newIdx };
   });
-  const n = Math.max(1, ...plan.map((p) => p.newIdx.length));
+  // Ruling P3-8: one new blockerResolutions key per step as well.
+  const newKeys = kind === 'tasks' ? newResolutionKeys(oldData, data) : [];
+  const n = Math.max(1, newKeys.length, ...plan.map((p) => p.newIdx.length));
   if (n === 1) return [data];
   const out = [];
   for (let s = 1; s <= n; s++) {
@@ -244,6 +302,10 @@ function steps(kind, oldData, data) {
     for (const { k, newIdx } of plan) {
       const keep = new Set(newIdx.slice(0, s));
       d[k] = data[k].filter((_, i) => !newIdx.includes(i) || keep.has(i));
+    }
+    if (newKeys.length > s) {
+      const later = new Set(newKeys.slice(s));
+      d.blockerResolutions = Object.fromEntries(Object.entries(data.blockerResolutions).filter(([key]) => !later.has(key)));
     }
     out.push(d);
   }
@@ -299,7 +361,9 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         push(0, { kind, op: 'delete', id, expectVersion: versionOf(entry) });
         continue;
       }
-      const data = carryDoc(kind, old, overlay(kind, old, strip(nextById.get(id))));
+      let data = overlay(kind, old, strip(nextById.get(id)));
+      if (kind === 'tasks') data = unfoldResolutions(old, data, uid);
+      data = carryDoc(kind, old, data);
       if (deepEqual(data, old)) continue;
       // Ruling AH: without the directory a changed person cannot be resolved; never
       // write null uids for it.
@@ -312,6 +376,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         && !(Array.isArray(data.updates) && data.updates.length)) {
         return none('history-wipe');
       }
+      if (kind === 'tasks' && wipesCloseHistory(old, data)) return none('close-history-wipe');
       const stamped = stampDoc(kind, old, data, uid);
       const v = versionOf(entry);
       steps(kind, old, stamped).forEach((d, i) => {
@@ -362,7 +427,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
     }
     nextPM[key] = e;
   }
-  if (!deepEqual(nextPM, storedPM)) metaPatch.programMeta = nextPM;
+  Object.assign(metaPatch, programMetaPatch(storedPM, nextPM));
 
   const out = batches[0].length ? batches : [];
   return { batches: out, metaPatch: Object.keys(metaPatch).length ? metaPatch : null, refused: null };

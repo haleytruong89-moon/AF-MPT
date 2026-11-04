@@ -36,9 +36,9 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { metaForWrite, isWorkspaceOwnerEmail } from './ownership';
+import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
 import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
-import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists} from './readV2';
+import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loadApprovals, rolesFromLoaded } from './readV2';
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
@@ -75,21 +75,31 @@ const V2_ACTIVITY_COL = (pid: string) => collection(db, 'workspaces', WORKSPACE,
 async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
   type Snap = { id: string; data: Record<string, unknown> };
   let lists: { ws: Snap[]; tasks: Snap[]; actions: Snap[]; raid: Snap[]; decisions: Snap[] };
+  // P3: approvals/{reqId}, read alongside (separate from V2_SUBCOLS: the planner's
+  // loaded.docs is unchanged). A failed read gives approvals: null; the project still loads.
+  const approvalsP: Promise<unknown[] | null> = loadApprovals({ collection, getDocs }, db, WORKSPACE, pid)
+    .catch((e: unknown) => {
+      console.warn('[storage] v2 approvals read failed:', key, e);
+      return null;
+    });
   try {
     lists = (await loadV2Lists({ collection, getDocs }, db, WORKSPACE, pid)) as typeof lists;
   } catch (e) {
     console.warn('[storage] v2 sub-collection read failed:', key, e);
     return null;
   }
+  const [approvals, ownerUids] = await Promise.all([approvalsP, ownerUidsNow()]);
   const { ws, tasks, actions, raid, decisions } = lists;
   const toMap = (list: Array<{ id: string; data: Record<string, unknown> }>) =>
     new Map(list.map(({ id, data }) => [id, { version: typeof data.version === 'number' ? data.version : 0, data }]));
   // Replaces the cached `loaded` object: safe only because the App loads each project once;
   // a read during an in-flight save would make applyWritten update a discarded object.
-  v2Loaded.set(pid, {
+  const loaded: V2Loaded = {
     meta,
     docs: { workstreams: toMap(ws), tasks: toMap(tasks), actions: toMap(actions), raid: toMap(raid), decisions: toMap(decisions) },
-  });
+  };
+  v2Loaded.set(pid, loaded);
+  const roles = rolesFromLoaded(loaded, ownerUids);
   const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   if (orphanCount > 0) {
     console.warn('[storage] v2 project has orphans:', pid, {
@@ -102,25 +112,72 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
   }
   return {
     key,
-    value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount)),
+    value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount, { roles, approvals })),
     shared: true,
   };
 }
 
 // Workspace doc as last read (Owner check for the planner: ownerUids or legacy email).
 let wsMetaCache: Record<string, unknown> | null = null;
-async function isOwnerNow(user: UserProfile): Promise<boolean> {
+async function wsMetaNow(): Promise<Record<string, unknown> | null> {
   if (!wsMetaCache) {
     try {
       const s = await getDoc(META_REF());
       wsMetaCache = s.exists() ? (s.data() as Record<string, unknown>) : {};
     } catch {
-      return false;
+      return null;
     }
   }
-  const m = wsMetaCache;
+  return wsMetaCache;
+}
+async function isOwnerNow(user: UserProfile): Promise<boolean> {
+  const m = await wsMetaNow();
+  if (!m) return false;
   return (Array.isArray(m.ownerUids) && m.ownerUids.includes(user.uid))
     || isWorkspaceOwnerEmail(m.workspaceOwner, user.email);
+}
+
+/**
+ * P3: workspace ownerUids as last read (via wsMetaCache); [] when unset. P3.1 M9: a
+ * failed read keeps the last known list instead of [] (ownerUidsAfterRead).
+ */
+let lastOwnerUids: string[] = [];
+export async function ownerUidsNow(): Promise<string[]> {
+  lastOwnerUids = ownerUidsAfterRead(await wsMetaNow(), lastOwnerUids);
+  return lastOwnerUids;
+}
+
+/**
+ * P3 Task 7: role data rebuilt from the current `loaded` cache, which every v2
+ * read replaces and every v2 save refreshes (applyWritten). Picks up in-session
+ * PIC / contributor edits and tasks created in this session. null for a v1 (or
+ * not yet loaded) project. Owner uids from the workspace doc as last read, else
+ * `fallbackOwnerUids` (the project's read-time roles).
+ */
+export function v2RolesNow(pid: string, fallbackOwnerUids?: string[]): ReturnType<typeof rolesFromLoaded> | null {
+  const loaded = v2Loaded.get(pid);
+  if (!loaded) return null;
+  const m = wsMetaCache;
+  const ownerUids = m && Array.isArray(m.ownerUids)
+    ? m.ownerUids.filter((u): u is string => typeof u === 'string')
+    : fallbackOwnerUids;
+  return rolesFromLoaded(loaded, ownerUids);
+}
+
+/**
+ * P3 Task 7 (fix round 1): the App value of a v2 project as last read / saved by
+ * this client (assembled from `loaded`). A close step is saved as this tree with
+ * only its task replaced, so other unsaved edits never ride in a close write.
+ */
+export function v2SavedTree(pid: string): Record<string, unknown> | null {
+  const loaded = v2Loaded.get(pid);
+  if (!loaded) return null;
+  const list = (m: Map<string, V2Entry>) => [...m.entries()].map(([id, e]) => ({ id, data: e.data }));
+  const d = loaded.docs;
+  const { project, orphanCount } = assembleFromSnapshots({
+    meta: loaded.meta, ws: list(d.workstreams), tasks: list(d.tasks), actions: list(d.actions), raid: list(d.raid), decisions: list(d.decisions),
+  });
+  return appValueFromV2(project as Record<string, unknown>, pid, orphanCount) as Record<string, unknown>;
 }
 
 // Directory for person -> uid resolution in planV2Save, built like the P2 scripts
@@ -175,7 +232,9 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   if (plan.refused) {
     console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
     // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
-    const error = plan.refused === 'directory-unavailable' ? 'error' : 'refused';
+    // P3.1 I2: a close-history wipe has its own banner copy ('history').
+    const error = plan.refused === 'directory-unavailable' ? 'error'
+      : plan.refused === 'close-history-wipe' ? 'history' : 'refused';
     return { key, value, shared: true, error, reason: plan.refused };
   }
   if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fixture from '../fixtures/v1-project.json';
 import { splitProject, assembleProject } from '../../src/migrateV2.js';
 import { buildDirectoryIndex } from '../../src/directory.js';
-import { planV2Save, DELETE_FIELD } from '../../src/planV2Save.js';
+import { planV2Save, DELETE_FIELD, programMetaPatch } from '../../src/planV2Save.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const dirIndex = buildDirectoryIndex([
@@ -46,6 +46,20 @@ describe('planV2Save', () => {
     const loaded = makeLoaded();
     const r = planV2Save(loaded, treeOf(loaded), ctx());
     expect(r).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
+  it('planV2Save ignores __v2.roles and __v2.approvals (no ops, no metaPatch)', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.__v2 = {
+      orphans: 0,
+      roles: { ownerUids: ['o'], programs: { pg1: { pmUid: 'x', deputyUid: null, start: null, end: null } }, workstreams: {}, tasks: {} },
+      approvals: [{ id: 'r1', kind: 'plan_import', status: 'pending', createdAt: '2026-11-01T00:00:00.000Z', decidedAt: null, version: 1 }],
+    };
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual({ batches: [], metaPatch: null, refused: null });
+    tree.__v2.approvals = null;
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
   });
 
   it('one task edited -> one update with expectVersion', () => {
@@ -217,8 +231,8 @@ describe('planV2Save', () => {
     tree.programs[1].raid = [{ id: 'rN', title: 'New risk' }];
     const own = planV2Save(loaded, tree, ctx({ isOwner: true }));
     expect(allOps(own)).toEqual([{ kind: 'raid', op: 'create', id: 'pg2', data: expect.objectContaining({ programId: 'pg2', version: 1 }) }]);
-    expect(own.metaPatch.programMeta.pg2).not.toHaveProperty('__absent');
-    expect(own.metaPatch.programMeta.pg1).toEqual(loaded.meta.programMeta.pg1);
+    // Dotted field patch: only the cleared flag, nothing else of pg1 / pg2.
+    expect(own.metaPatch).toEqual({ 'programMeta.pg2.__absent': DELETE_FIELD });
     const other = planV2Save(loaded, tree, ctx());
     expect(allOps(other)).toHaveLength(1);
     expect(other.metaPatch).toBeNull();
@@ -256,15 +270,13 @@ describe('planV2Save', () => {
     expect(planV2Save(loaded, tree, ctx({ isOwner: true })).metaPatch).toEqual({ projectLead: DELETE_FIELD });
   });
 
-  it('programMeta change (program renamed) -> metaPatch.programMeta keeps pmUid', () => {
+  it('programMeta change (program renamed) -> one dotted name field, pmUid / deputyUid untouched', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
     tree.programs[0].name = 'Program Renamed';
     const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
     expect(r.batches).toEqual([]);
-    expect(Object.keys(r.metaPatch)).toEqual(['programMeta']);
-    expect(r.metaPatch.programMeta.pg1).toMatchObject({ name: 'Program Renamed', pmUid: 'uidPM' });
-    expect(r.metaPatch.programMeta.pg2.deputyUid).toBe('uidPM2');
+    expect(r.metaPatch).toEqual({ 'programMeta.pg1.name': 'Program Renamed' });
   });
 
   it('keeps stored picUid when pic text is unchanged; orphans are never deleted', () => {
@@ -484,5 +496,208 @@ describe('planV2Save', () => {
     planV2Save(loaded, tree, ctx());
     expect(tree).toEqual(snapTree);
     expect(loaded.docs.tasks.get('t2')).toEqual(snapT2);
+  });
+});
+
+describe('planV2Save programMeta (dotted patches)', () => {
+  it('stale loaded copy (no pmUid) renames a program -> only programMeta.<id>.name, pmUid untouched', () => {
+    const loaded = makeLoaded();
+    delete loaded.meta.programMeta.pg1.pmUid; // this tab loaded before the admin script set it
+    const tree = treeOf(loaded);
+    tree.programs[0].name = 'Renamed program';
+    const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
+    expect(r.metaPatch).toEqual({ 'programMeta.pg1.name': 'Renamed program' });
+  });
+});
+
+describe('programMetaPatch', () => {
+  it('changed fields only; new program whole; deleted program key deleted', () => {
+    const stored = { A: { name: 'a', order: 1, pmUid: 'P' }, B: { name: 'b' }, C: { name: 'c', __absent: ['raid'] } };
+    const next = { A: { name: 'a2', order: 1, pmUid: 'P' }, C: { name: 'c' }, D: { name: 'd', order: 4 } };
+    expect(programMetaPatch(stored, next)).toEqual({
+      'programMeta.A.name': 'a2',
+      'programMeta.B': DELETE_FIELD,
+      'programMeta.C.__absent': DELETE_FIELD,
+      'programMeta.D': { name: 'd', order: 4 },
+    });
+  });
+  it('a KEEP field absent or null in the next entry is left alone (never deleted / nulled)', () => {
+    expect(programMetaPatch({ A: { name: 'a', pmUid: 'P', start: '2026-01-01' } }, { A: { name: 'a' } })).toEqual({});
+    expect(programMetaPatch({ A: { name: 'a' } }, { A: { name: 'a', pmUid: null, deputyUid: null } })).toEqual({});
+    expect(programMetaPatch({ A: { name: 'a', pmUid: 'P' } }, { A: { name: 'a', pmUid: 'Q' } })).toEqual({ 'programMeta.A.pmUid': 'Q' });
+  });
+  it('unchanged -> {}; unsafe key -> whole programMeta', () => {
+    expect(programMetaPatch({ A: { name: 'a' } }, { A: { name: 'a' } })).toEqual({});
+    expect(programMetaPatch({ 'a.b': { name: 'x' } }, { 'a.b': { name: 'y' } })).toEqual({ programMeta: { 'a.b': { name: 'y' } } });
+  });
+});
+
+// P3 Task 8 (Ruling P3-8): blocker resolutions fold on read / unfold on save.
+describe('planV2Save blocker resolutions (append-only map)', () => {
+  const blk = (id) => ({ id, text: `blocker ${id}`, isBlocker: true, author: 'Bob', timestamp: '2026-10-20T00:00:00Z', authorUid: 'uid2' });
+  const resolve = (tree, i, at, note = null) => {
+    const t = ws1(tree).tasks[1];
+    t.updates[i] = { ...t.updates[i], resolvedAt: at, resolvedBy: 'Bob', resolution: note };
+  };
+  const seed = (loaded, map) => {
+    const d = loaded.docs.tasks.get('t2').data;
+    d.updates = [blk('b2'), blk('b1')];
+    if (map) d.blockerResolutions = map;
+    return d;
+  };
+
+  it('planV2Save: Assignee resolving a blocker -> one update op whose data.updates equals stored updates and data.blockerResolutions has one key', () => {
+    const loaded = makeLoaded();
+    const stored = seed(loaded);
+    const tree = treeOf(loaded);
+    resolve(tree, 1, '2026-10-26T00:00:00.000Z', 'Got bank approval');
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.refused).toBeNull();
+    expect(r.batches).toHaveLength(1);
+    expect(r.batches[0]).toHaveLength(1);
+    const op = r.batches[0][0];
+    expect(op).toMatchObject({ kind: 'tasks', op: 'update', id: 't2', expectVersion: 3 });
+    expect(op.data.updates).toEqual(stored.updates);
+    expect(op.data.blockerResolutions).toEqual({
+      b1: { resolvedAt: '2026-10-26T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'Got bank approval', authorUid: 'uid2' },
+    });
+  });
+
+  it('a stored map folds into the tree; the untouched tree is a no-op', () => {
+    const loaded = makeLoaded();
+    seed(loaded, { b1: { resolvedAt: '2026-10-25T00:00:00.000Z', resolvedBy: 'Bob', resolution: null, authorUid: 'uid2' } });
+    const tree = treeOf(loaded);
+    expect(ws1(tree).tasks[1]).not.toHaveProperty('blockerResolutions');
+    expect(ws1(tree).tasks[1].updates[1]).toMatchObject({ id: 'b1', resolvedAt: '2026-10-25T00:00:00.000Z', resolvedBy: 'Bob', resolution: null });
+    expect(planV2Save(loaded, tree, ctx({ uid: 'uid2' }))).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+
+  it('two new resolutions -> two sequential single-key batches, oldest first; the stored map is re-sent', () => {
+    const loaded = makeLoaded();
+    const old = { resolvedAt: '2026-10-01T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'x', authorUid: 'uid2' };
+    const stored = seed(loaded, { b0: old });
+    const tree = treeOf(loaded);
+    resolve(tree, 0, '2026-10-26T02:00:00.000Z');
+    resolve(tree, 1, '2026-10-26T01:00:00.000Z');
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches).toHaveLength(2);
+    const [s1, s2] = r.batches.map((b) => b.find((o) => o.id === 't2'));
+    expect(s1.expectVersion).toBe(3);
+    expect(s2.expectVersion).toBe(4);
+    expect(s1.data.updates).toEqual(stored.updates);
+    expect(s2.data.updates).toEqual(stored.updates);
+    expect(Object.keys(s1.data.blockerResolutions).sort()).toEqual(['b0', 'b1']);
+    expect(Object.keys(s2.data.blockerResolutions).sort()).toEqual(['b0', 'b1', 'b2']);
+    expect(s2.data.blockerResolutions.b2).toMatchObject({ resolvedAt: '2026-10-26T02:00:00.000Z', authorUid: 'uid2' });
+  });
+
+  it('resolution + a new update land in one step; other edits on a task with a map keep the map', () => {
+    const loaded = makeLoaded();
+    const map = { b0: { resolvedAt: '2026-10-01T00:00:00.000Z', resolvedBy: 'Bob', resolution: 'x', authorUid: 'uid2' } };
+    const stored = seed(loaded, map);
+    const tree = treeOf(loaded);
+    resolve(tree, 1, '2026-10-26T00:00:00.000Z');
+    ws1(tree).tasks[1].updates.unshift({ id: 'n1', text: 'resolved, moving on' });
+    let r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches).toHaveLength(1);
+    expect(r.batches[0][0].data.updates).toEqual([{ id: 'n1', text: 'resolved, moving on', authorUid: 'uid2' }, ...stored.updates]);
+    expect(Object.keys(r.batches[0][0].data.blockerResolutions).sort()).toEqual(['b0', 'b1']);
+
+    const tree2 = treeOf(loaded);
+    ws1(tree2).tasks[1].name = 'Renamed';
+    r = planV2Save(loaded, tree2, ctx({ uid: 'uid2' }));
+    expect(r.batches[0][0].data.blockerResolutions).toEqual(map);
+  });
+
+  it('a task without a map never gets blockerResolutions (no null, no {})', () => {
+    const loaded = makeLoaded();
+    seed(loaded);
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].name = 'Renamed';
+    const r = planV2Save(loaded, tree, ctx({ uid: 'uid2' }));
+    expect(r.batches[0][0].data).not.toHaveProperty('blockerResolutions');
+  });
+
+  it('a legacy in-place resolution and a resolved new blocker are written in place', () => {
+    const loaded = makeLoaded();
+    const d = seed(loaded);
+    d.updates[1] = { ...d.updates[1], resolvedAt: '2026-10-02T00:00:00Z', resolvedBy: 'Bob', resolution: null };
+    const tree = treeOf(loaded);
+    expect(planV2Save(loaded, tree, ctx({ uid: 'uid2' })).batches).toEqual([]);
+    ws1(tree).tasks[1].updates.unshift({ ...blk('b3'), resolvedAt: '2026-10-26T00:00:00Z', resolvedBy: 'Bob', resolution: null });
+    const op = planV2Save(loaded, tree, ctx({ uid: 'uid2' })).batches[0][0];
+    expect(op.data.updates[0]).toMatchObject({ id: 'b3', resolvedAt: '2026-10-26T00:00:00Z' });
+    expect(op.data).not.toHaveProperty('blockerResolutions');
+  });
+});
+
+describe('planV2Save close history protection (P3.1 final review I2)', () => {
+  const CLOSED = { approvedByUid: 'uidPM', approvedAt: '2026-11-01T00:00:00.000Z', closedByUid: 'uid1' };
+  const HIST = [
+    { id: 'crh2', status: 'Approved', decidedByUid: 'uidPM', decidedAt: '2026-11-01T00:00:00.000Z' },
+    { id: 'crh1', status: 'Rejected', decidedByUid: 'uidPM', decidedAt: '2026-10-30T00:00:00.000Z' },
+  ];
+  // Stored t1 (first task of the first WS) with the given fields; returns the tree task too.
+  function setup(fields) {
+    const loaded = makeLoaded();
+    const id = treeOf(loaded).programs[0].workstreams[0].tasks[0].id;
+    const entry = [...loaded.docs.tasks.values()].find((e) => e.data.id === id);
+    Object.assign(entry.data, fields);
+    const tree = treeOf(loaded);
+    return { loaded, tree, task: ws1(tree).tasks[0] };
+  }
+  const refused = { batches: [], metaPatch: null, refused: 'close-history-wipe' };
+
+  it('shrinking closeRequestHistory is refused (Owner too)', () => {
+    const { loaded, tree, task } = setup({ status: 'InProgress', closeRequestHistory: HIST });
+    task.closeRequestHistory = HIST.slice(1);
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+    expect(planV2Save(loaded, tree, ctx())).toEqual(refused);
+  });
+
+  it('dropping the closeRequestHistory field (import / restore of an older tree) is refused', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    delete task.closeRequestHistory;
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+  });
+
+  for (const k of ['approvedByUid', 'approvedAt', 'closedByUid']) {
+    for (const status of ['Completed', 'Dropped']) {
+      it(`removing ${k} from a task that stays ${status} is refused (absent or null)`, () => {
+        const a = setup({ status, closeRequestHistory: HIST, ...CLOSED });
+        delete a.task[k];
+        expect(planV2Save(a.loaded, a.tree, ctx({ isOwner: true }))).toEqual(refused);
+        const b = setup({ status, closeRequestHistory: HIST, ...CLOSED });
+        b.task[k] = null;
+        expect(planV2Save(b.loaded, b.tree, ctx({ isOwner: true }))).toEqual(refused);
+      });
+    }
+  }
+
+  it('Completed -> Dropped without the stamps is refused', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    task.status = 'Dropped';
+    task.approvedByUid = null;
+    expect(planV2Save(loaded, tree, ctx({ isOwner: true }))).toEqual(refused);
+  });
+
+  it('reopen (closeFlow: open status + stamps cleared, history kept) is planned', () => {
+    const { loaded, tree, task } = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    Object.assign(task, { status: 'InProgress', approvedByUid: null, approvedAt: null, closedByUid: null });
+    const r = planV2Save(loaded, tree, ctx());
+    expect(r.refused).toBe(null);
+    expect(allOps(r)).toHaveLength(1);
+    expect(allOps(r)[0].data).toMatchObject({ status: 'InProgress', approvedByUid: null, closeRequestHistory: HIST });
+  });
+
+  it('a decision (history grows by one) and an edit of a closed task that keeps the stamps are planned', () => {
+    const grow = setup({ status: 'Submitted', closeRequestHistory: HIST.slice(1) });
+    Object.assign(grow.task, { status: 'Completed', ...CLOSED, closeRequestHistory: HIST });
+    expect(planV2Save(grow.loaded, grow.tree, ctx()).refused).toBe(null);
+    const edit = setup({ status: 'Completed', closeRequestHistory: HIST, ...CLOSED });
+    edit.task.name = 'Renamed';
+    const r = planV2Save(edit.loaded, edit.tree, ctx({ isOwner: true }));
+    expect(r.refused).toBe(null);
+    expect(allOps(r)).toHaveLength(1);
   });
 });

@@ -409,14 +409,18 @@ service cloud.firestore {
     // index-out-of-bound error in the rules runtime, so an empty old list
     // short-circuits before slicing. The new entry's authorUid is checked
     // by newEntryOk (all writers).
+    // P3 review round 1: o / n are passed as arguments (evaluated once,
+    // expression limit) instead of let-bound.
     function appendOnly(ch, k) {
-      let o = listOrEmpty(resource.data, k);
-      let n = listOrEmpty(request.resource.data, k);
       return !ch.hasAny([k])
-        || (o is list && n is list
-          && (n == o
-            || (n.size() == o.size() + 1
-              && (o.size() == 0 || n[1:n.size()] == o))));
+        || appendOnlyWith(listOrEmpty(resource.data, k), listOrEmpty(request.resource.data, k));
+    }
+
+    function appendOnlyWith(o, n) {
+      return o is list && n is list
+        && (n == o
+          || (n.size() == o.size() + 1
+            && (o.size() == 0 || n[1:n.size()] == o)));
     }
 
     // Ruling R (P2.3), all writers incl. Owner: a write may add at most one
@@ -425,13 +429,15 @@ service cloud.firestore {
     // editing history) is not checked here. Rules cannot loop, so nested
     // lists (RAID items[].history[], mitigation comments[]) are not checked.
     function newEntryOk(ch, k) {
-      let o = listOrEmpty(resource.data, k);
-      let n = listOrEmpty(request.resource.data, k);
       return !ch.hasAny([k])
-        || (o is list && n is list
-          && (n.size() <= o.size()
-            || (n.size() == o.size() + 1
-              && n[0].get('authorUid', null) == request.auth.uid)));
+        || newEntryWith(listOrEmpty(resource.data, k), listOrEmpty(request.resource.data, k));
+    }
+
+    function newEntryWith(o, n) {
+      return o is list && n is list
+        && (n.size() <= o.size()
+          || (n.size() == o.size() + 1
+            && n[0].get('authorUid', null) == request.auth.uid));
     }
 
     // Restricted (default when visibility is absent): Owner + memberUids.
@@ -453,7 +459,7 @@ service cloud.firestore {
     // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
     // project doc has schemaVersion 2. After a rollback (schemaVersion back to
     // 1/absent) every client read, create, update and delete on workstreams,
-    // tasks, actions, raid, decisions and activity is denied, so a stale v2
+    // tasks, actions, raid, decisions, approvals and activity is denied, so a stale v2
     // tab cannot write data nobody reads. Admin scripts bypass rules.
     // get(): the project doc, the same one canReadProject / v2Project /
     // isPM / raidWriterOk read (counted once per distinct doc), so it adds a
@@ -510,11 +516,27 @@ service cloud.firestore {
     //   WS); Sub-PM of the task's WS (no move). For PM and Sub-PM the WS date
     //   check (against the NEW ws) applies only when start/end/workstreamId
     //   change, so status/health edits on a migrated out-of-range task work.
-    //   Assignee (picUid == me): only progress keys; status must be present
-    //   and stay in Planned/InProgress (A4: never Completed/Dropped; P3 adds
-    //   Submitted), and only while the task is still open; updates/checkIns
-    //   are append-only for the Assignee.
+    //   Assignee (picUid == me): only progress keys + the close request keys;
+    //   status must be present; only while the task is Planned / InProgress
+    //   / Submitted; updates/checkIns are append-only for the Assignee.
     //   Contributor (P2.2): append-only updates, see taskContributorUpdate.
+    // P3 close transitions (Rulings P3-1, P3-3, P3-4, P3-6, P3-7, P3-18):
+    //   status / closeRequest / closeRequestHistory / approvedByUid /
+    //   approvedAt / closedByUid change only through closeTransitionOk
+    //   (Assignee, PM and Sub-PM branches): open moves, submit, withdraw,
+    //   approve, reject (with reason), reassign (PM; Owner unrestricted),
+    //   direct close by a manager who is not the PIC, reopen (manager).
+    //   No self-credit (review round 1, Ruling P3-C5): a non-Owner manager
+    //   may change the credit fields (creditKeys) only while the task is
+    //   open; a direct close keeps them and
+    //   is denied to a manager in contributorUids (Ruling P3-C2); reopen
+    //   clears approvedByUid / approvedAt / closedByUid. Ruling P3-C6′
+    //   (PROVISIONAL): a manager may change creditShares only in auto mode
+    //   (the App recomputes them from pic + contributors); manual mode (set,
+    //   edit, or leave it) is Owner-only.
+    //   Nobody decides their own request. Every write that sets status to
+    //   Completed / Dropped carries approvedByUid == caller (closeStampOk,
+    //   Owner included). A non-Owner creates tasks Planned / InProgress only.
     // All writers: version create = 1 / update = +1; updatedBy must equal
     //   the caller uid on every write (Ruling I); an entry added to updates
     //   or checkIns (at most one per write) carries authorUid == caller
@@ -526,6 +548,10 @@ service cloud.firestore {
     //        delete = 1; read = 3.
     // P2.4 projectIsV2 reuses the project get: delete = 2, Owner-only
     // create/update = 2; the others unchanged.
+    // P3: eligibleApprover / canDecide read only the workspace, the project
+    // and the task's OLD ws (and members via isPM), all already in the
+    // budget above: update stays <= 5 (Assignee 4: workspace, project,
+    // members/{me}, old ws).
     // Ruling AE (P2.3): + references and the deadline request flow
     // (deadlineRequest, deadlineRequestHistory). The due date itself (end)
     // stays out: it changes only when an approver applies the request.
@@ -546,57 +572,371 @@ service cloud.firestore {
       return !ch.hasAny(['start', 'end', 'workstreamId']) || taskWithinNewWs(wid, pid);
     }
 
-    function taskPMUpdate(wid, pid, ch) {
-      let n = request.resource.data;
-      return isPM(wid, pid, resource.data.get('programId', null))
-        && (!ch.hasAny(['programId', 'workstreamId'])
-          || (isPMIn(v2Project(wid, pid), n.get('programId', null))
-            && wsInProgram(wid, pid, n.get('workstreamId', null), n.get('programId', null))))
-        && taskDatesOk(wid, pid, ch);
+    // PM of the task's program (pm, computed once by the caller): may move
+    // the task to a WS of a program they are PM of too. p = project data.
+    function taskPMMoveOk(wid, pid, ch, p) {
+      return !ch.hasAny(['programId', 'workstreamId'])
+        || (isPMIn(p, request.resource.data.get('programId', null))
+          && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
+                         request.resource.data.get('programId', null)));
     }
 
-    function taskLeadUpdate(wid, pid, ch) {
+    // Sub-PM of the task's WS (same test as isLead, with the caller's
+    // active-member check and the project data already done / passed in).
+    function leadOfWs(w, p) {
+      return w.get('leadUid', null) == request.auth.uid
+        && w.get('programId', null) is string
+        && w.programId in p.get('programMeta', {});
+    }
+
+    // Follow-up trim T2: get() alone (no exists() first). A missing WS doc
+    // or workstreamId is an evaluation error, i.e. denied.
+    // A Sub-PM cannot move the task, so its new WS is the old one: the WS
+    // doc w is read once and serves both the Sub-PM test and the date window
+    // (same check as taskDatesOk, whose 'workstreamId' key cannot change here).
+    function taskLeadOk(wid, pid, ch, p) {
       return !ch.hasAny(['programId', 'workstreamId'])
-        && isLead(wid, pid, resource.data.get('workstreamId', null))
-        && taskDatesOk(wid, pid, ch);
+        && taskLeadWith(ch, p, v2WsData(wid, pid, resource.data.workstreamId));
+    }
+
+    function taskLeadWith(ch, p, w) {
+      return leadOfWs(w, p)
+        && (!ch.hasAny(['start', 'end']) || withinWs(request.resource.data, w));
+    }
+
+    // ── P3 close transitions ──
+    // o = resource.data, n = request.resource.data, me = request.auth.uid,
+    // s0 / s1 = old / new status read with get('status', 'Planned').
+    function closeKeys() {
+      return ['status', 'closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'];
+    }
+
+    // Ruling P3-C5: the fields the App derives credit from (App.jsx
+    // creditOf: pic / picUid, contributors, creditShares). A non-Owner
+    // manager may change them only while the task is open, and never in a
+    // direct-close write (no self-credit).
+    // Ruling P3-C6′ (PROVISIONAL): see splitOk. The Assignee / contributor
+    // key lists never had creditShares / creditSharesMode.
+    function creditKeys() {
+      return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode'];
+    }
+
+    function isClosedSt(s) {
+      return s in ['Completed', 'Dropped'];
+    }
+
+    function isOpenSt(s) {
+      return s in ['Planned', 'InProgress'];
+    }
+
+    // programMeta entry of program prg ({} when prg is not a string / absent).
+    function prgMetaOf(p, prg) {
+      return prg is string ? p.get('programMeta', {}).get(prg, {}) : {};
+    }
+
+    function isPMOrDeputyUid(m, u) {
+      return u == m.get('pmUid', null) || u == m.get('deputyUid', null);
+    }
+
+    // Mirror of eligibleApprovers (client, P3 Task 6). Approver a of a
+    // request by `requester` on task d: never the requester; any Owner
+    // (ownerUids only, Ruling P3-20); the PM / Deputy of d's program, or the
+    // Sub-PM of d's WS, unless the requester is that PM / Deputy.
+    // get(): workspace, project, ws of d (all already counted).
+    // Expression limit (1000): computed values are passed as arguments
+    // (evaluated once) rather than re-derived in each helper.
+    function eligibleApprover(wid, pid, d, a, requester) {
+      return a is string && a != requester
+        && eligibleWith(wid, pid, d, a, requester,
+          prgMetaOf(v2Project(wid, pid), d.get('programId', null)));
+    }
+
+    function inList(l, a) {
+      return l is list && a in l;
+    }
+
+    // A manager listed in d's (stored) contributorUids is not eligible: they
+    // could not decide it anyway (canDecide, Ruling P3-C4), so a submit or
+    // reassign naming them fails fast. An Owner stays eligible (the Owner
+    // branch decides without canDecide).
+    function eligibleWith(wid, pid, d, a, requester, m) {
+      return inList(v2Workspace(wid).get('ownerUids', []), a)
+        || (!isPMOrDeputyUid(m, requester)
+          && !inList(d.get('contributorUids', null), a)
+          && (isPMOrDeputyUid(m, a)
+            || (wsExists(wid, pid, d.get('workstreamId', null))
+              && v2WsData(wid, pid, d.workstreamId).get('leadUid', null) == a)));
+    }
+
+    // Ruling P3-4: who may decide request cr on task d (never the requester).
+    // The Owner never reaches this (Owner branch first). pm = caller is
+    // PM/Deputy of the task's program and m = that program's programMeta
+    // entry (both computed once by the caller).
+    // Ruling P3-C4 (no self-credit): a manager in the task's contributorUids
+    // never decides its close request. The stored (old) list is checked, so
+    // dropping oneself from it in the deciding write does not help.
+    function canDecide(cr, pm, m) {
+      return cr.get('requestedByUid', null) != request.auth.uid
+        && !inList(resource.data.get('contributorUids', null), request.auth.uid)
+        && (cr.get('approverUid', null) == request.auth.uid
+          || (pm && !isPMOrDeputyUid(m, cr.get('requestedByUid', null))));
+    }
+
+    // One decision entry prepended to closeRequestHistory (old entries kept
+    // as the suffix, exactly one added), status st, decided by me. Same
+    // test as appendOnly + "grows by 1" without re-deriving the diff.
+    // Follow-up trim T3: missing = [] via get(k, []); a stored null history
+    // (never written by P3 code) is not a list, so the decision is denied.
+    function histOk(st) {
+      return histWith(st, resource.data.get('closeRequestHistory', []),
+                      request.resource.data.get('closeRequestHistory', []));
+    }
+
+    function histWith(st, o, n) {
+      return o is list && n is list
+        && n.size() == o.size() + 1
+        && (o.size() == 0 || n[1:n.size()] == o)
+        && n[0] is map
+        && n[0].get('status', null) == st
+        && n[0].get('decidedByUid', null) == request.auth.uid;
+    }
+
+    function reasonOk(e) {
+      return e.get('reason', null) is string && e.reason.size() > 0;
+    }
+
+    // submit: c = the new closeRequest.
+    function closeSubmitOk(wid, pid, ch, mgr, c) {
+      return c is map
+        && c.get('requestedByUid', null) == request.auth.uid
+        && c.get('outcome', null) in ['Completed', 'Dropped']
+        && (resource.data.get('picUid', null) == request.auth.uid || mgr)
+        && !ch.hasAny(['closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid'])
+        && eligibleApprover(wid, pid, resource.data, c.get('approverUid', null), request.auth.uid);
+    }
+
+    // From Planned / InProgress: open move, submit, or (manager, Ruling
+    // P3-3) a direct close of a task they are not PIC of, stamped. No
+    // self-credit (review round 1, Rulings P3-C2 / P3-C5): the direct close
+    // may not change the credit fields (creditKeys), and a manager listed in contributorUids must submit
+    // like anyone else. It never touches the close request / history.
+    // The stamp (approvedByUid == caller) of the direct close and of the
+    // approve below is enforced once by closeStampOk (status changes to
+    // Completed / Dropped in both), not repeated here (expression limit).
+    function closeFromOpen(wid, pid, ch, s1, mgr) {
+      return (isOpenSt(s1)
+          && !ch.hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid', 'approvedAt', 'closedByUid']))
+        || (s1 == 'Submitted'
+          && closeSubmitOk(wid, pid, ch, mgr, request.resource.data.get('closeRequest', null)))
+        || (mgr && isClosedSt(s1)
+          && resource.data.get('picUid', null) != request.auth.uid
+          && !ch.hasAny(creditKeys().concat(['closeRequest', 'closeRequestHistory']))
+          && !inList(request.resource.data.get('contributorUids', null), request.auth.uid));
+    }
+
+    // From Submitted (c0 = old request, c1 = new request):
+    //   withdraw (requester, -> open), approve (status == outcome, stamped),
+    //   reject (-> InProgress, reason), reassign (PM; approverUid only; never
+    //   the requester, Ruling P3-C7 - the Owner branch still bypasses, and the
+    //   client never creates a request for the Owner's own task).
+    // r = role map (see closeTransitionOk).
+    function closeFromSubmitted(wid, pid, s1, c0, c1, r) {
+      return c0 is map && (
+        (isClosedSt(s1) && c1 == null
+          && s1 == c0.get('outcome', null)
+          && histOk('Approved')
+          && canDecide(c0, r.pm, r.m))
+        || (s1 == 'InProgress' && c1 == null
+          && histOk('Rejected')
+          && reasonOk(request.resource.data.closeRequestHistory[0])
+          && canDecide(c0, r.pm, r.m))
+        || (isOpenSt(s1) && c1 == null
+          && c0.get('requestedByUid', null) == request.auth.uid
+          && histOk('Withdrawn'))
+        || (r.pm && s1 == 'Submitted' && c1 is map
+          && c0.get('requestedByUid', null) != request.auth.uid
+          && c1.diff(c0).affectedKeys().hasOnly(['approverUid'])
+          && histOk('Reassigned')
+          && eligibleApprover(wid, pid, resource.data, c1.get('approverUid', null),
+                              c0.get('requestedByUid', null)))
+      );
+    }
+
+    // Only called when a close key changed (callers branch on cl first, so
+    // ordinary P2.3 edits never evaluate the P3 helpers).
+    // r = { mgr: the caller passed the PM / Sub-PM branch, pm: caller is
+    // PM/Deputy of the task's program, m: that program's programMeta entry,
+    // cl (manager only): a close key changed }
+    // (a map: rules functions take at most 7 arguments).
+    // reopen (manager): closed -> open, close request keys untouched, the
+    // approval stamp cleared (approvedByUid / approvedAt / closedByUid null
+    // or absent).
+    function closeTransitionOk(wid, pid, ch, s0, s1, r) {
+      return (isOpenSt(s0) && closeFromOpen(wid, pid, ch, s1, r.mgr))
+        || (s0 == 'Submitted'
+          && closeFromSubmitted(wid, pid, s1, resource.data.get('closeRequest', null),
+                                request.resource.data.get('closeRequest', null), r))
+        || (r.mgr && isClosedSt(s0) && isOpenSt(s1)
+          && !ch.hasAny(['closeRequest', 'closeRequestHistory'])
+          && request.resource.data.get('approvedByUid', null) == null
+          && request.resource.data.get('approvedAt', null) == null
+          && request.resource.data.get('closedByUid', null) == null);
+    }
+
+    // Ruling P3-18, all writers incl. Owner: setting Completed / Dropped
+    // stamps approvedByUid == caller.
+    function closeStampOk(ch, s1) {
+      return !(ch.hasAny(['status']) && isClosedSt(s1))
+        || request.resource.data.get('approvedByUid', null) == request.auth.uid;
+    }
+
+    // ── P3 blocker resolutions (Ruling P3-8, closes Ruling W) ──
+    // task.blockerResolutions[updateId] = { resolvedAt, resolvedBy,
+    // resolution, authorUid }. The stored (old) map reads missing or null
+    // as {} (mapOrEmpty). Expression limit: one verdict rv is computed once
+    // per write (taskUpdateCh), and only when the map changed:
+    //   'none'   the map is untouched;
+    //   'bad'    more than one key added, or the added value's authorUid is
+    //            not the caller (denied for all writers incl. Owner);
+    //   'append' exactly one key added (authorUid == caller), none removed
+    //            or changed (Assignee and contributor need this);
+    //   'edit'   no key added, or one added plus edits / removals
+    //            (managers / Owner may correct history).
+    // The new value is read directly: deleting the map, or writing null or
+    // a non-map, is a runtime error, i.e. denied.
+    function mapOrEmpty(d, k) {
+      return d.get(k, null) == null ? {} : d[k];
+    }
+
+    // a = added keys (n.keys() minus o.keys(), the list form of
+    // n.diff(o).addedKeys(): rules sets have no element access).
+    // aff = n.diff(o).affectedKeys().size() (added + removed + changed).
+    function resolutionVerdict(n, o) {
+      return resolutionVerdictWith(n, n.keys().removeAll(o.keys()), n.diff(o).affectedKeys().size());
+    }
+
+    // The append case (the common one) is tested first.
+    function resolutionVerdictWith(n, a, aff) {
+      return (a.size() == 1 && n[a[0]].get('authorUid', null) == request.auth.uid)
+        ? (aff == 1 ? 'append' : 'edit')
+        : (a.size() == 0 ? 'edit' : 'bad');
     }
 
     // Cheap checks first (picUid, keys, status) before the members get.
-    function taskAssigneeUpdate(wid, ch) {
+    // status must stay present (V2-30). blockerResolutions append-only
+    // (Ruling P3-8). cl = a close key changed.
+    function taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv) {
       return resource.data.get('picUid', null) == request.auth.uid
-        && ch.hasOnly(assigneeKeys())
-        && resource.data.get('status', 'Planned') in ['Planned', 'InProgress']
-        && request.resource.data.get('status', null) in ['Planned', 'InProgress']
+        && ch.hasOnly(assigneeKeys().concat(['closeRequest', 'closeRequestHistory', 'blockerResolutions']))
+        && s0 in ['Planned', 'InProgress', 'Submitted']
+        && request.resource.data.get('status', null) != null
         && appendOnly(ch, 'updates')
         && appendOnly(ch, 'checkIns')
-        && isActiveMember(wid);
+        && rv != 'edit'
+        && (!cl || closeTransitionOk(wid, pid, ch, s0, s1, {'mgr': false, 'pm': false, 'm': {}}))
+        && activeMemberDoc(wid);
     }
 
     // Contributor (P2.2): uid in contributorUids and not the PIC (the PIC
-    // has the Assignee branch). Only keys updates/updatedAt/updatedBy/version;
-    // updates is append-only. A contributor who is also PM / Sub-PM / Owner
+    // has the Assignee branch). Only keys updates / blockerResolutions /
+    // updatedAt / updatedBy / version; updates and blockerResolutions are
+    // append-only (Ruling P3-8). A contributor who is also PM / Sub-PM / Owner
     // passes through those broader branches instead. No extra get() (members).
     function contributorKeys() {
-      return ['updates', 'updatedAt', 'updatedBy', 'version'];
+      return ['updates', 'blockerResolutions', 'updatedAt', 'updatedBy', 'version'];
     }
 
-    function taskContributorUpdate(wid, ch) {
+    function taskContributorUpdate(wid, ch, rv) {
       return resource.data.get('contributorUids', null) is list
         && request.auth.uid in resource.data.contributorUids
         && resource.data.get('picUid', null) != request.auth.uid
         && ch.hasOnly(contributorKeys())
         && appendOnly(ch, 'updates')
-        && isActiveMember(wid);
+        && rv != 'edit'
+        && activeMemberDoc(wid);
     }
 
+    // Active member without re-running isSmartOSC (the allow rule did).
+    // Follow-up trim T2: get() alone (no exists() first); a missing members
+    // doc is an evaluation error, i.e. this branch is denied. Used by the
+    // Assignee, contributor and manager branches.
+    function activeMemberDoc(wid) {
+      return get(v2MemberPath(wid)).data.get('status', null) == 'active';
+    }
+
+    // Ruling P3-C6′ (PROVISIONAL), non-Owner managers: a write that touches
+    // creditShares / creditSharesMode must leave the mode auto (absent, null
+    // or 'auto', as App.jsx reads it) and the stored mode must not be
+    // 'manual'. Setting manual, editing shares while manual, and switching
+    // manual -> auto are Owner-only. Evaluated only when a credit key
+    // changed and the task is open (Ruling P3-C5 still applies on top).
+    function splitOk(ch) {
+      return !ch.hasAny(['creditShares', 'creditSharesMode'])
+        || (request.resource.data.get('creditSharesMode', null) in [null, 'auto']
+          && resource.data.get('creditSharesMode', null) != 'manual');
+    }
+
+    // PM / Sub-PM (non-Owner managers). Active-member check (by the caller,
+    // taskUpdateWith), project data, programMeta entry and pm are each
+    // computed once (expression limit); cl (a close key changed) is reused
+    // from taskUpdateCh instead of re-testing closeKeys().
+    // No self-credit (Ruling P3-C5): the credit fields (creditKeys) may
+    // change only while the task is open (not Submitted / Completed /
+    // Dropped); the split only in auto mode (splitOk, Ruling P3-C6′). A
+    // status change keeps status present.
+    function taskManagerUpdate(wid, pid, ch, s0, s1, cl, p) {
+      return taskManagerPm(wid, pid, ch, s0, s1, p,
+        managerRole(cl, prgMetaOf(p, resource.data.get('programId', null))));
+    }
+
+    function managerRole(cl, m) {
+      return {'mgr': true, 'pm': isPMOrDeputyUid(m, request.auth.uid), 'm': m, 'cl': cl};
+    }
+
+    // r.pm = isPM(wid, pid, old programId) given the active-member check.
+    // A PM may do everything a Sub-PM may (+ moves), so r.pm picks the branch.
+    // The Sub-PM branch checks the dates itself (taskLeadOk).
+    function taskManagerPm(wid, pid, ch, s0, s1, p, r) {
+      return (r.pm ? (taskPMMoveOk(wid, pid, ch, p) && taskDatesOk(wid, pid, ch))
+                   : taskLeadOk(wid, pid, ch, p))
+        && (!ch.hasAny(creditKeys())
+          || (isOpenSt(s0) && splitOk(ch)))
+        && (!ch.hasAny(['status']) || request.resource.data.get('status', null) != null)
+        && (!r.cl || closeTransitionOk(wid, pid, ch, s0, s1, r));
+    }
+
+    // ch / s0 / s1 / cl are computed once here and passed as arguments
+    // (expression limit, see changedKeys).
     function taskUpdateOk(wid, pid) {
-      let ch = changedKeys();
-      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && (
-        isWsOwner(wid)
-        || taskAssigneeUpdate(wid, ch)
-        || taskContributorUpdate(wid, ch)
-        || taskPMUpdate(wid, pid, ch)
-        || taskLeadUpdate(wid, pid, ch)
+      return taskUpdateCh(wid, pid, changedKeys(),
+        resource.data.get('status', 'Planned'), request.resource.data.get('status', 'Planned'));
+    }
+
+    // rv = blocker-resolution verdict (see resolutionVerdict), computed once.
+    function taskUpdateCh(wid, pid, ch, s0, s1) {
+      return taskUpdateWith(wid, pid, ch, s0, s1, ch.hasAny(closeKeys()),
+        ch.hasAny(['blockerResolutions'])
+          ? resolutionVerdict(request.resource.data.blockerResolutions,
+                              mapOrEmpty(resource.data, 'blockerResolutions'))
+          : 'none');
+    }
+
+    // P3.1 final review I1: a cheap Owner test (uid in ownerUids; the
+    // workspace doc isWsOwner / eligibleWith read, one get) comes FIRST
+    // again. With the Owner check only last (trim T1), an Owner who is not
+    // PM read one workstream doc per distinct WS in the failing Sub-PM
+    // branch, so one transaction over ~16+ workstreams exceeded the 20
+    // access-call limit and was denied. The full isWsOwner (legacy
+    // workspaceOwner email) stays the last alternative: an Owner write that
+    // fails or errors in a branch above still ends there (error || true).
+    function taskUpdateWith(wid, pid, ch, s0, s1, cl, rv) {
+      return newEntryOk(ch, 'updates') && newEntryOk(ch, 'checkIns') && rv != 'bad'
+        && closeStampOk(ch, s1) && (
+        inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
+        || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
+        || taskContributorUpdate(wid, ch, rv)
+        || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
+        || isWsOwner(wid)
       );
     }
 
@@ -604,18 +944,22 @@ service cloud.firestore {
       // get(): 3.
       allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
 
-      // get(): Owner 2, PM / Sub-PM 4.
+      // get(): Owner 2, PM / Sub-PM 4. P3: a non-Owner creates open tasks
+      // only (closing goes through the transitions above).
       allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
-        || ((isPM(wid, pid, request.resource.data.get('programId', null))
+        || (isOpenSt(request.resource.data.get('status', 'Planned'))
+          && (isPM(wid, pid, request.resource.data.get('programId', null))
             || isLead(wid, pid, request.resource.data.get('workstreamId', null)))
           && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
                          request.resource.data.get('programId', null))
           && taskWithinNewWs(wid, pid))
       );
 
-      // get(): Owner 2, others up to 5.
+      // get(): up to 5 (workspace doc first for the ownerUids test, I1;
+      // legacy-email Owner last). Per transaction: one WS doc per distinct
+      // WS only on Sub-PM writes and moves.
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && taskUpdateOk(wid, pid);
 
@@ -775,6 +1119,216 @@ service cloud.firestore {
           && isPMIn(v2Project(wid, pid), resource.data.viaProgramId)
           && isActiveMember(wid))
       );
+    }
+
+    // ─────── v2: approvals (P3 Task 4; Rulings P3-2, P3-4, P3-9, P3-20, P3-C3) ───────
+    // approvals/{reqId} = { workspaceId, projectId, type, scope: { programId,
+    //   workstreamId?, taskId? }, title, payload, requestedByUid, requestedBy,
+    //   approverUid, status, createdAt, decidedByUid, decidedAt, reason,
+    //   reassignLog: [], version, updatedBy, updatedAt }.
+    // Kinds: plan_import / scope_deadline (scopeTypes) and mitigation_done.
+    // Create (keys within the doc shape above; requester == caller,
+    //   requestedBy (if present) == caller email, Pending, createdAt ==
+    //   server time, decidedByUid / decidedAt / reason null or absent, empty
+    //   reassignLog, approver a non-empty string != caller, scope.programId in
+    //   programMeta, caller can read the project):
+    //   plan_import / scope_deadline: approver in ownerUids (P3-20); caller
+    //     is the PM / Deputy of scope.programId (a scope.workstreamId, if
+    //     any, must be a ws of that program) or the Sub-PM of
+    //     scope.workstreamId, a ws of scope.programId.
+    //   mitigation_done (P3-9): any project reader; approver = the PM /
+    //     Deputy of scope.programId or an Owner. Ruling P3-C8 (mirror of
+    //     eligibleWith): when the requester is that PM / Deputy, the approver
+    //     must be an Owner (not their PM / Deputy partner).
+    // Update, only while Pending (a decided request is final):
+    //   withdraw: requester only, -> Withdrawn, stamped decidedByUid == me,
+    //     decidedAt == server time.
+    //   decide (P3-4): -> Approved / Rejected, same stamp. Rejected needs a
+    //     non-empty reason; on Approved a reason is null / absent or a
+    //     non-empty string. plan_import / scope_deadline: an Owner. mitigation_done: the
+    //     named approver, or the PM / Deputy of the program when the requester
+    //     is neither of them, or an Owner. Never the requester, except an
+    //     Owner (Ruling P3-C3). A non-Owner decider is an active member.
+    //   reassign: stays Pending; caller = the PM / Deputy of the program or
+    //     an Owner, and never the requester (Ruling P3-C7, no Owner
+    //     exception); new approver a non-empty string != requester and valid
+    //     for the type as on create (incl. P3-C8), plus (mitigation_done,
+    //     requester not the PM / Deputy) the Sub-PM of a ws of the program
+    //     named by the claim reassignLog[0].viaWorkstreamId; reassignLog gets
+    //     exactly one entry prepended { byUid: me, from: old approver, to: new
+    //     approver } (old entries kept as the suffix).
+    // Payload, scope, type, requester and createdAt never change (keys
+    // allow-lists). Never deleted (P3-2).
+    // No self-credit check (judged per kind): none of the kinds changes a
+    // task's credit fields in this write; plan_import, which may, is decided
+    // by an Owner only (P3-C3), and mitigation_done touches RAID, which earns
+    // no credit (isTaskCredited counts tasks only).
+    // get(): read = workspace, members/{me}, project = 3; create = those +
+    //   the scope ws = 4; update = workspace, members/{me}, project + the
+    //   claim ws (reassign) = 4. projectIsV2 shares the project get.
+    function scopeTypes() {
+      return ['plan_import', 'scope_deadline'];
+    }
+
+    function ownerUidIn(wid, a) {
+      return inList(v2Workspace(wid).get('ownerUids', []), a);
+    }
+
+    // mitigation_done approver: an Owner, or the PM / Deputy of the program
+    // (m = its programMeta entry) unless the requester is the PM / Deputy
+    // (Ruling P3-C8, mirror of eligibleWith). a is a non-empty string
+    // (checked by callers).
+    function mitApproverOk(wid, m, a, requester) {
+      return ownerUidIn(wid, a)
+        || (!isPMOrDeputyUid(m, requester) && isPMOrDeputyUid(m, a));
+    }
+
+    function approvalKeys() {
+      return ['workspaceId', 'projectId', 'type', 'scope', 'title', 'payload',
+        'requestedByUid', 'requestedBy', 'approverUid', 'status', 'createdAt',
+        'decidedByUid', 'decidedAt', 'reason', 'reassignLog', 'version',
+        'updatedBy', 'updatedAt'];
+    }
+
+    function approvalCreateOk(wid, pid) {
+      return approvalCreateWith(wid, pid, request.resource.data, v2Project(wid, pid));
+    }
+
+    function approvalCreateWith(wid, pid, n, p) {
+      return n.keys().hasOnly(approvalKeys())
+        && n.get('requestedByUid', null) == request.auth.uid
+        && n.get('requestedBy', request.auth.token.email) == request.auth.token.email
+        && n.get('status', null) == 'Pending'
+        && n.get('createdAt', null) == request.time
+        && n.get('decidedByUid', null) == null
+        && n.get('decidedAt', null) == null
+        && n.get('reason', null) == null
+        && n.get('reassignLog', null) == []
+        && n.get('approverUid', null) is string
+        && n.approverUid.size() > 0
+        && n.approverUid != request.auth.uid
+        && n.get('scope', null) is map
+        && n.scope.get('programId', null) is string
+        && n.scope.programId in p.get('programMeta', {})
+        && approvalKindOk(wid, pid, n, p, n.scope.programId)
+        && canReadProject(wid, pid);
+    }
+
+    function approvalKindOk(wid, pid, n, p, prg) {
+      return (n.get('type', null) in scopeTypes()
+          && ownerUidIn(wid, n.approverUid)
+          && scopeRequesterOk(wid, pid, p, prg, n.scope.get('workstreamId', null)))
+        || (n.get('type', null) == 'mitigation_done'
+          && mitApproverOk(wid, prgMetaOf(p, prg), n.approverUid, request.auth.uid));
+    }
+
+    // The caller is the PM / Deputy of prg (any ws of prg, or none) or the
+    // Sub-PM of ws wsId of prg. The active-member check is canReadProject's.
+    function scopeRequesterOk(wid, pid, p, prg, wsId) {
+      return (isPMIn(p, prg) && (wsId == null || wsInProgram(wid, pid, wsId, prg)))
+        || (wsInProgram(wid, pid, wsId, prg)
+          && v2WsData(wid, pid, wsId).get('leadUid', null) == request.auth.uid);
+    }
+
+    function approvalUpdateOk(wid, pid) {
+      return approvalUpdateWith(wid, pid, changedKeys(), resource.data, request.resource.data);
+    }
+
+    function approvalUpdateWith(wid, pid, ch, o, n) {
+      return o.get('status', null) == 'Pending' && (
+        (n.get('status', null) == 'Pending'
+          && ch.hasOnly(['approverUid', 'reassignLog', 'version', 'updatedBy', 'updatedAt'])
+          && approvalReassignOk(wid, pid, o, n, v2Project(wid, pid)))
+        || (n.get('decidedByUid', null) == request.auth.uid
+          && n.get('decidedAt', null) == request.time
+          && approvalCloseOk(wid, pid, ch, o, n.get('status', null)))
+      );
+    }
+
+    // s1 = the new status. Withdraw: requester only. Decide: see header.
+    function approvalCloseOk(wid, pid, ch, o, s1) {
+      return (s1 == 'Withdrawn'
+          && ch.hasOnly(['status', 'decidedByUid', 'decidedAt', 'version', 'updatedBy', 'updatedAt'])
+          && o.get('requestedByUid', null) == request.auth.uid
+          && (activeMemberDoc(wid) || isWsOwner(wid)))
+        || (s1 in ['Approved', 'Rejected']
+          && ch.hasOnly(['status', 'decidedByUid', 'decidedAt', 'reason', 'version', 'updatedBy', 'updatedAt'])
+          && (reasonOk(request.resource.data)
+            || (s1 == 'Approved' && request.resource.data.get('reason', null) == null))
+          && approvalDeciderOk(wid, pid, o));
+    }
+
+    // Ruling P3-4. The Owner check runs last (an error in the branch before,
+    // e.g. no members doc, still ends here: error || true is true).
+    function approvalDeciderOk(wid, pid, o) {
+      return (o.get('type', null) == 'mitigation_done'
+          && o.get('requestedByUid', null) != request.auth.uid
+          && activeMemberDoc(wid)
+          && (o.get('approverUid', null) == request.auth.uid
+            || pmDecides(prgMetaOf(v2Project(wid, pid), o.scope.get('programId', null)), o)))
+        || isWsOwner(wid);
+    }
+
+    // The caller is the PM / Deputy (m) and the requester is neither.
+    function pmDecides(m, o) {
+      return isPMOrDeputyUid(m, request.auth.uid)
+        && !isPMOrDeputyUid(m, o.get('requestedByUid', null));
+    }
+
+    // Ruling P3-C7: the requester never reassigns their own request (no
+    // Owner exception).
+    function approvalReassignOk(wid, pid, o, n, p) {
+      return o.get('requestedByUid', null) != request.auth.uid
+        && n.get('approverUid', null) is string
+        && n.approverUid.size() > 0
+        && n.approverUid != o.get('requestedByUid', null)
+        && reassignLogOk(o, n, o.get('reassignLog', []), n.get('reassignLog', []))
+        && approverForTypeOk(wid, pid, o, n, prgMetaOf(p, o.scope.get('programId', null)))
+        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid))
+          || isWsOwner(wid));
+    }
+
+    // Exactly one entry prepended (old entries kept as the suffix), by me,
+    // from the old approver to the new one.
+    function reassignLogOk(o, n, ol, nl) {
+      return ol is list && nl is list
+        && nl.size() == ol.size() + 1
+        && (ol.size() == 0 || nl[1:nl.size()] == ol)
+        && nl[0] is map
+        && nl[0].get('byUid', null) == request.auth.uid
+        && nl[0].get('from', null) == o.get('approverUid', null)
+        && nl[0].get('to', null) == n.approverUid;
+    }
+
+    function approverForTypeOk(wid, pid, o, n, m) {
+      return (o.get('type', null) in scopeTypes() && ownerUidIn(wid, n.approverUid))
+        || (o.get('type', null) == 'mitigation_done'
+          && (mitApproverOk(wid, m, n.approverUid, o.get('requestedByUid', null))
+            || (!isPMOrDeputyUid(m, o.get('requestedByUid', null))
+              && leadClaimOk(wid, pid, n.reassignLog[0].get('viaWorkstreamId', null),
+                             o.scope.get('programId', null), n.approverUid))));
+    }
+
+    // a leads ws wsId, a ws of program prg.
+    function leadClaimOk(wid, pid, wsId, prg, a) {
+      return wsInProgram(wid, pid, wsId, prg)
+        && v2WsData(wid, pid, wsId).get('leadUid', null) == a;
+    }
+
+    match /workspaces/{wid}/projects/{pid}/approvals/{reqId} {
+      // get(): 3.
+      allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
+
+      // get(): up to 4.
+      allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionOnCreate() && stampedByMe() && approvalCreateOk(wid, pid);
+
+      // get(): up to 4.
+      allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
+        && versionBumped() && stampedByMe() && approvalUpdateOk(wid, pid);
+
+      // Never deleted (P3-2): Withdrawn / Rejected stay as the record.
+      allow delete: if false;
     }
 
     // ─────── v2: activity (one event per doc, append-only) ───────

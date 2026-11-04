@@ -80,6 +80,21 @@ describe('formatRestorePreview', () => {
     expect(L.join('\n')).not.toMatch(/REFUSED/);
   });
 
+  it('CLI-2b: pending approvals are listed with resolve-or-withdraw advice (P3.1 I2)', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    Object.assign(live.docs.tasks.find((d) => d.id === 't1').data, {
+      status: 'Submitted', closeRequest: { id: 'cr1', outcome: 'Completed', requestedByUid: 'uid2', approverUid: 'uid1' },
+    });
+    const p = plan(live, b);
+    const L = formatRestorePreview(prepOf(p, live), { pid: PID });
+    const i = L.findIndex((l) => l.startsWith('PENDING APPROVALS: 1 Submitted task(s) - resolve or withdraw before restoring'));
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(L[i + 1]).toMatch(/^  t1 .*Completed requested by uid2, approver uid1/);
+    const none = formatRestorePreview(prepOf(plan(makeLive(), b), makeLive()), { pid: PID });
+    expect(none.some((l) => /^Pending approvals: none/.test(l))).toBe(true);
+  });
+
   it('CLI-3: refused history loss prints REFUSED (exit 3) and the lost entry ids, no apply hash', () => {
     const live = makeLive();
     const b = backupOf(live);
@@ -203,12 +218,12 @@ describe('formatRestorePreview', () => {
 
   it('CLI-10: history-loss wording covers entries, removed fields and map keys', () => {
     const live = makeLive();
-    live.docs.tasks.find((d) => d.id === 't2').data.blockerResolutions = { b1: { note: 'one' } };
+    live.docs.tasks.find((d) => d.id === 't2').data.someLog = { b1: { note: 'one' } };
     const b = backupOf(live);
-    tasksOf(b).find((t) => t.id === 't2').blockerResolutions = {};
+    tasksOf(b).find((t) => t.id === 't2').someLog = {};
     const text = formatRestorePreview(prepOf(plan(live, b), live), { pid: PID }).join('\n');
     expect(text).toMatch(/History loss: 1 item in 1 list\/field \(entries, removed fields or map keys\)/);
-    expect(text).toContain('blockerResolutions.b1 (key removed)');
+    expect(text).toContain('someLog.b1 (key removed)');
     expect(text).toContain('REFUSED (exit 3): this restore would delete history (entries, fields or map keys listed above)');
   });
 });
