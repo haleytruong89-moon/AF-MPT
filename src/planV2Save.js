@@ -39,14 +39,14 @@ const KINDS = ['workstreams', 'tasks', 'actions', 'raid', 'decisions'];
 const IGNORED = ['version', 'updatedBy', 'updatedAt', 'viaProgramId', 'viaWorkstreamId'];
 // Project-doc keys the planner never patches: server / ACL fields the App tree does
 // not carry (the shim strips them on read), v2 bookkeeping, frozen v1 copies.
-const META_SKIP = new Set([
+export const META_SKIP = new Set([
   'id', '__v2', 'programMeta', 'memberUids', 'v1Absent', 'programs', 'actionItems', 'decisions',
   'memberIds', 'roles', 'ownerUids', 'deletedAt', 'createdBy', 'createdAt', 'rev', 'writeId',
   'visibility', 'schemaVersion', 'workspaceId', 'version', 'updatedBy', 'updatedAt',
 ]);
 // v2 fields the v1 tree cannot express: kept from the stored doc.
 const KEEP_WS = ['leadUid', 'start', 'end'];
-const KEEP_PROGRAM = ['pmUid', 'deputyUid', 'start', 'end'];
+export const KEEP_PROGRAM = ['pmUid', 'deputyUid', 'start', 'end'];
 const STEP_LISTS = { tasks: ['updates', 'checkIns'], actions: ['updates'] };
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -148,7 +148,7 @@ function mapEntryLists(kind, oldData, data, fn) {
 }
 
 const stampDoc = (kind, oldData, data, uid) => mapEntryLists(kind, oldData, data, (o, n) => stampList(o, n, uid));
-const carryDoc = (kind, oldData, data) => mapEntryLists(kind, oldData, data, carryList);
+export const carryDoc = (kind, oldData, data) => mapEntryLists(kind, oldData, data, carryList);
 
 // Ruling AD (I2): next = [{ id, data }] in tree order. When the stored docs that
 // remain keep their relative order (non-decreasing stored `order`: concurrent
@@ -184,7 +184,7 @@ const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
 const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 // Keep stored v2 fields the v1 tree cannot express (roles, stored resolutions).
-function overlay(kind, stored, data) {
+export function overlay(kind, stored, data) {
   const out = { ...data };
   if (kind === 'workstreams') {
     for (const k of KEEP_WS) if (hasOwn(stored, k)) out[k] = stored[k];
