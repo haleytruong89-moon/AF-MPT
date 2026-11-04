@@ -112,6 +112,20 @@ export async function prepareRestore(db, { pid, backup, backupName, backupSha256
 const issueLines = (label, list) => (list.length ? [`${label}:`, ...list.map((i) => `  ${i.code}: ${i.detail}`)] : [`${label}: none`]);
 const show = (v) => (v === null || v === undefined ? '-' : JSON.stringify(v));
 const trunc = (s, n = 80) => (s.length > n ? `${s.slice(0, n)}...` : s);
+const KEY_FIELDS = ['status', 'end', 'pic'];
+// Per op, the key fields whose value changes: [{ kind, id, changes: [{ field, from, to }] }].
+function keyChanges(prep) {
+  const out = [];
+  for (const o of prep.ops || []) {
+    const old = o.op === 'update' ? arr(prep.live?.docs?.[o.kind]).find((d) => d.id === o.id)?.data || {} : {};
+    const changes = KEY_FIELDS
+      .filter((f) => (o.op === 'create' ? o.data?.[f] != null : !isDeepStrictEqual(old[f], o.data?.[f])))
+      .map((f) => ({ field: f, from: old[f] ?? null, to: o.data?.[f] ?? null }));
+    if (changes.length) out.push({ kind: o.kind, id: o.id, changes });
+  }
+  return out;
+}
+const cell = (v) => (v === null || v === undefined ? '-' : typeof v === 'string' ? v : JSON.stringify(v));
 
 // prep = prepareRestore result; backupPath = the --backup path as given (for the apply line). -> string[].
 export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
@@ -137,7 +151,8 @@ export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
   } else L.push('Credit loss: none');
   if (r.historyLost.length) {
     const n = r.historyLost.reduce((s, h) => s + h.entries.length, 0);
-    L.push(`History loss: ${n} entr${n === 1 ? 'y' : 'ies'} in ${r.historyLost.length} list(s)${prep.allowHistoryLoss ? ' (allowed by --allow-history-loss; the snapshot keeps them)' : ''}`);
+    const m = r.historyLost.length;
+    L.push(`History loss: ${n} item${n === 1 ? '' : 's'} in ${m} ${m === 1 ? 'list/field' : 'lists/fields'} (entries, removed fields or map keys)${prep.allowHistoryLoss ? ' (allowed by --allow-history-loss; the snapshot keeps them)' : ''}`);
     for (const h of r.historyLost) {
       L.push(`  ${h.kind}/${h.id} ${h.list}:`);
       for (const e of h.entries) L.push(`    ${e.id ?? '(no id)'} ${show(e.preview)}`);
@@ -147,6 +162,11 @@ export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
     L.push('Edited entries (same id, content differs; not blocking):');
     for (const h of r.editedEntries) L.push(`  ${h.kind}/${h.id} ${h.list}: ${h.entries.map((e) => e.id ?? '(no id)').join(', ')}`);
   }
+  const kc = keyChanges(prep);
+  if (kc.length) {
+    L.push('Key changes (status / end / pic):');
+    for (const k of kc) L.push(`  ${k.kind}/${k.id}: ${k.changes.map((c) => `${c.field} ${show(c.from)} -> ${show(c.to)}`).join('; ')}`);
+  } else L.push('Key changes (status / end / pic): none');
   const removedRows = arr(r.fieldChanges).filter((f) => f.removed.length);
   if (removedRows.length) {
     for (const f of removedRows) L.push(`Fields removed: ${f.kind}/${f.id}: ${f.removed.join(', ')}`);
@@ -168,7 +188,7 @@ export function formatRestorePreview(prep, { pid, backupPath = null } = {}) {
     L.push('MIGRATION RECORD EXISTS: after this restore, a later p2-migrate --rollback reports these docs as v2 edits and needs --force-with-report; it returns to the frozen pre-migration v1 tree, not to this restore.');
   }
   if (prep.refused) {
-    L.push('REFUSED (exit 3): this restore would delete history entries (listed above). Re-run the preview with --allow-history-loss only after HOD approves the loss.');
+    L.push('REFUSED (exit 3): this restore would delete history (entries, fields or map keys listed above). Re-run the preview with --allow-history-loss only after HOD approves the loss.');
   } else if (prep.mode === 'restore') {
     const flag = prep.allowHistoryLoss ? ' --allow-history-loss' : '';
     L.push(`Plan hash:   ${prep.planHash}  (apply with node scripts/p2-restore.mjs ${pid} --backup ${backupPath ?? prep.backupName ?? '<file>'}${flag} --apply --expect ${prep.planHash})`);
@@ -181,6 +201,15 @@ export function restorePreviewSheets(prep, { pid, backupPath = null } = {}) {
   const r = prep.report;
   const Summary = formatRestorePreview(prep, { pid, backupPath }).map((line) => ({ Line: line }));
   const fieldsOf = (o) => arr(r.fieldChanges).find((f) => f.kind === o.kind && f.id === o.id);
+  const kcBy = new Map(keyChanges(prep).map((k) => [`${k.kind}/${k.id}`, k.changes]));
+  const keyCells = (o) => {
+    const ch = kcBy.get(`${o.kind}/${o.id}`) || [];
+    const at = (f) => {
+      const c = ch.find((x) => x.field === f);
+      return c ? `${cell(c.from)} -> ${cell(c.to)}` : '';
+    };
+    return { Status: at('status'), End: at('end'), PIC: at('pic') };
+  };
   const changedCell = (o) => {
     if (o.op === 'create') return '(new doc)';
     const f = fieldsOf(o);
@@ -190,7 +219,7 @@ export function restorePreviewSheets(prep, { pid, backupPath = null } = {}) {
     const d = arr(prep.live?.docs?.[kind]).find((x) => x.id === id);
     return d?.data?.name ?? d?.data?.title ?? d?.data?.text ?? '';
   };
-  const Ops = prep.ops.map((o) => ({ Kind: o.kind, Op: o.op, Id: o.id, Name: o.data?.name ?? o.data?.title ?? nameOf(o.kind, o.id), 'Expect version': o.expectVersion ?? '', 'Changed fields': changedCell(o) }));
+  const Ops = prep.ops.map((o) => ({ Kind: o.kind, Op: o.op, Id: o.id, Name: o.data?.name ?? o.data?.title ?? nameOf(o.kind, o.id), 'Expect version': o.expectVersion ?? '', 'Changed fields': changedCell(o), ...keyCells(o) }));
   const Retained = r.retained.map((x) => ({ Kind: x.kind, Id: x.id, Name: x.name ?? '', 'Live status': x.liveStatus ?? '', 'New status': x.newStatus ?? '' }));
   const HistoryLoss = r.historyLost.flatMap((h) => h.entries.map((e) => ({ Kind: h.kind, Doc: h.id, List: h.list, 'Entry id': e.id ?? '', Preview: e.preview ?? '' })));
   const Changes = [
@@ -305,12 +334,14 @@ export async function applyRestore(db, {
 
   const base = `${PROJECTS}/${pid}`;
   const eventId = `restore_${prep.planHash}`;
+  const expected = expectedAfter(prep.live, prep);
   try {
     await db.runTransaction(async (tx) => {
       const { live } = await readLive(db, pid, tx, Timestamp);
       if (!live || liveFingerprint(live) !== prep.fingerprint) {
         throw fail('STATE_CHANGED', `The project changed since the preview (${live ? 'live fingerprint differs' : 'project doc is gone'}). Nothing was written; re-run the preview.`);
       }
+      if (hooks.inTx) await hooks.inTx();
       const ts = FieldValue.serverTimestamp();
       for (const op of prep.ops) {
         const version = op.op === 'create' ? 1 : op.expectVersion + 1;
@@ -343,12 +374,22 @@ export async function applyRestore(db, {
         by: RESTORE_STAMP,
       });
     });
+    if (hooks.afterCommit) await hooks.afterCommit();
   } catch (e) {
-    // Nothing committed: the snapshot file describes a restore that never happened.
-    e.snapshotVoid = true;
+    // A commit can land while the client sees an error (UNAVAILABLE / DEADLINE_EXCEEDED,
+    // or a retry that then throws STATE_CHANGED). The record is written in the same
+    // transaction, so it decides: present = committed; absent + STATE_CHANGED = void.
+    let recordExists = null;
+    try { recordExists = (await db.doc(RESTORES_PATH(restoreId)).get()).exists; } catch { recordExists = null; }
+    if (recordExists === true) {
+      const verify = await verifyRestore(db, pid, expected, Timestamp);
+      return { mode: 'restore', restoreId, written: writes, counts, verify, ambiguous: true, error: e.message || String(e) };
+    }
+    if (recordExists === false && e.code === 'STATE_CHANGED') e.snapshotVoid = true;
+    else e.outcomeUnknown = true;
     throw e;
   }
-  const verify = await verifyRestore(db, pid, expectedAfter(prep.live, prep), Timestamp);
+  const verify = await verifyRestore(db, pid, expected, Timestamp);
   return { mode: 'restore', restoreId, written: writes, counts, verify };
 }
 
@@ -395,6 +436,8 @@ async function main() {
       const voidPath = snapshotPath.replace(/\.json$/, '-VOID.json');
       fs.renameSync(snapshotPath, voidPath);
       console.error(`Snapshot is VOID (renamed to ${voidPath}): the transaction did not commit, nothing was restored.`);
+    } else if (e.outcomeUnknown) {
+      console.error(`Outcome unknown: check the record ${RESTORES_PATH(`${o.pid}_${o.expect}`)} (present = committed). Snapshot kept: ${snapshotPath}`);
     }
     process.exit(restoreExitCode(e));
   }
@@ -402,6 +445,7 @@ async function main() {
     console.log('Nothing to restore (noop). Nothing was written.');
     process.exit(0);
   }
+  if (r.ambiguous) console.log(`Committed (ambiguous response: ${r.error}); the restore record exists.`);
   console.log(`Restored:    create ${r.counts.create}, update ${r.counts.update} (record ${RESTORES_PATH(r.restoreId)})`);
   console.log(`Verify:      ${r.verify.ok ? 'OK' : 'MISMATCH'}`);
   for (const d of r.verify.diffs.slice(0, 30)) console.log(`  differs: ${d}`);

@@ -365,6 +365,39 @@ describe('P2.4b restore preview (p2-restore) against the emulator', () => {
     expect((await prepareRollback(db, { pid: PID, force: true, deleteDocs: false })).refused).toBe(false);
   });
 
+  it('RS-9: the restore record decides an ambiguous outcome: present = committed (not void); absent = void only on STATE_CHANGED', async () => {
+    const backup = await seedApply();
+    const p = await prep(backup);
+    const rid = restoreIdOf(PID, p.planHash);
+    const boom = (code) => Object.assign(new Error(`simulated ${code}`), { code });
+
+    // (c) any other error with no record: outcome unknown, snapshot NOT void, nothing written.
+    const before = await dumpAll();
+    const c = await apply(backup, { expectHash: p.planHash, hooks: { inTx: async () => { throw boom('SIMULATED'); } } }).catch((e) => e);
+    expect(c).toMatchObject({ code: 'SIMULATED', outcomeUnknown: true });
+    expect(c.snapshotVoid).toBeFalsy();
+    expect(restoreExitCode(c)).toBe(1);
+    expect(await dumpAll()).toEqual(before);
+
+    // (b) the record exists (a hook creates it, then throws STATE_CHANGED as a retry would):
+    // treated as committed, never void; verify reports what is really there.
+    const b = await apply(backup, {
+      expectHash: p.planHash,
+      hooks: { inTx: async () => { await db.doc(RESTORES_PATH(rid)).set({ pid: PID, planHash: p.planHash }); throw boom('STATE_CHANGED'); } },
+    });
+    expect(b).toMatchObject({ mode: 'restore', restoreId: rid, ambiguous: true });
+    expect(b.snapshotVoid).toBeUndefined();
+    expect(b.verify.ok).toBe(false); // the hook threw before the writes
+    await db.doc(RESTORES_PATH(rid)).delete();
+
+    // (a) the commit lands, then the client sees UNAVAILABLE: committed, verify OK, not void.
+    const a = await apply(backup, { expectHash: p.planHash, hooks: { afterCommit: async () => { throw boom('UNAVAILABLE'); } } });
+    expect(a).toMatchObject({ mode: 'restore', restoreId: rid, ambiguous: true, verify: { ok: true, diffs: [] } });
+    expect(restoreExitCode(a)).toBe(0);
+    expect((await db.doc(RESTORES_PATH(rid)).get()).data()).toMatchObject({ pid: PID, by: RESTORE_STAMP });
+    expect((await db.doc(`${BASE}/tasks/t9`).get()).data().status).toBe('Dropped');
+  });
+
   it('RS-5: a rolled-back project (schemaVersion 1) -> BLOCKED not-v2, nothing written', async () => {
     const backup = await seedApply();
     await db.doc(BASE).update({ schemaVersion: 1 });

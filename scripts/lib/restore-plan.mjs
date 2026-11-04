@@ -26,7 +26,8 @@ export const MAX_TX_OPS = 450;
 
 const STAMPS = ['version', 'updatedBy', 'updatedAt', 'viaProgramId', 'viaWorkstreamId'];
 const RETAINED_KIND = { workstream: 'workstreams', task: 'tasks', action: 'actions', decision: 'decisions' };
-const ENTRY_LISTS = { tasks: ['updates', 'checkIns'], actions: ['updates'] };
+// P3 close requests are history too (final review): shrinking the list is a loss.
+const ENTRY_LISTS = { tasks: ['updates', 'checkIns', 'closeRequestHistory'], actions: ['updates'] };
 const PREVIEW_CHARS = 60;
 const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
 const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
@@ -156,6 +157,14 @@ function fieldChanges(kind, id, old, fin, out, list) {
       ? describeEntries(old[k])
       : Object.keys(old[k]).sort().map((x) => ({ id: x, preview: preview(old[k][x]) }));
     out.historyLost.push({ kind, id, list: `${k} (field removed)`, entries });
+  }
+  // A kept non-empty map (e.g. blockerResolutions) that loses a key loses history.
+  for (const k of Object.keys(old).sort()) {
+    if (checked.has(k) || !isObj(old[k]) || !isObj(fin[k])) continue;
+    for (const key of Object.keys(old[k]).sort()) {
+      if (hasOwn(fin[k], key)) continue;
+      out.historyLost.push({ kind, id, list: `${k}.${key} (key removed)`, entries: [{ id: key, preview: preview(old[k][key]) }] });
+    }
   }
 }
 

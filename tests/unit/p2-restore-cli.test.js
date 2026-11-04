@@ -186,4 +186,29 @@ describe('formatRestorePreview', () => {
     t1.updatedBy = 'uidZ';
     expect(diffRestore(actual, exp).find((d) => d.startsWith('tasks/t1'))).toMatch(/edited after restore by uidZ/);
   });
+
+  it('CLI-9: status / end / pic changes show from -> to in the preview and the Ops sheet', () => {
+    const live = makeLive();
+    const b = backupOf(live);
+    Object.assign(tasksOf(b).find((t) => t.id === 't1'), { status: 'In Progress', end: '2026-02-28', pic: 'Bob' });
+    const p = plan(live, b);
+    const L = formatRestorePreview(prepOf(p, live), { pid: PID });
+    expect(L).toContain('Key changes (status / end / pic):');
+    expect(L).toContain('  tasks/t1: status "Not Started" -> "In Progress"; end "2026-01-31" -> "2026-02-28"; pic "Alice Nguyen" -> "Bob"');
+    const row = restorePreviewSheets(prepOf(p, live), { pid: PID }).Ops.find((o) => o.Id === 't1');
+    expect(row).toMatchObject({ Status: 'Not Started -> In Progress', End: '2026-01-31 -> 2026-02-28', PIC: 'Alice Nguyen -> Bob' });
+    const none = formatRestorePreview(prepOf(plan(makeLive(), backupOf(makeLive())), live), { pid: PID });
+    expect(none).toContain('Key changes (status / end / pic): none');
+  });
+
+  it('CLI-10: history-loss wording covers entries, removed fields and map keys', () => {
+    const live = makeLive();
+    live.docs.tasks.find((d) => d.id === 't2').data.blockerResolutions = { b1: { note: 'one' } };
+    const b = backupOf(live);
+    tasksOf(b).find((t) => t.id === 't2').blockerResolutions = {};
+    const text = formatRestorePreview(prepOf(plan(live, b), live), { pid: PID }).join('\n');
+    expect(text).toMatch(/History loss: 1 item in 1 list\/field \(entries, removed fields or map keys\)/);
+    expect(text).toContain('blockerResolutions.b1 (key removed)');
+    expect(text).toContain('REFUSED (exit 3): this restore would delete history (entries, fields or map keys listed above)');
+  });
 });

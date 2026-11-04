@@ -475,8 +475,9 @@ describe('planRestore', () => {
       removed: ['blockerResolutions', 'closeRequestHistory', 'emptyList', 'emptyMap', 'flag'],
     }]);
     expect(p.report.historyLost).toEqual([
+      // closeRequestHistory is an entry list (checked on its own), so it is not "(field removed)".
+      { kind: 'tasks', id: 't2', list: 'closeRequestHistory', entries: [{ id: 'c1', preview: 'asked to close' }] },
       { kind: 'tasks', id: 't2', list: 'blockerResolutions (field removed)', entries: [{ id: 'b1', preview: 'resolved' }] },
-      { kind: 'tasks', id: 't2', list: 'closeRequestHistory (field removed)', entries: [{ id: 'c1', preview: 'asked to close' }] },
     ]);
     expect(p.refused).toBe('history-loss');
     const allowed = plan(live, b, { allowHistoryLoss: true });
@@ -498,5 +499,35 @@ describe('planRestore', () => {
     const p = plan(live, b);
     expect(p.mode).toBe('blocked');
     expect(p.blocked.map((x) => x.code)).toEqual(['dotted-field']);
+  });
+
+  it('P-24: a shrinking closeRequestHistory is history loss (entry list, like updates)', () => {
+    const live = makeLive();
+    doc(live, 'tasks', 't2').closeRequestHistory = [{ id: 'c1', note: 'asked' }, { id: 'c2', note: 'again' }];
+    const b = backupOf(live);
+    task(b, 't2').closeRequestHistory = [{ id: 'c1', note: 'asked' }];
+    const p = plan(live, b);
+    expect(p.report.historyLost).toEqual([
+      { kind: 'tasks', id: 't2', list: 'closeRequestHistory', entries: [{ id: 'c2', preview: 'again' }] },
+    ]);
+    expect(p.refused).toBe('history-loss');
+  });
+
+  it('P-25: losing a key of a kept non-empty map is history loss, listed as <field>.<key> (key removed)', () => {
+    const live = makeLive();
+    doc(live, 'tasks', 't2').blockerResolutions = { b1: { note: 'one' }, b2: { note: 'two' } };
+    const b = backupOf(live);
+    task(b, 't2').blockerResolutions = { b1: { note: 'one' }, b3: { note: 'new' } };
+    const p = plan(live, b);
+    expect(p.report.historyLost).toEqual([
+      { kind: 'tasks', id: 't2', list: 'blockerResolutions.b2 (key removed)', entries: [{ id: 'b2', preview: 'two' }] },
+    ]);
+    expect(p.refused).toBe('history-loss');
+    // Adding or editing keys only is not a loss.
+    const live2 = makeLive();
+    doc(live2, 'tasks', 't2').blockerResolutions = { b1: { note: 'one' } };
+    const b2 = backupOf(live2);
+    task(b2, 't2').blockerResolutions = { b1: { note: 'edited' }, b4: { note: 'x' } };
+    expect(plan(live2, b2).report.historyLost).toEqual([]);
   });
 });
