@@ -1117,26 +1117,33 @@ service cloud.firestore {
     //   approverUid, status, createdAt, decidedByUid, decidedAt, reason,
     //   reassignLog: [], version, updatedBy, updatedAt }.
     // Kinds: plan_import / scope_deadline (scopeTypes) and mitigation_done.
-    // Create (requester == caller, Pending, createdAt == server time, not
-    //   decided, empty reassignLog, approver != caller, scope.programId in
+    // Create (keys within the doc shape above; requester == caller,
+    //   requestedBy (if present) == caller email, Pending, createdAt ==
+    //   server time, decidedByUid / decidedAt / reason null or absent, empty
+    //   reassignLog, approver a non-empty string != caller, scope.programId in
     //   programMeta, caller can read the project):
     //   plan_import / scope_deadline: approver in ownerUids (P3-20); caller
     //     is the PM / Deputy of scope.programId (a scope.workstreamId, if
     //     any, must be a ws of that program) or the Sub-PM of
     //     scope.workstreamId, a ws of scope.programId.
     //   mitigation_done (P3-9): any project reader; approver = the PM /
-    //     Deputy of scope.programId or an Owner.
+    //     Deputy of scope.programId or an Owner. Ruling P3-C8 (mirror of
+    //     eligibleWith): when the requester is that PM / Deputy, the approver
+    //     must be an Owner (not their PM / Deputy partner).
     // Update, only while Pending (a decided request is final):
     //   withdraw: requester only, -> Withdrawn, stamped decidedByUid == me,
     //     decidedAt == server time.
-    //   decide (P3-4): -> Approved / Rejected (a non-empty reason), same
-    //     stamp. plan_import / scope_deadline: an Owner. mitigation_done: the
+    //   decide (P3-4): -> Approved / Rejected, same stamp. Rejected needs a
+    //     non-empty reason; on Approved a reason is null / absent or a
+    //     non-empty string. plan_import / scope_deadline: an Owner. mitigation_done: the
     //     named approver, or the PM / Deputy of the program when the requester
     //     is neither of them, or an Owner. Never the requester, except an
     //     Owner (Ruling P3-C3). A non-Owner decider is an active member.
     //   reassign: stays Pending; caller = the PM / Deputy of the program or
-    //     an Owner; new approver != requester and valid for the type as on
-    //     create, plus (mitigation_done) the Sub-PM of a ws of the program
+    //     an Owner, and never the requester (Ruling P3-C7, no Owner
+    //     exception); new approver a non-empty string != requester and valid
+    //     for the type as on create (incl. P3-C8), plus (mitigation_done,
+    //     requester not the PM / Deputy) the Sub-PM of a ws of the program
     //     named by the claim reassignLog[0].viaWorkstreamId; reassignLog gets
     //     exactly one entry prepended { byUid: me, from: old approver, to: new
     //     approver } (old entries kept as the suffix).
@@ -1157,10 +1164,20 @@ service cloud.firestore {
       return inList(v2Workspace(wid).get('ownerUids', []), a);
     }
 
-    // mitigation_done approver (create): the PM / Deputy of the program (m =
-    // its programMeta entry) or an Owner. a is a string (checked by callers).
-    function mitApproverOk(wid, m, a) {
-      return isPMOrDeputyUid(m, a) || ownerUidIn(wid, a);
+    // mitigation_done approver: an Owner, or the PM / Deputy of the program
+    // (m = its programMeta entry) unless the requester is the PM / Deputy
+    // (Ruling P3-C8, mirror of eligibleWith). a is a non-empty string
+    // (checked by callers).
+    function mitApproverOk(wid, m, a, requester) {
+      return ownerUidIn(wid, a)
+        || (!isPMOrDeputyUid(m, requester) && isPMOrDeputyUid(m, a));
+    }
+
+    function approvalKeys() {
+      return ['workspaceId', 'projectId', 'type', 'scope', 'title', 'payload',
+        'requestedByUid', 'requestedBy', 'approverUid', 'status', 'createdAt',
+        'decidedByUid', 'decidedAt', 'reason', 'reassignLog', 'version',
+        'updatedBy', 'updatedAt'];
     }
 
     function approvalCreateOk(wid, pid) {
@@ -1168,12 +1185,17 @@ service cloud.firestore {
     }
 
     function approvalCreateWith(wid, pid, n, p) {
-      return n.get('requestedByUid', null) == request.auth.uid
+      return n.keys().hasOnly(approvalKeys())
+        && n.get('requestedByUid', null) == request.auth.uid
+        && n.get('requestedBy', request.auth.token.email) == request.auth.token.email
         && n.get('status', null) == 'Pending'
         && n.get('createdAt', null) == request.time
         && n.get('decidedByUid', null) == null
+        && n.get('decidedAt', null) == null
+        && n.get('reason', null) == null
         && n.get('reassignLog', null) == []
         && n.get('approverUid', null) is string
+        && n.approverUid.size() > 0
         && n.approverUid != request.auth.uid
         && n.get('scope', null) is map
         && n.scope.get('programId', null) is string
@@ -1187,7 +1209,7 @@ service cloud.firestore {
           && ownerUidIn(wid, n.approverUid)
           && scopeRequesterOk(wid, pid, p, prg, n.scope.get('workstreamId', null)))
         || (n.get('type', null) == 'mitigation_done'
-          && mitApproverOk(wid, prgMetaOf(p, prg), n.approverUid));
+          && mitApproverOk(wid, prgMetaOf(p, prg), n.approverUid, request.auth.uid));
     }
 
     // The caller is the PM / Deputy of prg (any ws of prg, or none) or the
@@ -1221,7 +1243,8 @@ service cloud.firestore {
           && (activeMemberDoc(wid) || isWsOwner(wid)))
         || (s1 in ['Approved', 'Rejected']
           && ch.hasOnly(['status', 'decidedByUid', 'decidedAt', 'reason', 'version', 'updatedBy', 'updatedAt'])
-          && (s1 == 'Approved' || reasonOk(request.resource.data))
+          && (reasonOk(request.resource.data)
+            || (s1 == 'Approved' && request.resource.data.get('reason', null) == null))
           && approvalDeciderOk(wid, pid, o));
     }
 
@@ -1242,8 +1265,12 @@ service cloud.firestore {
         && !isPMOrDeputyUid(m, o.get('requestedByUid', null));
     }
 
+    // Ruling P3-C7: the requester never reassigns their own request (no
+    // Owner exception).
     function approvalReassignOk(wid, pid, o, n, p) {
-      return n.get('approverUid', null) is string
+      return o.get('requestedByUid', null) != request.auth.uid
+        && n.get('approverUid', null) is string
+        && n.approverUid.size() > 0
         && n.approverUid != o.get('requestedByUid', null)
         && reassignLogOk(o, n, o.get('reassignLog', []), n.get('reassignLog', []))
         && approverForTypeOk(wid, pid, o, n, prgMetaOf(p, o.scope.get('programId', null)))
@@ -1266,9 +1293,10 @@ service cloud.firestore {
     function approverForTypeOk(wid, pid, o, n, m) {
       return (o.get('type', null) in scopeTypes() && ownerUidIn(wid, n.approverUid))
         || (o.get('type', null) == 'mitigation_done'
-          && (mitApproverOk(wid, m, n.approverUid)
-            || leadClaimOk(wid, pid, n.reassignLog[0].get('viaWorkstreamId', null),
-                           o.scope.get('programId', null), n.approverUid)));
+          && (mitApproverOk(wid, m, n.approverUid, o.get('requestedByUid', null))
+            || (!isPMOrDeputyUid(m, o.get('requestedByUid', null))
+              && leadClaimOk(wid, pid, n.reassignLog[0].get('viaWorkstreamId', null),
+                             o.scope.get('programId', null), n.approverUid))));
     }
 
     // a leads ws wsId, a ws of program prg.
