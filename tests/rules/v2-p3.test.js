@@ -484,7 +484,7 @@ describe('P3 approvals requests', () => {
     scope: type === 'mitigation_done' ? { programId: 'prg1' } : { programId: 'prg1', workstreamId: 'w1' },
     title: 'Request', payload: { k: 1 },
     requestedByUid: requester.uid, requestedBy: requester.email, approverUid: approver.uid,
-    status: 'Pending', createdAt: '2026-10-24T00:00:00Z',
+    status: 'Pending', // createdAt: set by create() (server time) or absent on seeds
     decidedByUid: null, decidedAt: null, reason: null, reassignLog: [],
     version: 1, updatedBy: requester.uid, ...over,
   });
