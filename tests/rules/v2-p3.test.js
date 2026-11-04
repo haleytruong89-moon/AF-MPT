@@ -211,6 +211,18 @@ describe('P3 task close transitions', () => {
     await assertSucceeds(up(PM, T1, ra(PM, DEPUTY)));
   });
 
+  it('P3-10b P3-C7: the requester never reassigns own close request; another PM-level decider may', async () => {
+    const OWNER2 = { uid: 'u_owner2', email: 'owner2@smartosc.com' };
+    await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid, OWNER2.uid], workspaceOwner: OWNER.email });
+    // PM's own task, submitted to OWNER: PM (requester, r.pm) reassigning to OWNER2 is denied.
+    const T8 = `${P1}/tasks/t8`;
+    await seedDoc(T8, submitted(PM, OWNER, { picUid: PM.uid }));
+    const ra = (u, to) => ({ closeRequest: cr(PM, to), closeRequestHistory: [hist('Reassigned', u)] });
+    await assertFails(up(PM, T8, ra(PM, OWNER2)));
+    // DEPUTY (r.pm, not the requester) reassigning the same request: allowed.
+    await assertSucceeds(up(DEPUTY, T8, ra(DEPUTY, OWNER2)));
+  });
+
   it('P3-11 OWNER sets Completed without approvedByUid: denied; with approvedByUid OWNER: allowed', async () => {
     await assertFails(up(OWNER, T1, { status: 'Completed' }));
     await assertFails(up(OWNER, T1, { status: 'Completed', approvedByUid: PM.uid }));
