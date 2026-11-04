@@ -769,11 +769,11 @@ export async function openDb(keyPath) {
     process.exit(1);
   }
   const { initializeApp, cert } = await import('firebase-admin/app');
-  const { getFirestore, FieldValue, Timestamp } = await import('firebase-admin/firestore');
+  const { getFirestore, FieldValue, FieldPath, Timestamp } = await import('firebase-admin/firestore');
   let key;
   try { key = JSON.parse(fs.readFileSync(keyPath, 'utf8')); } catch { console.error('Invalid service-account key file'); process.exit(1); }
   initializeApp({ credential: cert(key) });
-  return { db: getFirestore(), FieldValue, Timestamp };
+  return { db: getFirestore(), FieldValue, FieldPath, Timestamp };
 }
 
 export function nameLookup(members) {
