@@ -32,6 +32,7 @@ import { RolePicker } from './components/RolePicker';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
+  focusRoleRows, mindNodeRoleText,
 } from './roleAssign';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
@@ -6536,7 +6537,9 @@ function buildMindTree(project, collapsed) {
   return mk(project, 'project', programs);
 }
 
-function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs }) {
+function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles }) {
+  // Role assignment: v2 projects show PM / Sub-PM on nodes; changes go through the Roles modal.
+  const roleText = (n) => (nameOf ? mindNodeRoleText(roles, n.kind, n.id, nameOf) : null);
   // Filter project if scoping to a program
   const scopedProject = useMemo(() => {
     if (!scopeProgramId) return project;
@@ -6733,6 +6736,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       return [
         { label: 'Add work stream', icon: <Plus size={13} />, onClick: () => actAddWorkstream(pg) },
         { label: (node.isCollapsed ? 'Expand' : 'Collapse'), icon: node.isCollapsed ? <ChevronDown size={13} /> : <ChevronRight size={13} />, onClick: () => toggle(node.id) },
+        ...(roles && onOpenRoles ? [{ label: 'Roles (PM, Deputy)…', icon: <Users size={13} />, onClick: () => onOpenRoles({ programId: pg.id }) }] : []),
         { separator: true },
         { label: 'Rename program', icon: <Edit2 size={13} />, onClick: () => actRename('program', pg) },
         { label: 'Delete program', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('program', pg) },
@@ -6745,6 +6749,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       return [
         { label: 'Add task', icon: <Plus size={13} />, onClick: () => actAddTask(pg, ws) },
         { label: (node.isCollapsed ? 'Expand' : 'Collapse'), icon: node.isCollapsed ? <ChevronDown size={13} /> : <ChevronRight size={13} />, onClick: () => toggle(node.id) },
+        ...(roles && onOpenRoles && pg ? [{ label: 'Roles (Sub-PM)…', icon: <Users size={13} />, onClick: () => onOpenRoles({ programId: pg.id, wsId: ws.id }) }] : []),
         { separator: true },
         { label: 'Rename work stream', icon: <Edit2 size={13} />, onClick: () => actRename('workstream', pg, ws) },
         { label: 'Delete work stream', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('workstream', pg, ws) },
@@ -6793,6 +6798,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
                   onTaskClick={onTaskClick}
                   selectedTaskId={selectedTaskId}
                   onOpenMenu={openMenu}
+                  roleText={roleText(n)}
                 />
               ));
             })()}
@@ -6809,7 +6815,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   );
 }
 
-function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpenMenu }) {
+function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpenMenu, roleText = null }) {
   const isTask = n.kind === 'task';
   const isSelected = isTask && n.data.id === selectedTaskId;
   const isDropped = isTask && n.data.status === 'Dropped';
@@ -6832,7 +6838,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
   const truncate = (s, m) => !s ? '' : (s.length > m ? s.slice(0, m - 1) + '…' : s);
   const sub = isTask
     ? `${STATUS_LABEL[n.data.status || 'Planned']}${n.data.pic ? ' · ' + n.data.pic : ''}`
-    : `${r.pct}% · ${r.done}/${r.total} task${r.total === 1 ? '' : 's'}${r.dropped ? ' · ' + r.dropped + ' dropped' : ''}`;
+    : `${roleText ? roleText + ' · ' : ''}${r.pct}% · ${r.done}/${r.total} task${r.total === 1 ? '' : 's'}${r.dropped ? ' · ' + r.dropped + ' dropped' : ''}`;
 
   const hasMenu = (n.kind === 'project' || n.kind === 'program' || n.kind === 'workstream');
   const opacity = isDropped ? 0.55 : 1;
@@ -6857,7 +6863,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
         <text x={isTask && !isDropped ? 14 : 12} y="20" fontSize="13" fontWeight="500" fill={fg}
           textDecoration={isDropped ? 'line-through' : undefined}
           style={{ pointerEvents: 'none', userSelect: 'none' }}>{truncate(label, 28)}</text>
-        <text x={isTask && !isDropped ? 14 : 12} y="36" fontSize="10.5" fill={TOK.muted} style={{ pointerEvents: 'none', userSelect: 'none' }}>{truncate(sub, 32)}</text>
+        <text x={isTask && !isDropped ? 14 : 12} y="36" fontSize="10.5" fill={TOK.muted} style={{ pointerEvents: 'none', userSelect: 'none' }}>{truncate(sub, roleText ? 36 : 32)}</text>
         {!isTask && (
           <>
             <rect x="12" y="43" width={NODE_W - 40} height="4" rx="2" fill="rgba(0,0,0,0.06)" />
@@ -14103,7 +14109,7 @@ export default function App() {
                   showToast={showToast}
                 />
               )}
-              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
+              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
@@ -14269,6 +14275,7 @@ export default function App() {
             me={meValue}
             people={rolePeople}
             onChangeRole={(c) => changeRole(project.id, c)}
+            focus={typeof showRoles === 'object' ? showRoles : null}
             onClose={() => setShowRoles(false)}
           />
         )}
@@ -14426,11 +14433,13 @@ export default function App() {
 
 // Role assignment: the whole project's PM / Deputy / Sub-PM in one table (spec §6.2).
 // Same pickers and permissions as the Outline headers; every reader can open it.
-function RolesModal({ project, roles, me, people = [], onChangeRole, onClose }) {
+function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose }) {
+  // focus ({ programId, wsId? }) comes from a Mind map node menu; "Show all" clears it.
+  const [scope, setScope] = useState(focus);
   const [blankOnly, setBlankOnly] = useState(false);
   const [inactiveOnly, setInactiveOnly] = useState(false);
   const v2 = !!(project?.__v2 && roles && me);
-  const rows = useMemo(() => (v2 ? rowsForRoles(project, roles) : []), [v2, project, roles]);
+  const rows = useMemo(() => (v2 ? focusRoleRows(rowsForRoles(project, roles), scope) : []), [v2, project, roles, scope]);
   const shown = useMemo(() => {
     if (!blankOnly && !inactiveOnly) return rows;
     const uidsOf = (r) => (r.kind === 'program' ? [r.pmUid, r.deputyUid] : [r.leadUid]);
@@ -14460,6 +14469,7 @@ function RolesModal({ project, roles, me, people = [], onChangeRole, onClose }) 
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
             {check(blankOnly, setBlankOnly, 'Blank roles only')}
             {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}
+            {scope && <Btn size="sm" variant="ghost" onClick={() => setScope(null)}>Show all</Btn>}
           </div>
           {shown.length === 0 ? (
             <p style={{ margin: 0, fontSize: 12, color: TOK.muted }}>No roles match these filters.</p>
