@@ -58,7 +58,9 @@ Principles (HOD approved): each level assigns the level directly below; the Owne
 - Blank shows as `— (PM decides)` / `— (Owner decides)` so people understand where approval goes.
 - An inactive person shows their name with an `inactive` badge.
 
-### 6.2 Project Settings → Roles tab (v2 projects)
+### 6.2 Roles window (v2 projects)
+
+Built as a `Roles…` item in the project menu next to `Project settings…` (Project Settings is Owner-only; PMs need the table too).
 
 - One table: each program row (PM, Deputy), its workstreams indented under it (Sub-PM).
 - Filters: "blank roles", "inactive people".
