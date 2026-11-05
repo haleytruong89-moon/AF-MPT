@@ -25,9 +25,11 @@ import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
+import { RolePicker } from './components/RolePicker';
+import { canEditRole, pickerPeople as rolePickerPeople } from './roleAssign';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
 const DirectoryIndexContext = React.createContext(null);
@@ -6883,8 +6885,10 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false }) {
+function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  // Role assignment: pickers only on v2 projects.
+  const showRoles = !!(project.__v2 && roles && me);
   // Filter programs by scope
   const visiblePrograms = useMemo(() => {
     if (!scopeProgramId) return project.programs || [];
@@ -7207,11 +7211,20 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
               onDragLeave={() => setDragOver(null)}
               onDrop={() => dropWsIntoPg(pg)}
               style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(59,109,17,0.15)' : 'none' }}>
-              <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.programBg }}>
+              <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.programBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                 <button onClick={() => toggleExpand(pg.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.programFg, padding: 2, display: 'flex' }}>
                   {pgOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
                 <span style={{ fontSize: 14, fontWeight: 500, color: TOK.programFg, flex: 1 }}>{pg.name}</span>
+                {showRoles && ['pm', 'deputy'].map((kind) => {
+                  const cur = roles.programs?.[pg.id]?.[kind === 'pm' ? 'pmUid' : 'deputyUid'] ?? null;
+                  return (
+                    <RolePicker key={kind} label={kind === 'pm' ? 'PM' : 'Deputy'} valueUid={cur} scopeName={pg.name}
+                      editable={canEditRole(roles, me, kind, pg.id)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+                      blankText="— (Owner decides)"
+                      onPick={(toUid) => onChangeRole && onChangeRole({ kind, programId: pg.id, fromUid: cur, toUid })} />
+                  );
+                })}
                 <WeightBadge
                   weight={pg.weight}
                   effectiveWeight={pgEffWeight}
@@ -7248,12 +7261,21 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                     onDragLeave={() => setDragOver(null)}
                     onDrop={() => dropTaskIntoWs(pg, ws)}
                     style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
-                    <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg }}>
+                    <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                       <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span>
                       <button onClick={() => toggleExpand(ws.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.workstreamFg, padding: 2, display: 'flex' }}>
                         {wsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </button>
                       <span style={{ fontSize: 13, fontWeight: 500, color: TOK.workstreamFg, flex: 1 }}>{ws.name}</span>
+                      {showRoles && (() => {
+                        const cur = roles.workstreams?.[ws.id]?.leadUid ?? null;
+                        return (
+                          <RolePicker label="Sub-PM" valueUid={cur} scopeName={ws.name}
+                            editable={canEditRole(roles, me, 'lead', pg.id)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+                            blankText="— (PM decides)"
+                            onPick={(toUid) => onChangeRole && onChangeRole({ kind: 'lead', programId: pg.id, wsId: ws.id, fromUid: cur, toUid })} />
+                        );
+                      })()}
                       <WeightBadge
                         weight={ws.weight}
                         effectiveWeight={wsEffWeight}
@@ -12882,6 +12904,11 @@ export default function App() {
   }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
+  // Role assignment: people a role picker of the current v2 project offers (memberUids
+  // come from the shim cache; `project` changes after a role / member refresh).
+  const rolePeople = useMemo(() => (project?.__v2
+    ? rolePickerPeople({ dirEntries, memberUids: v2MemberUidsNow(project.id), isOwner })
+    : []), [project, dirEntries, isOwner]);
 
   // P2.3: Owner-only notice, once per project, when a v2 project loaded with orphans.
   const orphanToastShown = useRef(new Set());
@@ -13970,7 +13997,7 @@ export default function App() {
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
