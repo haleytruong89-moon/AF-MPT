@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   canEditRole, pickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent, rowsForRoles,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage,
+  focusRoleRows, mindNodeRoleText,
 } from '../../src/roleAssign.js';
 
 function mkRoles() {
@@ -210,5 +211,41 @@ describe('role change messages', () => {
   it('rerouteFailedMessage: count and distinct old approvers', () => {
     expect(rerouteFailedMessage([{ fromUid: 'pm1' }, { fromUid: 'pm1' }], nameOf))
       .toBe('Role saved. 2 pending request(s) still point to Lybk; the PM or Owner can reassign them.');
+  });
+});
+
+describe('focusRoleRows', () => {
+  const rows = [
+    { kind: 'program', programId: 'p1' },
+    { kind: 'ws', programId: 'p1', wsId: 'w1' },
+    { kind: 'ws', programId: 'p1', wsId: 'w2' },
+    { kind: 'program', programId: 'p2' },
+    { kind: 'ws', programId: 'p2', wsId: 'w3' },
+  ];
+  it('returns all rows without a focus', () => {
+    expect(focusRoleRows(rows, null)).toBe(rows);
+  });
+  it('keeps one program and its workstreams', () => {
+    expect(focusRoleRows(rows, { programId: 'p1' }).map((r) => r.wsId || r.programId)).toEqual(['p1', 'w1', 'w2']);
+  });
+  it('keeps one workstream with its program row', () => {
+    expect(focusRoleRows(rows, { programId: 'p1', wsId: 'w2' }).map((r) => r.wsId || r.programId)).toEqual(['p1', 'w2']);
+  });
+});
+
+describe('mindNodeRoleText', () => {
+  const roles = { programs: { p1: { pmUid: 'u1' }, p2: {} }, workstreams: { w1: { leadUid: 'u2' } } };
+  const nameOf = (u) => ({ u1: 'Ha', u2: 'Ly' })[u] || u;
+  it('shows PM and Sub-PM names', () => {
+    expect(mindNodeRoleText(roles, 'program', 'p1', nameOf)).toBe('PM Ha');
+    expect(mindNodeRoleText(roles, 'workstream', 'w1', nameOf)).toBe('Sub-PM Ly');
+  });
+  it('says when the role is blank', () => {
+    expect(mindNodeRoleText(roles, 'program', 'p2', nameOf)).toBe('No PM');
+    expect(mindNodeRoleText(roles, 'workstream', 'w9', nameOf)).toBe('No Sub-PM');
+  });
+  it('is null without roles or for other nodes', () => {
+    expect(mindNodeRoleText(null, 'program', 'p1', nameOf)).toBeNull();
+    expect(mindNodeRoleText(roles, 'task', 't1', nameOf)).toBeNull();
   });
 });

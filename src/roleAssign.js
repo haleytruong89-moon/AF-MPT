@@ -101,6 +101,33 @@ export function rowsForRoles(project, roles) {
   return rows;
 }
 
+/**
+ * Roles modal rows narrowed to one program (its row + workstreams) or one workstream
+ * (its program row + that row). No focus -> all rows.
+ */
+export function focusRoleRows(rows, focus) {
+  if (!focus || !focus.programId) return rows;
+  return rows.filter((r) => r.programId === focus.programId
+    && (r.kind === 'program' || !focus.wsId || r.wsId === focus.wsId));
+}
+
+/**
+ * Short role text for a Mind map node: "PM <name>" / "Sub-PM <name>", "No PM" / "No Sub-PM"
+ * when blank. null when roles are not loaded (v1 project) or the node has no role.
+ */
+export function mindNodeRoleText(roles, kind, id, nameOf) {
+  if (!roles) return null;
+  if (kind === 'program') {
+    const u = roles.programs?.[id]?.pmUid ?? null;
+    return u ? `PM ${nameOf(u)}` : 'No PM';
+  }
+  if (kind === 'workstream') {
+    const u = roles.workstreams?.[id]?.leadUid ?? null;
+    return u ? `Sub-PM ${nameOf(u)}` : 'No Sub-PM';
+  }
+  return null;
+}
+
 /** Display name of the program (pm / deputy) or workstream (lead) a change targets. */
 export function scopeNameOf(project, change) {
   const pg = (project?.programs || []).find((p) => p.id === change.programId);
