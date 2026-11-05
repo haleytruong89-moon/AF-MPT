@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   canEditRole, pickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent, rowsForRoles,
+  scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage,
 } from '../../src/roleAssign.js';
 
 function mkRoles() {
@@ -171,5 +172,43 @@ describe('rowsForRoles', () => {
       { kind: 'program', programId: 'p2', name: 'Two', pmUid: 'pm2', deputyUid: null },
       { kind: 'ws', programId: 'p2', wsId: 'w3', name: 'W3', leadUid: null },
     ]);
+  });
+});
+
+describe('role change messages', () => {
+  const names = { pm1: 'Lybk', y: 'Trangvk', x: 'Xuan', o: 'Ha' };
+  const nameOf = (u) => names[u] || u;
+  const project = { programs: [{ id: 'p1', name: 'CASH OUT', workstreams: [{ id: 'w1', name: 'Payments' }] }] };
+
+  it('scopeNameOf: program for pm / deputy, workstream for lead', () => {
+    expect(scopeNameOf(project, { kind: 'pm', programId: 'p1' })).toBe('CASH OUT');
+    expect(scopeNameOf(project, { kind: 'lead', programId: 'p1', wsId: 'w1' })).toBe('Payments');
+    expect(scopeNameOf(project, { kind: 'lead', programId: 'p1', wsId: 'zz' })).toBe('zz');
+  });
+
+  it('roleChangeConfirmLines: role line, moves line, member line', () => {
+    const change = { kind: 'pm', programId: 'p1', fromUid: 'pm1', toUid: 'y' };
+    expect(roleChangeConfirmLines({ change, nameOf, scopeName: 'CASH OUT' })).toEqual(['PM of CASH OUT: Lybk → Trangvk']);
+    expect(roleChangeConfirmLines({
+      change, nameOf, scopeName: 'CASH OUT',
+      moves: [{ taskId: 't1', fromUid: 'pm1', toUid: 'y' }, { taskId: 't2', fromUid: 'o', toUid: 'y' }],
+      addMemberUid: 'y',
+    })).toEqual([
+      'PM of CASH OUT: Lybk → Trangvk',
+      '2 pending request(s) will move to Trangvk.',
+      'Trangvk is not a member of this project and will be added.',
+    ]);
+    expect(roleChangeConfirmLines({ change: { kind: 'lead', programId: 'p1', wsId: 'w1', fromUid: null, toUid: null }, nameOf, scopeName: 'Payments' }))
+      .toEqual(['Sub-PM of Payments: — → —']);
+  });
+
+  it('roleSavedMessage: names the new person, plain when cleared', () => {
+    expect(roleSavedMessage('y', nameOf)).toBe('Saved. Trangvk should reload AF-MPT to get the new permissions.');
+    expect(roleSavedMessage(null, nameOf)).toBe('Saved.');
+  });
+
+  it('rerouteFailedMessage: count and distinct old approvers', () => {
+    expect(rerouteFailedMessage([{ fromUid: 'pm1' }, { fromUid: 'pm1' }], nameOf))
+      .toBe('Role saved. 2 pending request(s) still point to Lybk; the PM or Owner can reassign them.');
   });
 });

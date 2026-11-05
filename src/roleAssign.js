@@ -100,3 +100,32 @@ export function rowsForRoles(project, roles) {
   }
   return rows;
 }
+
+/** Display name of the program (pm / deputy) or workstream (lead) a change targets. */
+export function scopeNameOf(project, change) {
+  const pg = (project?.programs || []).find((p) => p.id === change.programId);
+  if (change.kind !== 'lead') return pg?.name || change.programId;
+  const ws = (pg?.workstreams || []).find((w) => w.id === change.wsId);
+  return ws?.name || change.wsId;
+}
+
+const uniqNames = (uids, nameOf) => [...new Set(uids.filter(Boolean))].map((u) => nameOf(u)).join(', ');
+
+/** Lines of the confirm panel before a role change. */
+export function roleChangeConfirmLines({ change, nameOf, scopeName, moves = [], addMemberUid = null }) {
+  const n = (u) => (u ? nameOf(u) : DASH);
+  const lines = [`${LABEL[change.kind]} of ${scopeName}: ${n(change.fromUid)} → ${n(change.toUid)}`];
+  if (moves.length) lines.push(`${moves.length} pending request(s) will move to ${uniqNames(moves.map((m) => m.toUid), nameOf)}.`);
+  if (addMemberUid) lines.push(`${nameOf(addMemberUid)} is not a member of this project and will be added.`);
+  return lines;
+}
+
+/** Toast after a role change saved. */
+export function roleSavedMessage(toUid, nameOf) {
+  return toUid ? `Saved. ${nameOf(toUid)} should reload AF-MPT to get the new permissions.` : 'Saved.';
+}
+
+/** Toast when some pending requests could not be moved; `failed` = reroute moves not saved. */
+export function rerouteFailedMessage(failed, nameOf) {
+  return `Role saved. ${failed.length} pending request(s) still point to ${uniqNames(failed.map((m) => m.fromUid), nameOf) || DASH}; the PM or Owner can reassign them.`;
+}

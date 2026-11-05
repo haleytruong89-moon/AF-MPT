@@ -23,13 +23,16 @@ import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
-import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields } from './closeFlow';
+import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
-import { canEditRole, pickerPeople as rolePickerPeople } from './roleAssign';
+import {
+  canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
+  scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage,
+} from './roleAssign';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
 const DirectoryIndexContext = React.createContext(null);
@@ -13126,6 +13129,101 @@ export default function App() {
     return run;
   }, [runV2CloseNow]);
 
+  // Role assignment (spec §7): the role write never carries tree edits. Pending edits
+  // are flushed first, the role goes through changeRoleV2, then pending close requests
+  // move to the new approver with a save of the last-saved tree + those tasks only
+  // (like runV2CloseNow). `preMoves` (shown in the confirm) is recomputed on the
+  // saved tree after the role write.
+  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid }) => {
+    const nameOf = meRef.current.nameOf;
+    await flushProjectSave(projectId);
+    const status = await changeRoleV2(projectId, change, addMemberUid ? { addMemberUid } : {});
+    if (status === 'changed') { showToastRef.current('Someone changed this role. Reload to see it.'); return; }
+    if (status !== 'ok') { showToastRef.current(`Role not saved (${status}). Reload and try again.`); return; }
+    refreshV2Roles(projectId);
+    logActivityForProject(projectId, roleChangeEvent(change, nameOf, scopeNameOf(projectsRef.current[projectId], change)));
+
+    const after = rolesNowFor(projectId);
+    const saved = v2SavedTree(projectId);
+    const moves = saved && after
+      ? reroutePlan({ before, after, change, tasks: collectTasks(saved), isActive: meRef.current.isActive })
+      : preMoves;
+    if (!moves.length) { showToastRef.current(roleSavedMessage(change.toUid, nameOf)); return; }
+    const failed = [];
+    const done = [];
+    let tree = saved;
+    if (saved && after) {
+      const me = { uid: meRef.current.uid, name: meRef.current.name };
+      const now = new Date().toISOString();
+      for (const m of moves) {
+        const old = findTaskInProject(tree, m.taskId)?.task;
+        const t = old ? reassignClose({ roles: after, task: old, me, toUid: m.toUid, now }) : null;
+        if (!t) { failed.push(m); continue; }
+        tree = replaceTask(tree, m.taskId, t);
+        done.push({ m, old, t });
+      }
+    } else {
+      failed.push(...moves);
+    }
+    if (done.length) {
+      const st = await saveProject(tree);
+      setSaveState((prev) => nextSaveState(prev, projectId, st, tree.name || 'project'));
+      refreshV2Roles(projectId);
+      if (st === 'ok') {
+        for (const { m, old, t } of done) {
+          // Keep any newer in-memory edit of the task; only the close request moves.
+          const cur = projectsRef.current[projectId] && findTaskInProject(projectsRef.current[projectId], m.taskId)?.task;
+          setTaskNow(projectId, m.taskId, cur ? { ...cur, closeRequest: t.closeRequest, closeRequestHistory: t.closeRequestHistory } : t);
+          for (const ev of closeEventsFor(old, t, nameOf)) {
+            logActivityForProject(projectId, { ...ev, description: ev.description + ' (role change)' });
+          }
+        }
+      } else {
+        failed.push(...done.map((d) => d.m));
+      }
+    }
+    if (failed.length) {
+      console.warn('[roles] pending requests not moved:', failed);
+      showToastRef.current(rerouteFailedMessage(failed, nameOf));
+    } else {
+      showToastRef.current(roleSavedMessage(change.toUid, nameOf));
+    }
+  }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
+  const changeRole = useCallback(async (projectId, change) => {
+    const me = meRef.current;
+    if (me.readOnly) { showToastRef.current(READ_ONLY_MESSAGE); return; }
+    const before = rolesNowFor(projectId);
+    if (!before || !canEditRole(before, me, change.kind, change.programId)) return;
+    const err = validateRoleChange(before, change);
+    if (err) { showToastRef.current(err); return; }
+    const after = rolesAfter(before, change);
+    const saved = v2SavedTree(projectId);
+    const preMoves = reroutePlan({ before, after, change, tasks: saved ? collectTasks(saved) : [], isActive: me.isActive });
+    const addMemberUid = me.isOwner && change.toUid && !v2MemberUidsNow(projectId).includes(change.toUid) ? change.toUid : null;
+    const lines = roleChangeConfirmLines({
+      change, nameOf: me.nameOf, scopeName: scopeNameOf(projectsRef.current[projectId], change), moves: preMoves, addMemberUid,
+    });
+    const ok = await dialogs.confirm({
+      title: 'Change role?',
+      message: lines.map((l, i) => <span key={i} style={{ display: 'block' }}>{l}</span>),
+      okLabel: 'Save',
+    });
+    if (!ok) return;
+    // Same per-project chain as closes; debounced saves of the project wait meanwhile.
+    closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
+    pendingSaves.current += 1;
+    const run = (closeChain.current[projectId] || Promise.resolve())
+      .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid }))
+      .catch((e) => { console.error('[roles] change failed:', e); showToastRef.current('Role not saved (error). Reload and try again.'); })
+      .finally(() => {
+        closeBusy.current[projectId] -= 1;
+        if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
+        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      });
+    closeChain.current[projectId] = run;
+    return run;
+  }, [rolesNowFor, changeRoleNow, dialogs]);
+
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
   // optional suffix (e.g. "My Work") to tag the entry-point in the audit.
@@ -13997,7 +14095,7 @@ export default function App() {
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
