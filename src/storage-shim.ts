@@ -188,7 +188,7 @@ export async function changeRoleV2(
   return await projectWriteQueue.run(`project:${pid}`, async () => {
     const res = await executeRoleChange(
       { runTransaction, doc, serverTimestamp, arrayUnion },
-      { db, wid: WORKSPACE, pid, uid: user.uid, change, addMemberUid: (opts.addMemberUid ?? null) as null },
+      { db, wid: WORKSPACE, pid, uid: user.uid, change, addMemberUid: opts.addMemberUid ?? null },
     );
     if (res.status === 'ok') {
       const loaded = v2Loaded.get(pid);

@@ -18,6 +18,10 @@ const FIELD = { pm: 'pmUid', deputy: 'deputyUid', lead: 'leadUid' };
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const safe = (id) => typeof id === 'string' && SAFE_ID.test(id);
 
+/**
+ * @param {*} fs
+ * @param {{ db: *, wid: string, pid: string, uid: string, change: *, addMemberUid?: string | null }} args
+ */
 export async function executeRoleChange(fs, { db, wid, pid, uid, change, addMemberUid = null }) {
   const { runTransaction, doc, serverTimestamp, arrayUnion } = fs;
   const { kind, programId, wsId } = change || {};
@@ -54,6 +58,8 @@ export async function executeRoleChange(fs, { db, wid, pid, uid, change, addMemb
         const wsSnap = await tx.get(wsRef);
         if (!wsSnap.exists()) return { status: 'conflict' };
         const live = wsSnap.data();
+        // A stale view of a ws moved to another program: the caller checked rights for the old program.
+        if ((live.programId ?? null) !== programId) return { status: 'changed' };
         if ((live.leadUid ?? null) !== fromUid) return { status: 'changed' };
         const v = typeof live.version === 'number' ? live.version : 0;
         const stamp = { leadUid: toUid, version: v + 1, updatedBy: uid };

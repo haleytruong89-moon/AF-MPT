@@ -31,8 +31,8 @@ const ws = (programId, over = {}) => ({
 
 const fs = { runTransaction, doc, serverTimestamp, arrayUnion };
 const as = (u) => asUser(u.uid, u.email);
-const run = async (u, change, addMemberUid = null) =>
-  executeRoleChange(fs, { db: await as(u), wid: WID, pid: PID, uid: u.uid, change, addMemberUid });
+const run = async (u, change, addMemberUid = null, pid = PID) =>
+  executeRoleChange(fs, { db: await as(u), wid: WID, pid, uid: u.uid, change, addMemberUid });
 
 async function serverDoc(path) {
   const e = await getEnv();
@@ -142,6 +142,23 @@ describe('Role assignment executor against the rules', () => {
     expect((await run(LEAD, lead('w1', 'prg1', LEAD.uid, MEM.uid))).status).toBe('denied');
     expect((await run(MEM, lead('w1', 'prg1', LEAD.uid, MEM.uid))).status).toBe('denied');
     expect((await serverDoc(`${PR}/workstreams/w1`))).toMatchObject({ leadUid: LEAD.uid, version: 1 });
+  });
+
+  it('Owner not in roles / memberIds: pm change + member add passes on the v2 branch alone', async () => {
+    // No per-project owner role and not a v1 member: only the workspace-Owner v2 branch can allow it.
+    const PR2 = `${WS}/projects/pr2`;
+    await seedDoc(PR2, {
+      name: 'No owner role', schemaVersion: 2, visibility: 'restricted',
+      programMeta: { prg1: { name: 'Program 1', pmUid: PM1.uid, deputyUid: null } },
+      memberUids: [PM1.uid], memberIds: [PM1.uid], roles: { [PM1.uid]: 'member' },
+    });
+    const r = await run(OWNER, { kind: 'pm', programId: 'prg1', fromUid: PM1.uid, toUid: OUT.uid }, OUT.uid, 'pr2');
+    expect(r.status).toBe('ok');
+    const p = await serverDoc(PR2);
+    expect(p.programMeta.prg1.pmUid).toBe(OUT.uid);
+    expect(p.memberUids).toEqual([PM1.uid, OUT.uid]);
+    expect(p.memberIds).toEqual([PM1.uid, OUT.uid]);
+    expect(p.roles).toEqual({ [PM1.uid]: 'member', [OUT.uid]: 'member' });
   });
 
   it('deactivated PM sets Sub-PM -> denied', async () => {

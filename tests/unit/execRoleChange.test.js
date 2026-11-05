@@ -149,6 +149,13 @@ describe('executeRoleChange', () => {
     expect(b.updates).toEqual([]);
   });
 
+  it('lead: ws moved to another program since the caller looked -> changed, nothing written', async () => {
+    const { fs, updates } = fakeFs({ [P]: project(), [W1]: { ...ws(), programId: 'prg2' } });
+    const r = await executeRoleChange(fs, ctx({ kind: 'lead', programId: 'prg1', wsId: 'w1', fromUid: 'u_lead', toUid: 'u_new' }));
+    expect(r).toEqual({ status: 'changed' });
+    expect(updates).toEqual([]);
+  });
+
   it('addMemberUid: new person -> memberUids / memberIds arrayUnion + roles.<u> member', async () => {
     const { fs, store, TS, updates } = fakeFs({ [P]: project(), [W1]: ws() });
     const r = await executeRoleChange(fs, ctx({ kind: 'lead', programId: 'prg1', wsId: 'w1', fromUid: 'u_lead', toUid: 'u_new' }, { addMemberUid: 'u_new' }));
