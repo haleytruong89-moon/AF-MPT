@@ -242,7 +242,7 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
     { runTransaction, doc, serverTimestamp, deleteField },
     { db, wid: WORKSPACE, pid, uid: user.uid, plan },
   );
-  if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? plan.metaPatch : null);
+  if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? (r.metaPatch ?? plan.metaPatch) : null);
   if (r.status === 'ok') return { key, value, shared: true };
   console.warn('[storage] v2 save not completed:', pid, r.status, 'batch', r.failedBatch, r.error || '');
   return { key, value, shared: true, error: r.status };

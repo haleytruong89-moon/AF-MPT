@@ -29,6 +29,25 @@ const versionOf = (snap) => {
   return typeof v === 'number' ? v : 0;
 };
 
+// A whole-map programMeta write (planV2Save fallback for ids/fields that are not safe
+// path segments) is built from the tab's possibly stale copy. Keep the live pmUid /
+// deputyUid so a stale Owner tab cannot undo a PM/Deputy assigned elsewhere
+// (role-assignment spec §7.1 known gap). `next` is the plan's raw value, so a
+// deleteField() sentinel in `meta` is never treated as a map. Returns a new object; never mutates `meta`.
+function keepLiveRoles(meta, live, next) {
+  const isMap = (o) => o && typeof o === 'object' && !Array.isArray(o);
+  if (!isMap(next) || !isMap(live)) return meta;
+  const merged = {};
+  for (const [id, entry] of Object.entries(next)) {
+    const cur = live[id];
+    if (!isMap(entry) || !isMap(cur)) { merged[id] = entry; continue; }
+    const e = { ...entry };
+    for (const key of ['pmUid', 'deputyUid']) if (key in cur) e[key] = cur[key];
+    merged[id] = e;
+  }
+  return { ...meta, programMeta: merged };
+}
+
 export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
   const { runTransaction, doc, serverTimestamp, deleteField } = fs;
   const projectRef = doc(db, 'workspaces', wid, 'projects', pid);
@@ -42,6 +61,7 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
   const count = Math.max(batches.length, meta ? 1 : 0);
   const written = [];
   let metaWritten = false;
+  let metaApplied = meta; // what was actually written (live PM/Deputy overlaid), for the cache
 
   for (let i = 0; i < count; i++) {
     const ops = batches[i] || [];
@@ -74,18 +94,22 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
           tx.set(ref, { ...data, updatedAt: now });
           out.push({ kind: op.kind, op: op.op, id: op.id, version, data });
         });
-        if (i === 0 && meta) tx.update(projectRef, { ...meta, updatedAt: now });
-        return { conflict: false, out };
+        let metaOut = meta;
+        if (i === 0 && meta) {
+          metaOut = keepLiveRoles(meta, projectSnap.data()?.programMeta, plan.metaPatch.programMeta);
+          tx.update(projectRef, { ...metaOut, updatedAt: now });
+        }
+        return { conflict: false, out, metaOut };
       });
     } catch (e) {
       const status = e && e.code === 'permission-denied' ? 'denied' : 'error';
-      return { status, written, failedBatch: i, metaWritten, error: e };
+      return { status, written, failedBatch: i, metaWritten, metaPatch: metaApplied, error: e };
     }
-    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten };
+    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten, metaPatch: metaApplied };
     written.push(...res.out);
-    if (i === 0 && meta) metaWritten = true;
+    if (i === 0 && meta) { metaWritten = true; metaApplied = res.metaOut; }
   }
-  return { status: 'ok', written, failedBatch: null, metaWritten };
+  return { status: 'ok', written, failedBatch: null, metaWritten, metaPatch: metaApplied };
 }
 
 // Refresh the shim's loaded cache ({ meta, docs: { kind: Map<id, { version, data }> } })
