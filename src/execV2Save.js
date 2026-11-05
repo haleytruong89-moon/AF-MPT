@@ -33,10 +33,10 @@ const versionOf = (snap) => {
 // path segments) is built from the tab's possibly stale copy. Keep the live pmUid /
 // deputyUid so a stale Owner tab cannot undo a PM/Deputy assigned elsewhere
 // (role-assignment spec §7.1 known gap). `next` is the plan's raw value, so a
-// deleteField() sentinel in `meta` is never treated as a map. Returns a new object; never mutates `meta`.
-function keepLiveRoles(meta, live, next) {
+// deleteField() sentinel in `meta` is never treated as a map. Returns the overlaid plain map (or null when not applicable); never mutates the plan.
+function overlayLiveRoles(live, next) {
   const isMap = (o) => o && typeof o === 'object' && !Array.isArray(o);
-  if (!isMap(next) || !isMap(live)) return meta;
+  if (!isMap(next) || !isMap(live)) return null;
   const merged = {};
   for (const [id, entry] of Object.entries(next)) {
     const cur = live[id];
@@ -45,7 +45,7 @@ function keepLiveRoles(meta, live, next) {
     for (const key of ['pmUid', 'deputyUid']) if (key in cur) e[key] = cur[key];
     merged[id] = e;
   }
-  return { ...meta, programMeta: merged };
+  return merged;
 }
 
 export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
@@ -61,7 +61,7 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
   const count = Math.max(batches.length, meta ? 1 : 0);
   const written = [];
   let metaWritten = false;
-  let metaApplied = meta; // what was actually written (live PM/Deputy overlaid), for the cache
+  let metaApplied = plan?.metaPatch || null; // plain-valued (DELETE_FIELD marker kept) so applyWritten can use it
 
   for (let i = 0; i < count; i++) {
     const ops = batches[i] || [];
@@ -94,10 +94,11 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
           tx.set(ref, { ...data, updatedAt: now });
           out.push({ kind: op.kind, op: op.op, id: op.id, version, data });
         });
-        let metaOut = meta;
+        let metaOut = plan?.metaPatch;
         if (i === 0 && meta) {
-          metaOut = keepLiveRoles(meta, projectSnap.data()?.programMeta, plan.metaPatch.programMeta);
-          tx.update(projectRef, { ...metaOut, updatedAt: now });
+          const merged = overlayLiveRoles(projectSnap.data()?.programMeta, plan.metaPatch.programMeta);
+          tx.update(projectRef, { ...meta, ...(merged ? { programMeta: merged } : {}), updatedAt: now });
+          if (merged) metaOut = { ...plan.metaPatch, programMeta: merged };
         }
         return { conflict: false, out, metaOut };
       });
