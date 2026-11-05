@@ -13135,12 +13135,14 @@ export default function App() {
   // move to the new approver with a save of the last-saved tree + those tasks only
   // (like runV2CloseNow). `preMoves` (shown in the confirm) is recomputed on the
   // saved tree after the role write.
-  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid }) => {
+  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid, state = {} }) => {
     const nameOf = meRef.current.nameOf;
+    // A failed flush is ignored on purpose: the role write carries no tree data; the edit stays in memory and the banner shows it.
     await flushProjectSave(projectId);
     const status = await changeRoleV2(projectId, change, addMemberUid ? { addMemberUid } : {});
     if (status === 'changed') { showToastRef.current('Someone changed this role. Reload to see it.'); return; }
     if (status !== 'ok') { showToastRef.current(`Role not saved (${status}). Reload and try again.`); return; }
+    state.roleSaved = true;
     refreshV2Roles(projectId);
     logActivityForProject(projectId, roleChangeEvent(change, nameOf, scopeNameOf(projectsRef.current[projectId], change)));
 
@@ -13213,9 +13215,15 @@ export default function App() {
     // Same per-project chain as closes; debounced saves of the project wait meanwhile.
     closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
     pendingSaves.current += 1;
+    const state = { roleSaved: false };
     const run = (closeChain.current[projectId] || Promise.resolve())
-      .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid }))
-      .catch((e) => { console.error('[roles] change failed:', e); showToastRef.current('Role not saved (error). Reload and try again.'); })
+      .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid, state }))
+      .catch((e) => {
+        console.error('[roles] change failed:', e);
+        showToastRef.current(state.roleSaved
+          ? 'Role saved. Pending requests may not have moved; the PM or Owner can reassign them.'
+          : 'Role not saved (error). Reload and try again.');
+      })
       .finally(() => {
         closeBusy.current[projectId] -= 1;
         if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
