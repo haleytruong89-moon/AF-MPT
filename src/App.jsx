@@ -23,11 +23,16 @@ import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
-import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields } from './closeFlow';
+import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
+import { RolePicker } from './components/RolePicker';
+import {
+  canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
+  scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
+} from './roleAssign';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
 const DirectoryIndexContext = React.createContext(null);
@@ -6883,8 +6888,10 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false }) {
+function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  // Role assignment: pickers only on v2 projects.
+  const showRoles = !!(project.__v2 && roles && me);
   // Filter programs by scope
   const visiblePrograms = useMemo(() => {
     if (!scopeProgramId) return project.programs || [];
@@ -7207,11 +7214,20 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
               onDragLeave={() => setDragOver(null)}
               onDrop={() => dropWsIntoPg(pg)}
               style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(59,109,17,0.15)' : 'none' }}>
-              <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.programBg }}>
+              <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.programBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                 <button onClick={() => toggleExpand(pg.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.programFg, padding: 2, display: 'flex' }}>
                   {pgOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </button>
                 <span style={{ fontSize: 14, fontWeight: 500, color: TOK.programFg, flex: 1 }}>{pg.name}</span>
+                {showRoles && ['pm', 'deputy'].map((kind) => {
+                  const cur = roles.programs?.[pg.id]?.[kind === 'pm' ? 'pmUid' : 'deputyUid'] ?? null;
+                  return (
+                    <RolePicker key={kind} label={kind === 'pm' ? 'PM' : 'Deputy'} valueUid={cur} scopeName={pg.name}
+                      editable={canEditRole(roles, me, kind, pg.id)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+                      blankText="— (Owner decides)"
+                      onPick={(toUid) => onChangeRole && onChangeRole({ kind, programId: pg.id, fromUid: cur, toUid })} />
+                  );
+                })}
                 <WeightBadge
                   weight={pg.weight}
                   effectiveWeight={pgEffWeight}
@@ -7248,12 +7264,21 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                     onDragLeave={() => setDragOver(null)}
                     onDrop={() => dropTaskIntoWs(pg, ws)}
                     style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
-                    <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg }}>
+                    <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                       <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span>
                       <button onClick={() => toggleExpand(ws.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.workstreamFg, padding: 2, display: 'flex' }}>
                         {wsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </button>
                       <span style={{ fontSize: 13, fontWeight: 500, color: TOK.workstreamFg, flex: 1 }}>{ws.name}</span>
+                      {showRoles && (() => {
+                        const cur = roles.workstreams?.[ws.id]?.leadUid ?? null;
+                        return (
+                          <RolePicker label="Sub-PM" valueUid={cur} scopeName={ws.name}
+                            editable={canEditRole(roles, me, 'lead', pg.id)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+                            blankText="— (PM decides)"
+                            onPick={(toUid) => onChangeRole && onChangeRole({ kind: 'lead', programId: pg.id, wsId: ws.id, fromUid: cur, toUid })} />
+                        );
+                      })()}
                       <WeightBadge
                         weight={ws.weight}
                         effectiveWeight={wsEffWeight}
@@ -12610,6 +12635,7 @@ export default function App() {
   const [raidScopeProgramId, setRaidScopeProgramId] = useState(null);
   const [projectMenu, setProjectMenu] = useState(null);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [showRoles, setShowRoles] = useState(false);
   const [meetingMode, setMeetingMode] = useState(false);
   const [showMeetingExport, setShowMeetingExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -12882,6 +12908,11 @@ export default function App() {
   }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
+  // Role assignment: people a role picker of the current v2 project offers (memberUids
+  // come from the shim cache; `project` changes after a role / member refresh).
+  const rolePeople = useMemo(() => (project?.__v2
+    ? rolePickerPeople({ dirEntries, memberUids: v2MemberUidsNow(project.id), isOwner })
+    : []), [project, dirEntries, isOwner]);
 
   // P2.3: Owner-only notice, once per project, when a v2 project loaded with orphans.
   const orphanToastShown = useRef(new Set());
@@ -13098,6 +13129,109 @@ export default function App() {
     closeChain.current[pid] = run;
     return run;
   }, [runV2CloseNow]);
+
+  // Role assignment (spec §7): the role write never carries tree edits. Pending edits
+  // are flushed first, the role goes through changeRoleV2, then pending close requests
+  // move to the new approver with a save of the last-saved tree + those tasks only
+  // (like runV2CloseNow). `preMoves` (shown in the confirm) is recomputed on the
+  // saved tree after the role write.
+  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid, state = {} }) => {
+    const nameOf = meRef.current.nameOf;
+    // A failed flush is ignored on purpose: the role write carries no tree data; the edit stays in memory and the banner shows it.
+    await flushProjectSave(projectId);
+    const status = await changeRoleV2(projectId, change, addMemberUid ? { addMemberUid } : {});
+    if (status === 'changed') { showToastRef.current('Someone changed this role. Reload to see it.'); return; }
+    if (status !== 'ok') { showToastRef.current(`Role not saved (${status}). Reload and try again.`); return; }
+    state.roleSaved = true;
+    refreshV2Roles(projectId);
+    logActivityForProject(projectId, roleChangeEvent(change, nameOf, scopeNameOf(projectsRef.current[projectId], change)));
+
+    const after = rolesNowFor(projectId);
+    const saved = v2SavedTree(projectId);
+    const moves = saved && after
+      ? reroutePlan({ before, after, change, tasks: collectTasks(saved), isActive: meRef.current.isActive })
+      : preMoves;
+    if (!moves.length) { showToastRef.current(roleSavedMessage(change.toUid, nameOf)); return; }
+    const failed = [];
+    const done = [];
+    let tree = saved;
+    if (saved && after) {
+      const me = { uid: meRef.current.uid, name: meRef.current.name };
+      const now = new Date().toISOString();
+      for (const m of moves) {
+        const old = findTaskInProject(tree, m.taskId)?.task;
+        const t = old ? reassignClose({ roles: after, task: old, me, toUid: m.toUid, now }) : null;
+        if (!t) { failed.push(m); continue; }
+        tree = replaceTask(tree, m.taskId, t);
+        done.push({ m, old, t });
+      }
+    } else {
+      failed.push(...moves);
+    }
+    if (done.length) {
+      const st = await saveProject(tree);
+      setSaveState((prev) => nextSaveState(prev, projectId, st, tree.name || 'project'));
+      refreshV2Roles(projectId);
+      if (st === 'ok') {
+        for (const { m, old, t } of done) {
+          // Keep any newer in-memory edit of the task; only the close request moves.
+          const cur = projectsRef.current[projectId] && findTaskInProject(projectsRef.current[projectId], m.taskId)?.task;
+          setTaskNow(projectId, m.taskId, cur ? { ...cur, closeRequest: t.closeRequest, closeRequestHistory: t.closeRequestHistory } : t);
+          for (const ev of closeEventsFor(old, t, nameOf)) {
+            logActivityForProject(projectId, { ...ev, description: ev.description + ' (role change)' });
+          }
+        }
+      } else {
+        failed.push(...done.map((d) => d.m));
+      }
+    }
+    if (failed.length) {
+      console.warn('[roles] pending requests not moved:', failed);
+      showToastRef.current(rerouteFailedMessage(failed, nameOf));
+    } else {
+      showToastRef.current(roleSavedMessage(change.toUid, nameOf));
+    }
+  }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
+  const changeRole = useCallback(async (projectId, change) => {
+    const me = meRef.current;
+    if (me.readOnly) { showToastRef.current(READ_ONLY_MESSAGE); return; }
+    const before = rolesNowFor(projectId);
+    if (!before || !canEditRole(before, me, change.kind, change.programId)) return;
+    const err = validateRoleChange(before, change);
+    if (err) { showToastRef.current(err); return; }
+    const after = rolesAfter(before, change);
+    const saved = v2SavedTree(projectId);
+    const preMoves = reroutePlan({ before, after, change, tasks: saved ? collectTasks(saved) : [], isActive: me.isActive });
+    const addMemberUid = me.isOwner && change.toUid && !v2MemberUidsNow(projectId).includes(change.toUid) ? change.toUid : null;
+    const lines = roleChangeConfirmLines({
+      change, nameOf: me.nameOf, scopeName: scopeNameOf(projectsRef.current[projectId], change), moves: preMoves, addMemberUid,
+    });
+    const ok = await dialogs.confirm({
+      title: 'Change role?',
+      message: lines.map((l, i) => <span key={i} style={{ display: 'block' }}>{l}</span>),
+      okLabel: 'Save',
+    });
+    if (!ok) return;
+    // Same per-project chain as closes; debounced saves of the project wait meanwhile.
+    closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
+    pendingSaves.current += 1;
+    const state = { roleSaved: false };
+    const run = (closeChain.current[projectId] || Promise.resolve())
+      .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid, state }))
+      .catch((e) => {
+        console.error('[roles] change failed:', e);
+        showToastRef.current(state.roleSaved
+          ? 'Role saved. Pending requests may not have moved; the PM or Owner can reassign them.'
+          : 'Role not saved (error). Reload and try again.');
+      })
+      .finally(() => {
+        closeBusy.current[projectId] -= 1;
+        if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
+        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      });
+    closeChain.current[projectId] = run;
+    return run;
+  }, [rolesNowFor, changeRoleNow, dialogs]);
 
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
@@ -13970,7 +14104,7 @@ export default function App() {
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
@@ -14083,6 +14217,7 @@ export default function App() {
             items={[
               { label: 'Manage members & related parties', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
               { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
+              { label: 'Roles…', icon: <Users size={13} />, onClick: () => setShowRoles(true) },
               // B4: deleting a whole project is workspace-owner only.
               ...(isOwner ? [
                 { separator: true },
@@ -14125,6 +14260,16 @@ export default function App() {
             onChanged={reloadDirectory}
             onClose={() => setShowDirectory(false)}
             showToast={showToast}
+          />
+        )}
+        {showRoles && project && (
+          <RolesModal
+            project={project}
+            roles={project.__v2?.roles || null}
+            me={meValue}
+            people={rolePeople}
+            onChangeRole={(c) => changeRole(project.id, c)}
+            onClose={() => setShowRoles(false)}
           />
         )}
         {showProjectSettings && project && (
@@ -14276,6 +14421,73 @@ export default function App() {
         )}
       </div>
     </MeContext.Provider></DirectoryIndexContext.Provider>
+  );
+}
+
+// Role assignment: the whole project's PM / Deputy / Sub-PM in one table (spec §6.2).
+// Same pickers and permissions as the Outline headers; every reader can open it.
+function RolesModal({ project, roles, me, people = [], onChangeRole, onClose }) {
+  const [blankOnly, setBlankOnly] = useState(false);
+  const [inactiveOnly, setInactiveOnly] = useState(false);
+  const v2 = !!(project?.__v2 && roles && me);
+  const rows = useMemo(() => (v2 ? rowsForRoles(project, roles) : []), [v2, project, roles]);
+  const shown = useMemo(() => {
+    if (!blankOnly && !inactiveOnly) return rows;
+    const uidsOf = (r) => (r.kind === 'program' ? [r.pmUid, r.deputyUid] : [r.leadUid]);
+    const hit = (r) => (!blankOnly || uidsOf(r).some((u) => !u))
+      && (!inactiveOnly || uidsOf(r).some((u) => u && !me.isActive(u)));
+    // Keep a program row as context when one of its workstreams matches.
+    const keepPg = new Set(rows.filter(hit).map((r) => r.programId));
+    return rows.filter((r) => hit(r) || (r.kind === 'program' && keepPg.has(r.programId)));
+  }, [rows, blankOnly, inactiveOnly, me]);
+  const picker = (kind, r, valueUid, label, blankText, scopeName) => (
+    <RolePicker label={label} valueUid={valueUid} scopeName={scopeName}
+      editable={canEditRole(roles, me, kind, r.programId)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+      blankText={blankText}
+      onPick={(toUid) => onChangeRole && onChangeRole({ kind, programId: r.programId, ...(kind === 'lead' ? { wsId: r.wsId } : {}), fromUid: valueUid, toUid })} />
+  );
+  const check = (checked, set, label) => (
+    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: TOK.ink, cursor: 'pointer' }}>
+      <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} />{label}
+    </label>
+  );
+  return (
+    <Modal title="Roles" onClose={onClose} width={640}>
+      {!v2 ? (
+        <p style={{ margin: 0, fontSize: 13, color: TOK.ink }}>Roles become available after this project is switched to v2.</p>
+      ) : (
+        <div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+            {check(blankOnly, setBlankOnly, 'Blank roles only')}
+            {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}
+          </div>
+          {shown.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: TOK.muted }}>No roles match these filters.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <tbody>
+                {shown.map((r) => (r.kind === 'program' ? (
+                  <tr key={'p_' + r.programId} style={{ borderTop: '1px solid ' + TOK.line, background: TOK.programBg }}>
+                    <td style={{ padding: '8px 10px', fontWeight: 500, color: TOK.programFg }}>{r.name}</td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        {picker('pm', r, r.pmUid, 'PM', '— (Owner decides)', r.name)}
+                        {picker('deputy', r, r.deputyUid, 'Deputy', '— (Owner decides)', r.name)}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={'w_' + r.wsId} style={{ borderTop: '1px solid ' + TOK.line }}>
+                    <td style={{ padding: '6px 10px 6px 28px', color: TOK.workstreamFg }}>{r.name}</td>
+                    <td style={{ padding: '6px 10px' }}>{picker('lead', r, r.leadUid, 'Sub-PM', '— (PM decides)', r.name)}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 

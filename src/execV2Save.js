@@ -29,6 +29,25 @@ const versionOf = (snap) => {
   return typeof v === 'number' ? v : 0;
 };
 
+// A whole-map programMeta write (planV2Save fallback for ids/fields that are not safe
+// path segments) is built from the tab's possibly stale copy. Keep the live pmUid /
+// deputyUid so a stale Owner tab cannot undo a PM/Deputy assigned elsewhere
+// (role-assignment spec §7.1 known gap). `next` is the plan's raw value, so a
+// deleteField() sentinel in `meta` is never treated as a map. Returns the overlaid plain map (or null when not applicable); never mutates the plan.
+function overlayLiveRoles(live, next) {
+  const isMap = (o) => o && typeof o === 'object' && !Array.isArray(o);
+  if (!isMap(next) || !isMap(live)) return null;
+  const merged = {};
+  for (const [id, entry] of Object.entries(next)) {
+    const cur = live[id];
+    if (!isMap(entry) || !isMap(cur)) { merged[id] = entry; continue; }
+    const e = { ...entry };
+    for (const key of ['pmUid', 'deputyUid']) if (key in cur) e[key] = cur[key];
+    merged[id] = e;
+  }
+  return merged;
+}
+
 export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
   const { runTransaction, doc, serverTimestamp, deleteField } = fs;
   const projectRef = doc(db, 'workspaces', wid, 'projects', pid);
@@ -42,6 +61,7 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
   const count = Math.max(batches.length, meta ? 1 : 0);
   const written = [];
   let metaWritten = false;
+  let metaApplied = plan?.metaPatch || null; // plain-valued (DELETE_FIELD marker kept) so applyWritten can use it
 
   for (let i = 0; i < count; i++) {
     const ops = batches[i] || [];
@@ -74,18 +94,23 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
           tx.set(ref, { ...data, updatedAt: now });
           out.push({ kind: op.kind, op: op.op, id: op.id, version, data });
         });
-        if (i === 0 && meta) tx.update(projectRef, { ...meta, updatedAt: now });
-        return { conflict: false, out };
+        let metaOut = plan?.metaPatch;
+        if (i === 0 && meta) {
+          const merged = overlayLiveRoles(projectSnap.data()?.programMeta, plan.metaPatch.programMeta);
+          tx.update(projectRef, { ...meta, ...(merged ? { programMeta: merged } : {}), updatedAt: now });
+          if (merged) metaOut = { ...plan.metaPatch, programMeta: merged };
+        }
+        return { conflict: false, out, metaOut };
       });
     } catch (e) {
       const status = e && e.code === 'permission-denied' ? 'denied' : 'error';
-      return { status, written, failedBatch: i, metaWritten, error: e };
+      return { status, written, failedBatch: i, metaWritten, metaPatch: metaApplied, error: e };
     }
-    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten };
+    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten, metaPatch: metaApplied };
     written.push(...res.out);
-    if (i === 0 && meta) metaWritten = true;
+    if (i === 0 && meta) { metaWritten = true; metaApplied = res.metaOut; }
   }
-  return { status: 'ok', written, failedBatch: null, metaWritten };
+  return { status: 'ok', written, failedBatch: null, metaWritten, metaPatch: metaApplied };
 }
 
 // Refresh the shim's loaded cache ({ meta, docs: { kind: Map<id, { version, data }> } })

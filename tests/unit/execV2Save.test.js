@@ -205,4 +205,42 @@ describe('applyWritten (shim cache refresh)', () => {
     applyWritten(loaded, [], { 'programMeta.A.name': 'a2', 'programMeta.A.__absent': DELETE_FIELD, 'programMeta.B': DELETE_FIELD, 'programMeta.C': { name: 'c' } });
     expect(loaded.meta.programMeta).toEqual({ A: { name: 'a2', pmUid: 'P' }, C: { name: 'c' } });
   });
+  it('whole programMeta fallback keeps the live pmUid/deputyUid (stale Owner tab)', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, programMeta: { 'p 1': { pmUid: 'B', deputyUid: 'D' } } } });
+    const plan = {
+      batches: [],
+      metaPatch: { programMeta: {
+        'p 1': { pmUid: 'A', deputyUid: null, start: '2026-01-01' },
+        'p 2': { pmUid: 'X', start: '2026-02-01' },
+      } },
+    };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    const pm = store.get(P).programMeta;
+    expect(pm['p 1']).toEqual({ pmUid: 'B', deputyUid: 'D', start: '2026-01-01' });
+    expect(pm['p 2']).toEqual({ pmUid: 'X', start: '2026-02-01' });
+    expect(Object.keys(pm)).toEqual(['p 1', 'p 2']);
+    expect(plan.metaPatch.programMeta['p 1'].pmUid).toBe('A'); // plan not mutated
+    expect(r.metaPatch.programMeta['p 1'].pmUid).toBe('B'); // cache sees what was written
+  });
+  it('cache after whole-map overlay + DELETE_FIELD top-level key: key removed, live PM kept', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, old: 1, programMeta: { 'p 1': { pmUid: 'B' } } } });
+    const plan = { batches: [], metaPatch: { old: DELETE_FIELD, programMeta: { 'p 1': { pmUid: 'A', start: 's' } } } };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect('old' in store.get(P)).toBe(false);
+    const loaded = { meta: { old: 1, programMeta: { 'p 1': { pmUid: 'A' } } }, docs: {} };
+    applyWritten(loaded, r.written, r.metaWritten ? r.metaPatch : null);
+    expect(loaded.meta).toEqual({ programMeta: { 'p 1': { pmUid: 'B', start: 's' } } });
+  });
+
+  it('cache after dotted-only patch with programMeta.X DELETE_FIELD: program removed', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, programMeta: { X: { pmUid: 'B' }, Y: {} } } });
+    const plan = { batches: [], metaPatch: { 'programMeta.X': DELETE_FIELD } };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    const loaded = { meta: { programMeta: { X: { pmUid: 'B' }, Y: {} } }, docs: {} };
+    applyWritten(loaded, r.written, r.metaWritten ? r.metaPatch : null);
+    expect(loaded.meta.programMeta).toEqual({ Y: {} });
+    expect(r.metaPatch['programMeta.X']).toBe(DELETE_FIELD);
+  });
 });

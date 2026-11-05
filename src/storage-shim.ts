@@ -34,6 +34,7 @@ import {
   deleteField,
   orderBy,
   limit,
+  arrayUnion,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
@@ -42,6 +43,7 @@ import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loa
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
+import { executeRoleChange, wsCacheAfterRoleChange } from './execRoleChange';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -164,6 +166,57 @@ export function v2RolesNow(pid: string, fallbackOwnerUids?: string[]): ReturnTyp
   return rolesFromLoaded(loaded, ownerUids);
 }
 
+/** Role assignment: live member uids of a loaded v2 project (copy), [] when absent. */
+export function v2MemberUidsNow(pid: string): string[] {
+  const m = v2Loaded.get(pid)?.meta.memberUids;
+  return Array.isArray(m) ? m.filter((u): u is string => typeof u === 'string') : [];
+}
+
+export type RoleChange = { kind: 'pm' | 'deputy' | 'lead'; programId: string; wsId?: string; fromUid: string | null; toUid: string | null };
+
+/**
+ * Role assignment: change a PM / Deputy (project doc) or Sub-PM (workstream doc) in one
+ * transaction. Runs in the same per-project queue as tree saves so they never interleave.
+ * On ok the loaded cache is updated so v2RolesNow / the next save plan see the change.
+ */
+export async function changeRoleV2(
+  pid: string,
+  change: RoleChange,
+  opts: { addMemberUid?: string } = {},
+): Promise<'ok' | 'changed' | 'conflict' | 'denied' | 'error'> {
+  const user = await getUser();
+  return await projectWriteQueue.run(`project:${pid}`, async () => {
+    const res = await executeRoleChange(
+      { runTransaction, doc, serverTimestamp, arrayUnion },
+      { db, wid: WORKSPACE, pid, uid: user.uid, change, addMemberUid: opts.addMemberUid ?? null },
+    );
+    if (res.status === 'ok') {
+      const loaded = v2Loaded.get(pid);
+      if (loaded) {
+        if (change.kind === 'lead') {
+          if (res.ws && change.wsId) {
+            const next = wsCacheAfterRoleChange(loaded.docs.workstreams.get(change.wsId), res, change.toUid);
+            if (next) loaded.docs.workstreams.set(change.wsId, next);
+          }
+        } else {
+          const field = change.kind === 'pm' ? 'pmUid' : 'deputyUid';
+          const pm = (loaded.meta.programMeta ?? {}) as Record<string, Record<string, unknown>>;
+          loaded.meta = {
+            ...loaded.meta,
+            programMeta: { ...pm, [change.programId]: { ...(pm[change.programId] ?? {}), [field]: change.toUid } },
+          };
+        }
+        const add = opts.addMemberUid;
+        if (add) {
+          const cur = Array.isArray(loaded.meta.memberUids) ? (loaded.meta.memberUids as string[]) : [];
+          if (!cur.includes(add)) loaded.meta = { ...loaded.meta, memberUids: [...cur, add] };
+        }
+      }
+    }
+    return res.status as 'ok' | 'changed' | 'conflict' | 'denied' | 'error';
+  });
+}
+
 /**
  * P3 Task 7 (fix round 1): the App value of a v2 project as last read / saved by
  * this client (assembled from `loaded`). A close step is saved as this tree with
@@ -242,7 +295,7 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
     { runTransaction, doc, serverTimestamp, deleteField },
     { db, wid: WORKSPACE, pid, uid: user.uid, plan },
   );
-  if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? plan.metaPatch : null);
+  if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? (r.metaPatch ?? plan.metaPatch) : null);
   if (r.status === 'ok') return { key, value, shared: true };
   console.warn('[storage] v2 save not completed:', pid, r.status, 'batch', r.failedBatch, r.error || '');
   return { key, value, shared: true, error: r.status };
