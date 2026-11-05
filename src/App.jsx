@@ -31,7 +31,7 @@ import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
-  scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage,
+  scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
 } from './roleAssign';
 
 // P1: directory index (or null) for read-time person canonicalization in dashboards.
@@ -12635,6 +12635,7 @@ export default function App() {
   const [raidScopeProgramId, setRaidScopeProgramId] = useState(null);
   const [projectMenu, setProjectMenu] = useState(null);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [showRoles, setShowRoles] = useState(false);
   const [meetingMode, setMeetingMode] = useState(false);
   const [showMeetingExport, setShowMeetingExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -14208,6 +14209,7 @@ export default function App() {
             items={[
               { label: 'Manage members & related parties', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
               { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
+              { label: 'Roles…', icon: <Users size={13} />, onClick: () => setShowRoles(true) },
               // B4: deleting a whole project is workspace-owner only.
               ...(isOwner ? [
                 { separator: true },
@@ -14250,6 +14252,16 @@ export default function App() {
             onChanged={reloadDirectory}
             onClose={() => setShowDirectory(false)}
             showToast={showToast}
+          />
+        )}
+        {showRoles && project && (
+          <RolesModal
+            project={project}
+            roles={project.__v2?.roles || null}
+            me={meValue}
+            people={rolePeople}
+            onChangeRole={(c) => changeRole(project.id, c)}
+            onClose={() => setShowRoles(false)}
           />
         )}
         {showProjectSettings && project && (
@@ -14401,6 +14413,73 @@ export default function App() {
         )}
       </div>
     </MeContext.Provider></DirectoryIndexContext.Provider>
+  );
+}
+
+// Role assignment: the whole project's PM / Deputy / Sub-PM in one table (spec §6.2).
+// Same pickers and permissions as the Outline headers; every reader can open it.
+function RolesModal({ project, roles, me, people = [], onChangeRole, onClose }) {
+  const [blankOnly, setBlankOnly] = useState(false);
+  const [inactiveOnly, setInactiveOnly] = useState(false);
+  const v2 = !!(project?.__v2 && roles && me);
+  const rows = useMemo(() => (v2 ? rowsForRoles(project, roles) : []), [v2, project, roles]);
+  const shown = useMemo(() => {
+    if (!blankOnly && !inactiveOnly) return rows;
+    const uidsOf = (r) => (r.kind === 'program' ? [r.pmUid, r.deputyUid] : [r.leadUid]);
+    const hit = (r) => (!blankOnly || uidsOf(r).some((u) => !u))
+      && (!inactiveOnly || uidsOf(r).some((u) => u && !me.isActive(u)));
+    // Keep a program row as context when one of its workstreams matches.
+    const keepPg = new Set(rows.filter(hit).map((r) => r.programId));
+    return rows.filter((r) => hit(r) || (r.kind === 'program' && keepPg.has(r.programId)));
+  }, [rows, blankOnly, inactiveOnly, me]);
+  const picker = (kind, r, valueUid, label, blankText, scopeName) => (
+    <RolePicker label={label} valueUid={valueUid} scopeName={scopeName}
+      editable={canEditRole(roles, me, kind, r.programId)} people={people} nameOf={me.nameOf} isActive={me.isActive}
+      blankText={blankText}
+      onPick={(toUid) => onChangeRole && onChangeRole({ kind, programId: r.programId, ...(kind === 'lead' ? { wsId: r.wsId } : {}), fromUid: valueUid, toUid })} />
+  );
+  const check = (checked, set, label) => (
+    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: TOK.ink, cursor: 'pointer' }}>
+      <input type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} />{label}
+    </label>
+  );
+  return (
+    <Modal title="Roles" onClose={onClose} width={640}>
+      {!v2 ? (
+        <p style={{ margin: 0, fontSize: 13, color: TOK.ink }}>Roles become available after this project is switched to v2.</p>
+      ) : (
+        <div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+            {check(blankOnly, setBlankOnly, 'Blank roles only')}
+            {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}
+          </div>
+          {shown.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: TOK.muted }}>No roles match these filters.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <tbody>
+                {shown.map((r) => (r.kind === 'program' ? (
+                  <tr key={'p_' + r.programId} style={{ borderTop: '1px solid ' + TOK.line, background: TOK.programBg }}>
+                    <td style={{ padding: '8px 10px', fontWeight: 500, color: TOK.programFg }}>{r.name}</td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        {picker('pm', r, r.pmUid, 'PM', '— (Owner decides)', r.name)}
+                        {picker('deputy', r, r.deputyUid, 'Deputy', '— (Owner decides)', r.name)}
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr key={'w_' + r.wsId} style={{ borderTop: '1px solid ' + TOK.line }}>
+                    <td style={{ padding: '6px 10px 6px 28px', color: TOK.workstreamFg }}>{r.name}</td>
+                    <td style={{ padding: '6px 10px' }}>{picker('lead', r, r.leadUid, 'Sub-PM', '— (PM decides)', r.name)}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
