@@ -43,7 +43,7 @@ import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loa
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
-import { executeRoleChange } from './execRoleChange';
+import { executeRoleChange, wsCacheAfterRoleChange } from './execRoleChange';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -194,7 +194,10 @@ export async function changeRoleV2(
       const loaded = v2Loaded.get(pid);
       if (loaded) {
         if (change.kind === 'lead') {
-          if (res.ws && change.wsId) loaded.docs.workstreams.set(change.wsId, res.ws);
+          if (res.ws && change.wsId) {
+            const next = wsCacheAfterRoleChange(loaded.docs.workstreams.get(change.wsId), res, change.toUid);
+            if (next) loaded.docs.workstreams.set(change.wsId, next);
+          }
         } else {
           const field = change.kind === 'pm' ? 'pmUid' : 'deputyUid';
           const pm = (loaded.meta.programMeta ?? {}) as Record<string, Record<string, unknown>>;

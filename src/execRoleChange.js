@@ -66,7 +66,7 @@ export async function executeRoleChange(fs, { db, wid, pid, uid, change, addMemb
         tx.update(wsRef, { ...stamp, updatedAt: now });
         if (Object.keys(projectPatch).length) tx.update(projectRef, { ...projectPatch, updatedAt: now });
         const { updatedAt: _ts, ...rest } = live;
-        return { status: 'ok', ws: { version: v + 1, data: { ...rest, ...stamp } } };
+        return { status: 'ok', prevVersion: v, ws: { version: v + 1, data: { ...rest, ...stamp } } };
       }
 
       const entry = p.programMeta?.[programId];
@@ -78,4 +78,20 @@ export async function executeRoleChange(fs, { db, wid, pid, uid, change, addMemb
   } catch (e) {
     return { status: e && e.code === 'permission-denied' ? 'denied' : 'error', error: e };
   }
+}
+
+/**
+ * Cache entry for a workstream after a successful Sub-PM change. When the cache held
+ * the version the change was applied to, take the written doc. Otherwise someone else
+ * changed the ws since this tab loaded it: keep the cached data and version (only the
+ * new leadUid goes in), so this tab's next save of that ws conflicts and asks for a
+ * reload instead of overwriting their edit with the stale tree.
+ * @param {{ version: number, data: Record<string, unknown> } | undefined} cached
+ * @param {{ prevVersion?: number, ws?: { version: number, data: Record<string, unknown> } }} res
+ * @param {string | null} toUid
+ */
+export function wsCacheAfterRoleChange(cached, res, toUid) {
+  if (!res.ws) return cached;
+  if (!cached || cached.version === res.prevVersion) return res.ws;
+  return { version: cached.version, data: { ...cached.data, leadUid: toUid } };
 }

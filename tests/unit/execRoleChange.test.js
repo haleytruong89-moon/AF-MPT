@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { executeRoleChange } from '../../src/execRoleChange.js';
+import { executeRoleChange, wsCacheAfterRoleChange } from '../../src/execRoleChange.js';
 
 const P = 'workspaces/main/projects/p1';
 const W1 = `${P}/workstreams/w1`;
@@ -126,7 +126,7 @@ describe('executeRoleChange', () => {
     const r = await executeRoleChange(fs, ctx({ kind: 'lead', programId: 'prg1', wsId: 'w1', fromUid: 'u_lead', toUid: 'u_new' }, { uid: 'u_pm' }));
     expect(r).toEqual({
       status: 'ok',
-      ws: { version: 5, data: { ...ws(), leadUid: 'u_new', version: 5, updatedBy: 'u_pm' } },
+      prevVersion: 4, ws: { version: 5, data: { ...ws(), leadUid: 'u_new', version: 5, updatedBy: 'u_pm' } },
     });
     expect(updates).toEqual([[W1, { leadUid: 'u_new', version: 5, updatedBy: 'u_pm', updatedAt: TS }]]);
     expect(store.get(W1)).toEqual({ ...ws(), leadUid: 'u_new', version: 5, updatedBy: 'u_pm', updatedAt: TS });
@@ -196,5 +196,25 @@ describe('executeRoleChange', () => {
     expect(a.store.get(W1).leadUid).toBe('u_lead');
     const b = fakeFs({ [P]: project() }, { throwOnGet: new Error('offline') });
     expect((await executeRoleChange(b.fs, ctx(change))).status).toBe('error');
+  });
+});
+
+describe('wsCacheAfterRoleChange', () => {
+  const written = { prevVersion: 3, ws: { version: 4, data: { name: 'Live name', leadUid: 'u_new', version: 4 } } };
+
+  it('takes the written doc when the cache held the version the change applied to', () => {
+    const cached = { version: 3, data: { name: 'Live name', leadUid: 'u_old', version: 3 } };
+    expect(wsCacheAfterRoleChange(cached, written, 'u_new')).toEqual(written.ws);
+  });
+
+  it('keeps the stale cached data and version (only leadUid changes) when someone else edited the ws', () => {
+    const cached = { version: 2, data: { name: 'Old name', leadUid: 'u_old', version: 2 } };
+    expect(wsCacheAfterRoleChange(cached, written, 'u_new')).toEqual({
+      version: 2, data: { name: 'Old name', leadUid: 'u_new', version: 2 },
+    });
+  });
+
+  it('takes the written doc when nothing was cached', () => {
+    expect(wsCacheAfterRoleChange(undefined, written, 'u_new')).toEqual(written.ws);
   });
 });
