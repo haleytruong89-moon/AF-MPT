@@ -18,7 +18,8 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue } from './persistence';
+import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
@@ -1555,12 +1556,23 @@ async function saveProject(p) {
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
 async function loadActivity(id) { const r = await sgetShared(K.activity(id)); if (!r) return []; try { return JSON.parse(r); } catch { return []; } }
-async function appendActivity(id, e) {
-  const log = await loadActivity(id);
-  log.unshift(e);
-  if (log.length > 500) log.length = 500;
-  await ssetShared(K.activity(id), JSON.stringify(log));
-  return log;
+// null = the shim read failed (a missing log reads as '[]').
+async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id)); if (r == null) return null; try { const a = JSON.parse(r); return Array.isArray(a) ? a : null; } catch { return null; } }
+const activityQueue = createKeyedQueue();
+const activityPending = new Map(); // v1 entries whose read failed; merged into the next successful append
+// Returns the full list to display (v1, read ok) or null (caller prepends the entry itself / leaves the list).
+function appendActivity(id, e, { v2 = false } = {}) {
+  return activityQueue.run(id, async () => {
+    const pending = activityPending.get(id) || [];
+    const read = v2 ? null : await loadActivityStrict(id);
+    const plan = planActivityAppend({ v2, read, pending, entry: e });
+    if (plan.write) {
+      const ok = await ssetShared(K.activity(id), JSON.stringify(plan.write));
+      if (!ok && !v2) { activityPending.set(id, [e, ...pending]); return null; }
+    }
+    if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
+    return plan.display;
+  });
 }
 
 /* ═════════ EXCEL I/O ═════════ */
@@ -13027,8 +13039,10 @@ export default function App() {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
-    const log = await appendActivity(currentId, entry);
-    setActivity(log);
+    const v2 = !!projectsRef.current[currentId]?.__v2;
+    const log = await appendActivity(currentId, entry, { v2 });
+    if (log) setActivity(log);
+    else if (v2) setActivity((prev) => [entry, ...prev]);
   }, [currentId, author]);
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
@@ -13042,10 +13056,11 @@ export default function App() {
       ...(before !== undefined ? { before } : {}),
       ...(after !== undefined ? { after } : {}),
     };
-    await appendActivity(projectId, entry);
+    const v2 = !!projectsRef.current[projectId]?.__v2;
+    const log = await appendActivity(projectId, entry, { v2 });
     if (projectId === currentId) {
-      const log = await loadActivity(projectId);
-      setActivity(log);
+      if (log) setActivity(log);
+      else if (v2) setActivity((prev) => [entry, ...prev]);
     }
   }, [author, currentId]);
 
