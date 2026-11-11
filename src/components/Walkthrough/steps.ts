@@ -39,14 +39,14 @@ export const STEPS: Step[] = [
     target: 'tab-my-work',
     placement: 'bottom',
     title: 'My Work',
-    body: 'Start here every day. Your tasks are grouped by Today, This week and Later, across all projects.',
+    body: 'Start here every day. Your tasks are grouped by Today, Week and Later, across all projects.',
     primaryCta: 'Next',
   },
   {
     id: 'approvals',
     type: 'modal',
     title: 'Approvals in My Work',
-    body: 'Requests you can approve appear in My Work under "Needs my approval" (the My Work tab shows a count). Your own requests are under "Sent for approval". A request waiting 3+ working days also goes to the next level.',
+    body: 'Requests waiting for your approval appear in My Work under "Needs my approval" (the My Work tab shows a count). Your own requests are under "Sent for approval". A request waiting 3+ working days also goes to the next level.',
     primaryCta: 'Next',
   },
   {
@@ -79,7 +79,7 @@ export const STEPS: Step[] = [
     target: 'project-menu',
     placement: 'bottom',
     title: 'Assigning roles',
-    body: 'Open the ⋯ menu and choose Roles… to see or assign PM, Deputy and Sub-PM (Owner and PMs only).',
+    body: 'Open the ⋯ menu and choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
     primaryCta: 'Next',
   },
   {

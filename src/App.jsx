@@ -3644,7 +3644,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         <div style={{ margin: '16px 0' }}>
           <FieldLabel>Status</FieldLabel>
-          {project.__v2 ? <div data-tour="task-close"><CloseControl task={task} roles={project.__v2.roles} onUpdate={onUpdate} dialogs={dialogs} /></div> : (
+          {project.__v2 ? <CloseControl task={task} roles={project.__v2.roles} onUpdate={onUpdate} dialogs={dialogs} /> : (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {STATUSES.map((s) => {
               const active = (task.status || 'Planned') === s;
@@ -8600,10 +8600,10 @@ function myWorkTimeAgo(ts) {
   return fmtDateShort(ts);
 }
 
-function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, headerRight, tour, children }) {
+function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, headerRight, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div data-tour={tour} style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
+    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
       <div
         onClick={() => setOpen(!open)}
         style={{
@@ -11583,7 +11583,7 @@ function MyWorkView({
       {Header}
 
       {approvals.needsMine.length > 0 && (
-        <MyWorkSection icon="⏳" tour="my-work-needs-approval" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
           {approvals.needsMine.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
@@ -11591,7 +11591,7 @@ function MyWorkView({
         </MyWorkSection>
       )}
       {approvals.sent.length > 0 && (
-        <MyWorkSection icon="📤" tour="my-work-sent-approval" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
           {approvals.sent.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
