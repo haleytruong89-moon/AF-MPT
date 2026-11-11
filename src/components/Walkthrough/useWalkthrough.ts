@@ -11,7 +11,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { STEPS, FIRST_ADVANCED_STEP_INDEX } from './steps';
+import { STEPS } from './steps';
 import { shouldCheckAutoStart, isFirstVisit, dismissMarksSeen } from './tourRules';
 
 const USER_REF = (uid: string) => doc(db, 'users', uid);
@@ -33,8 +33,6 @@ export interface WalkthroughApi {
   /** Close without marking the tour as seen (backdrop click). */
   close: () => void;
   finish: () => void;
-  branchContinue: () => void;
-  branchSkip: () => void;
 }
 
 export function useWalkthrough({
@@ -92,15 +90,6 @@ export function useWalkthrough({
     void markCompleted();
   }, [markCompleted]);
 
-  const branchContinue = useCallback(() => {
-    setStepIndex(FIRST_ADVANCED_STEP_INDEX);
-  }, []);
-
-  const branchSkip = useCallback(() => {
-    setActive(false);
-    void markCompleted();
-  }, [markCompleted]);
-
   // Auto-trigger for first-time users
   useEffect(() => {
     if (autoTriggerRanRef.current) return;
@@ -147,7 +136,5 @@ export function useWalkthrough({
     skip,
     close,
     finish,
-    branchContinue,
-    branchSkip,
   };
 }

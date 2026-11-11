@@ -71,7 +71,7 @@ const Walkthrough = forwardRef(function Walkthrough(
   ref
 ) {
   const api = useWalkthrough({ uid, ready });
-  const { active, stepIndex, start, next, skip, close, finish, branchContinue, branchSkip } = api;
+  const { active, stepIndex, start, next, skip, close, finish } = api;
   const step = STEPS[stepIndex];
 
   // Expose start() to parent so the "?" button can replay
@@ -145,7 +145,7 @@ const Walkthrough = forwardRef(function Walkthrough(
 
   const isSpotlight = step.type === 'spotlight';
   const useFallbackModal = isSpotlight && targetRect == null;
-  const isModal = step.type === 'modal' || step.type === 'branch' || useFallbackModal;
+  const isModal = step.type === 'modal' || useFallbackModal;
   const placement = isSpotlight && targetRect ? pickPlacement(targetRect, step.placement) : null;
   const tip = isSpotlight && targetRect && placement ? tooltipPosition(targetRect, placement) : null;
   const totalSteps = STEPS.length;
@@ -182,7 +182,7 @@ const Walkthrough = forwardRef(function Walkthrough(
               </div>
             )}
             <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
-              {renderModalButtons(step, { stepIndex, totalSteps, next, skip, finish, branchContinue, branchSkip })}
+              {renderModalButtons(step, { stepIndex, totalSteps, next, skip, finish })}
             </div>
           </div>
         </div>
@@ -222,7 +222,7 @@ function ProgressBar({ current, total }) {
   );
 }
 
-function renderModalButtons(step, { stepIndex, totalSteps, next, skip, finish, branchContinue, branchSkip }) {
+function renderModalButtons(step, { stepIndex, totalSteps, next, skip, finish }) {
   if (step.type === 'modal') {
     const isLast = stepIndex === totalSteps - 1;
     const onPrimary = isLast ? finish : next;
@@ -232,14 +232,6 @@ function renderModalButtons(step, { stepIndex, totalSteps, next, skip, finish, b
           <button onClick={skip} style={btnStyle('secondary')}>{step.secondaryCta}</button>
         )}
         <button onClick={onPrimary} style={btnStyle('primary')}>{step.primaryCta} {!isLast && '→'}</button>
-      </>
-    );
-  }
-  if (step.type === 'branch') {
-    return (
-      <>
-        <button onClick={branchSkip} style={btnStyle('secondary')}>{step.skipLabel}</button>
-        <button onClick={branchContinue} style={btnStyle('primary')}>{step.continueLabel} →</button>
       </>
     );
   }

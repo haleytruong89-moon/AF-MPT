@@ -22,13 +22,7 @@ export type SpotlightStep = StepBase & {
   primaryCta: string;
 };
 
-export type BranchStep = StepBase & {
-  type: 'branch';
-  continueLabel: string;
-  skipLabel: string;
-};
-
-export type Step = ModalStep | SpotlightStep | BranchStep;
+export type Step = ModalStep | SpotlightStep;
 
 export const STEPS: Step[] = [
   {
@@ -49,40 +43,24 @@ export const STEPS: Step[] = [
     primaryCta: 'Next',
   },
   {
-    id: 'needs-approval',
-    type: 'spotlight',
-    target: 'my-work-needs-approval',
-    placement: 'bottom',
-    skipIfMissing: true,
-    title: 'Needs my approval',
-    body: 'Tasks that someone sent as done and you can decide on. Approve, or Reject with a reason.',
+    id: 'approvals',
+    type: 'modal',
+    title: 'Approvals in My Work',
+    body: 'Requests you can approve appear in My Work under "Needs my approval" (the My Work tab shows a count). Your own requests are under "Sent for approval". A request waiting 3+ working days also goes to the next level.',
     primaryCta: 'Next',
   },
   {
-    id: 'sent-approval',
-    type: 'spotlight',
-    target: 'my-work-sent-approval',
-    placement: 'bottom',
-    skipIfMissing: true,
-    title: 'Sent for approval',
-    body: 'Tasks you submitted and are waiting on. You can Withdraw one before it is decided.',
-    primaryCta: 'Next',
-  },
-  {
-    id: 'task-panel',
-    type: 'spotlight',
-    target: 'task-close',
-    placement: 'left',
-    title: 'Open a task, then Submit as done',
-    body: 'Click any task to open its panel. When your part is finished, use Submit as done; your manager then approves it.',
-    fallbackNote: 'Open a task from My Work, Outline or Mind map to see this control.',
+    id: 'submit-as-done',
+    type: 'modal',
+    title: 'Submit as done',
+    body: 'Open a task and the PIC uses Submit as done when the work is finished. The manager then approves it, or rejects it with a reason.',
     primaryCta: 'Next',
   },
   {
     id: 'roles',
     type: 'modal',
     title: 'Who does what',
-    body: 'Owner (HOD) sees everything. PM / Deputy run a program, assign Sub-PMs and approve. Sub-PM plans and approves tasks in a work stream. Assignee / PIC does the task and submits it as done.',
+    body: 'The Owner (HOD) sees everything and can approve or close any task. The Owner assigns PM and Deputy; a PM or Deputy assigns the Sub-PM of their program’s work streams and approves. Sub-PM plans and approves tasks in a work stream. Assignee / PIC does the task and submits it as done.',
     primaryCta: 'Next',
   },
   {
@@ -121,6 +99,3 @@ export const STEPS: Step[] = [
     primaryCta: 'Done',
   },
 ];
-
-export const BRANCH_STEP_INDEX = STEPS.findIndex((s) => s.type === 'branch');
-export const FIRST_ADVANCED_STEP_INDEX = BRANCH_STEP_INDEX + 1;
