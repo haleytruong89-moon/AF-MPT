@@ -16,7 +16,7 @@ import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
-import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
+import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
 import { planActivityAppend } from './activityLog';
@@ -13257,8 +13257,39 @@ export default function App() {
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
       if (msg) showToastRef.current(msg);
     }
-    for (const ev of closeEventsFor(oldTask, res.task, meRef.current.nameOf)) {
+    const closeEvents = closeEventsFor(oldTask, res.task, meRef.current.nameOf);
+    for (const ev of closeEvents) {
       logActivityForProject(projectId, { ...ev, description: ev.description + tag });
+    }
+    // Google Chat card on a submit / reject (only when the project has a webhook). Fire-and-forget.
+    const webhook = projectsRef.current[projectId]?.googleChatWebhook;
+    if (webhook) {
+      const nameOf = meRef.current.nameOf;
+      const pname = projectsRef.current[projectId]?.name || 'project';
+      const url = taskUrl(window.location.origin, projectId, oldTask.id);
+      let card = null;
+      if (closeEvents.some((e) => e.type === 'close_submitted')) {
+        const cr = res.task.closeRequest || {};
+        card = buildCloseSubmittedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          requesterName: nameOf(cr.requestedByUid) || cr.requestedBy || 'Someone',
+          approverName: nameOf(cr.approverUid) || 'the approver',
+          outcome: cr.outcome, note: cr.note, taskUrl: url,
+        });
+      } else if (closeEvents.some((e) => e.type === 'close_rejected')) {
+        const h = (res.task.closeRequestHistory || [])[0] || {};
+        card = buildCloseRejectedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          deciderName: me.name || nameOf(me.uid) || 'Someone',
+          requesterName: nameOf(h.requestedByUid) || 'the requester',
+          reason: h.reason || '', taskUrl: url,
+        });
+      }
+      if (card) {
+        postToChat(webhook, card).then((r) => {
+          if (!r.ok) showToastRef.current(`Chat notify failed: ${r.status} ${r.statusText}`);
+        });
+      }
     }
   }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
   const runV2Close = useCallback((args) => {

@@ -210,6 +210,57 @@ export function buildNewActionCard(ctx) {
   };
 }
 
+/** Card for "task submitted for close approval". Same shape as buildNewActionCard.
+ *  @param ctx { projectName, taskName, requesterName, approverName, outcome ('Completed'|'Dropped'), note?, taskUrl }
+ */
+export function buildCloseSubmittedCard(ctx) {
+  const { projectName, taskName, requesterName, approverName, outcome, note, taskUrl } = ctx;
+  const word = outcome === 'Dropped' ? 'Dropped' : 'Done';
+  const widgets = [
+    {
+      decoratedText: {
+        topLabel: '📝 SUBMITTED FOR APPROVAL',
+        text: escapeChatText(`${requesterName} submitted ${taskName} as ${word} — waiting for ${approverName}`),
+        wrapText: true,
+        startIcon: { knownIcon: 'DESCRIPTION' },
+      },
+    },
+  ];
+  if (note) widgets.push({ textParagraph: { text: escapeChatText(note) } });
+  widgets.push({ divider: {} });
+  widgets.push(closeCardFooter(projectName, taskUrl));
+  return { cardsV2: [{ cardId: `close-submitted-${Date.now()}`, card: { sections: [{ widgets }] } }] };
+}
+
+/** Card for "close request rejected".
+ *  @param ctx { projectName, taskName, deciderName, requesterName, reason, taskUrl }
+ */
+export function buildCloseRejectedCard(ctx) {
+  const { projectName, taskName, deciderName, requesterName, reason, taskUrl } = ctx;
+  const widgets = [
+    {
+      decoratedText: {
+        topLabel: '↩ REJECTED',
+        text: escapeChatText(`${deciderName} rejected ${taskName} — ${reason}. Back to ${requesterName}`),
+        wrapText: true,
+        startIcon: { knownIcon: 'DESCRIPTION' },
+      },
+    },
+    { divider: {} },
+    closeCardFooter(projectName, taskUrl),
+  ];
+  return { cardsV2: [{ cardId: `close-rejected-${Date.now()}`, card: { sections: [{ widgets }] } }] };
+}
+
+function closeCardFooter(projectName, taskUrl) {
+  return {
+    decoratedText: {
+      text: escapeChatText(projectName),
+      button: { text: 'Open task', onClick: { openLink: { url: taskUrl } } },
+    },
+  };
+}
+
 /** Plain-text payload for the "Send test message" button.
  *  Spec §4: ✅ Test message from [Project name] — Google Chat integration working. Sent by [author] at [timestamp].
  */
