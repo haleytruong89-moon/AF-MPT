@@ -5,7 +5,7 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2
+  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -29,6 +29,7 @@ import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutco
 import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
+import { taskUrl, parseDeepLink } from './deepLink';
 import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
@@ -3260,7 +3261,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const me = useContext(MeContext);
   // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
@@ -3565,6 +3566,19 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {program.name} › {workstream.name}
         </div>
         <div style={{ display: 'flex', gap: 2 }}>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(taskUrl(window.location.origin, project.id, task.id));
+                showToast?.('Link copied');
+              } catch {
+                showToast?.("Couldn't copy the link");
+              }
+            }}
+            title="Copy link" aria-label="Copy link to this task"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'inline-flex', alignItems: 'center' }}>
+            <LinkIcon size={14} />
+          </button>
           <button onClick={() => setExpanded((v) => !v)} title={expanded ? 'Back to side panel' : 'Expand'} aria-label={expanded ? 'Back to side panel' : 'Expand task panel'}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, fontSize: 14, lineHeight: 1 }}>
             {expanded ? '⤡' : '⤢'}
@@ -12813,14 +12827,20 @@ export default function App() {
       // the project and Actions tab if the user has access. Clear the params so a
       // refresh doesn't re-trigger.
       try {
-        const params = new URLSearchParams(window.location.search);
-        const dpProj = params.get('project');
-        const dpAct = params.get('action');
-        if (dpProj && dpAct && ps[dpProj]) {
-          setCurrentId(dpProj);
-          setView('actions');
-          setInitialActionEditId(dpAct);
-          // Opens the action's edit form via ActionItemsView's initialEditId prop.
+        const { project: dpProj, action: dpAct, task: dpTask } = parseDeepLink(window.location.search);
+        if (dpProj && (dpAct || dpTask)) {
+          if (ps[dpProj]) {
+            setCurrentId(dpProj);
+            if (dpTask) {
+              // Task panel renders beside any view; keep the current one.
+              setSelectedTaskId(dpTask);
+            } else {
+              setView('actions');
+              setInitialActionEditId(dpAct);
+              // Opens the action's edit form via ActionItemsView's initialEditId prop.
+            }
+          }
+          // Always clear, even when the project is inaccessible (nothing opens).
           window.history.replaceState({}, '', window.location.pathname);
         }
       } catch {
@@ -14360,7 +14380,7 @@ export default function App() {
             </ErrorBoundary>
           </div>
           {selectedTaskId && project && (
-            <TaskDetail project={project} taskId={selectedTaskId} author={author} teamMembers={teamMembers} dialogs={dialogs}
+            <TaskDetail project={project} taskId={selectedTaskId} showToast={showToast} author={author} teamMembers={teamMembers} dialogs={dialogs}
               onClose={() => setSelectedTaskId(null)}
               onUpdate={onTaskUpdate}
               onDelete={onTaskDelete}
