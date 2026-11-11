@@ -30,6 +30,7 @@ import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storag
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
+import { loadMetaStrict } from './bootLoad.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -12636,6 +12637,7 @@ function TransferOwnerDialog({ teamMembers, currentOwner, projects, onClose, onT
 /* ═════════ MAIN APP ═════════ */
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState(false);
   const [author, setAuthor] = useState(null);
   const [authorEmail, setAuthorEmail] = useState(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -12690,10 +12692,17 @@ export default function App() {
   // Load on mount
   useEffect(() => {
     (async () => {
-      let m = await loadMeta();
+      const boot = await loadMetaStrict(window.storage);
+      if (boot.status === 'error') {
+        // Failed read: never seed or write; show Retry.
+        setBootError(true);
+        setLoading(false);
+        return;
+      }
+      let m = boot.meta;
       const localUser = await sgetLocal(K.userLocal);
 
-      if (!m) {
+      if (boot.status === 'missing') {
         // First-time: seed with CRP project
         const seeded = cloneDeep(SEED_CRP);
         seeded.createdAt = new Date().toISOString();
@@ -13880,6 +13889,15 @@ export default function App() {
     const a = await loadActivity(next); setActivity(a);
     showToast(`Deleted project "${project.name}"`);
   };
+
+  if (bootError) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
+        <div>Couldn't load AF-MPT — check your connection.</div>
+        <Btn variant="primary" onClick={() => window.location.reload()}>Retry</Btn>
+      </div>
+    );
+  }
 
   if (loading || (author && view === null)) {
     return (
