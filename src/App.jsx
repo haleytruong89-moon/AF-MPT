@@ -3372,17 +3372,12 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   const canDates = isV2 ? canEditTaskDates({ isOwner, isV2, roles: v2Roles, taskId: task.id, uid: me.uid }) : isOwner;
   const wsWindow = (v2Roles && v2Roles.workstreams && v2Roles.workstreams[workstream.id]) || workstream;
   const setDraftDate = (key, v) => {
-    const val = v || null;
-    const next = { ...draft, [key]: val };
-    if (isV2 && !isOwner && !datesWithinWs(next.start, next.end, wsWindow)) {
-      setDateNote({ key, text: `Outside the work stream dates (${wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – ${wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}). Use Request change.` });
-      return;
-    }
     setDateNote(null);
-    setDraft(next);
+    setDraft({ ...draft, [key]: v || null });
   };
-  const dateNoteFor = (key) => (dateNote && dateNote.key === key
-    ? <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 3 }}>{dateNote.text}</div>
+  const datesOutsideWs = () => isV2 && !isOwner && !datesWithinWs(draft.start, draft.end, wsWindow);
+  const dateNoteFor = () => (dateNote
+    ? <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 3 }}>{dateNote}</div>
     : null);
   // A manager may not produce manual mode (PIC removed / 3+ contributors): block it.
   const autoCreditOrBlock = (next, pic, contributors) => {
@@ -3418,6 +3413,11 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   ];
 
   const save = () => {
+    if (datesOutsideWs()) {
+      setDateNote(`Outside the work stream dates (${wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – ${wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}). Use Request change.`);
+      return;
+    }
+    setDateNote(null);
     const editedDraft = { ...draft };
     for (const f of LIVE_FIELDS) delete editedDraft[f];
     let toSave = { ...task, ...editedDraft };
@@ -3756,7 +3756,6 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                     🔒 {draft.start ? fmtDateShort(draft.start) : '—'}
                   </div>
                 )}
-                {dateNoteFor('start')}
               </div>
               <div style={{ flex: 1 }}>
                 <FieldLabel>
@@ -3772,7 +3771,6 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                         </Btn>
                       )}
                     </div>
-                    {dateNoteFor('end')}
                   </>
                 ) : (
                   <div style={{ display: 'flex', gap: 6 }}>
@@ -3790,6 +3788,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 )}
               </div>
             </div>
+            {dateNoteFor()}
             <div>
               <FieldLabel>Deadline type</FieldLabel>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -12974,8 +12973,10 @@ export default function App() {
   // personal override → workspace default → 'my-work' (the new v30 default).
   useEffect(() => {
     if (view !== null || !meta || !author) return;
-    setView(userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work');
-  }, [meta, author, view, userPrefs]);
+    const v = userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work';
+    // Activity is workspace-owner only (PR-E U5): never land a non-Owner there.
+    setView(v === 'activity' && !isOwner ? 'my-work' : v);
+  }, [meta, author, view, userPrefs, isOwner]);
 
   // v30.A.1 — modal state for creating an action from My Work + state
   // for routing "→ Open" from My Work to a specific action's Edit form.
@@ -14697,7 +14698,7 @@ export default function App() {
                   onChange={(e) => setPersonalDefaultOverride(e.target.value || null)}
                   style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
                   <option value="">(Use workspace default)</option>
-                  {DEFAULT_VIEW_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  {DEFAULT_VIEW_OPTIONS.filter((o) => isOwner || o.id !== 'activity').map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                 </select>
                 <div style={{ fontSize: 10.5, color: TOK.muted }}>Applies on your next app load.</div>
               </div>
