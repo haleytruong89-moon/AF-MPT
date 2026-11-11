@@ -13687,8 +13687,8 @@ export default function App() {
     const id = currentId;
     (async () => {
       const list = await loadActivityStrict(id);
-      if (cancelled) return;
-      setActivity(list || []);
+      if (cancelled || !list) return; // failed read: keep the list, stay unloaded so it retries
+      setActivity(list);
       setActivityLoadedId(id);
     })();
     return () => { cancelled = true; };
@@ -14087,7 +14087,7 @@ export default function App() {
           <div role="alert" style={{ background: TOK.blockerBg, color: TOK.blocker, borderBottom: '1px solid currentColor', padding: '6px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {loadFailed.map((pid) => (
               <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span>Couldn’t load {meta?.names?.[pid] || pid}</span>
+                <span>Couldn't load {meta?.names?.[pid] || pid} —</span>
                 <Btn size="sm" onClick={retryFailedLoads}>Retry</Btn>
               </div>
             ))}
