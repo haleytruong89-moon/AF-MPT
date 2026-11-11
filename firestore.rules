@@ -1360,7 +1360,18 @@ service cloud.firestore {
     // can read it to populate the member-picker.
     match /workspaces/main/users/{uid} {
       allow read: if isSmartOSC();
-      allow write: if isSmartOSC() && request.auth.uid == uid;
+      // Entry must be pinned to the signed-in account (uid field = doc id, email = token email).
+      function userDirOk(d) {
+        return d.get('uid', null) == uid && d.get('email', null) == request.auth.token.email;
+      }
+      // Create: every key checked. Update: only changed keys checked, so legacy docs with
+      // extra keys still accept the sign-in upsert.
+      allow create: if isSmartOSC() && request.auth.uid == uid
+        && userDirOk(request.resource.data)
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'name', 'photo', 'lastSeen']);
+      allow update: if isSmartOSC() && request.auth.uid == uid
+        && userDirOk(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'email', 'name', 'photo', 'lastSeen']);
     }
 
     // ─────── Per-user private prefs (currentProjectId, etc.) ───────
