@@ -2032,6 +2032,8 @@ function FieldLabel({ children }) {
 // B2/B3: persistent banner for failed or refused project saves.
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
+const nowHHMM = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+
 function SaveBanner({ saveState, onRetry }) {
   const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
   if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
@@ -12685,6 +12687,7 @@ export default function App() {
   const [saveState, setSaveState] = useState({});
   const pendingSaves = useRef(0);
   const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
+  const bumpPending = useCallback((d) => { pendingSaves.current = Math.max(0, pendingSaves.current + d); setPendingN(pendingSaves.current); }, []);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const saveStateRef = useRef({});
   saveStateRef.current = saveState;
@@ -12988,7 +12991,7 @@ export default function App() {
   const closeBusy = useRef({});
   const persistProject = useCallback((p) => {
     if (!p) return;
-    if (!saveTimers.current[p.id]) { pendingSaves.current += 1; setPendingN(pendingSaves.current); }
+    if (!saveTimers.current[p.id]) bumpPending(1);
     clearTimeout(saveTimers.current[p.id]);
     pendingTree.current[p.id] = p;
     const fire = async () => {
@@ -13002,14 +13005,13 @@ export default function App() {
       inflightSaves.current[p.id] = pr;
       const status = await pr;
       if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
-      setPendingN(pendingSaves.current);
-      if (status === 'ok') setLastSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }));
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
       refreshV2Roles(p.id);
     };
     saveTimers.current[p.id] = setTimeout(fire, 400);
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
 
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
@@ -13031,18 +13033,17 @@ export default function App() {
       delete saveTimers.current[pid];
       const tree = pendingTree.current[pid];
       delete pendingTree.current[pid];
-      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return null; }
+      if (!tree) { bumpPending(-1); return null; }
       const status = await saveProject(tree);
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
-      setPendingN(pendingSaves.current);
-      if (status === 'ok') setLastSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }));
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
       refreshV2Roles(pid);
       return status;
     }
     if (inflightSaves.current[pid]) return await inflightSaves.current[pid];
     return null;
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
@@ -13168,11 +13169,11 @@ export default function App() {
   const runV2Close = useCallback((args) => {
     const pid = args.projectId;
     closeBusy.current[pid] = (closeBusy.current[pid] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const done = () => {
       closeBusy.current[pid] -= 1;
       if (!closeBusy.current[pid]) delete closeBusy.current[pid];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
     };
     const run = (closeChain.current[pid] || Promise.resolve())
       .then(() => runV2CloseNow(args))
@@ -13180,7 +13181,7 @@ export default function App() {
       .finally(done);
     closeChain.current[pid] = run;
     return run;
-  }, [runV2CloseNow]);
+  }, [runV2CloseNow, bumpPending]);
 
   // Role assignment (spec §7): the role write never carries tree edits. Pending edits
   // are flushed first, the role goes through changeRoleV2, then pending close requests
@@ -13266,7 +13267,7 @@ export default function App() {
     if (!ok) return;
     // Same per-project chain as closes; debounced saves of the project wait meanwhile.
     closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const state = { roleSaved: false };
     const run = (closeChain.current[projectId] || Promise.resolve())
       .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid, state }))
@@ -13279,11 +13280,11 @@ export default function App() {
       .finally(() => {
         closeBusy.current[projectId] -= 1;
         if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
-        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+        bumpPending(-1);
       });
     closeChain.current[projectId] = run;
     return run;
-  }, [rolesNowFor, changeRoleNow, dialogs]);
+  }, [rolesNowFor, changeRoleNow, dialogs, bumpPending]);
 
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
