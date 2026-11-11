@@ -5,12 +5,13 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2, Link as LinkIcon
+  Move, FileText, History, Grip, BarChart3, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
 import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
+import { GlossaryList } from './components/Glossary';
 import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
@@ -12811,6 +12812,8 @@ export default function App() {
   const [meetingMode, setMeetingMode] = useState(false);
   const [showMeetingExport, setShowMeetingExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [helpMenu, setHelpMenu] = useState(null);
+  const [showGlossary, setShowGlossary] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [showBriefingDialog, setShowBriefingDialog] = useState(false);
   const [briefingDialogIsOwnerMode, setBriefingDialogIsOwnerMode] = useState(false);
@@ -14212,7 +14215,7 @@ export default function App() {
             <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
-            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => walkthroughRef.current?.start()} title="Show walkthrough"><HelpCircle size={12} /></Btn></span>
+            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: rect.left - 120, y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
           </div>
 
           {/* Scope / focus selector */}
@@ -14532,6 +14535,11 @@ export default function App() {
           ready={!loading && !!meta && !!currentId}
         />
 
+        {helpMenu && (
+          <PopoverMenu x={helpMenu.x} y={helpMenu.y} onClose={() => setHelpMenu(null)}
+            items={[{ label: 'Walkthrough', icon: <HelpCircle size={13} />, onClick: () => walkthroughRef.current?.start() }, { label: 'Glossary', icon: <BookOpen size={13} />, onClick: () => setShowGlossary(true) }]} />
+        )}
+        {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList /></Modal>}
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
             items={[
