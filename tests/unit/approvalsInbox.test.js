@@ -31,7 +31,7 @@ const mkRoles = () => ({
 });
 const mkTask = (approverUid, over = {}) => ({
   id: 't1', name: 'T', status: 'Submitted',
-  closeRequest: { requestedByUid: 'A', approverUid, requestedAt: FRI, outcome: 'Completed' }, ...over,
+  closeRequest: { requestedByUid: 'A', approverUid, submittedAt: FRI, outcome: 'Completed' }, ...over,
 });
 
 describe('escalationTargets', () => {
@@ -101,11 +101,21 @@ describe('approvalBuckets', () => {
   });
   it('sorts by waitingDays desc', () => {
     const t1 = mkTask('L');
-    const t2 = { ...mkTask('L'), id: 't1b' }; t2.closeRequest = { ...t2.closeRequest, requestedAt: iso(2026, 11, 9) };
+    const t2 = { ...mkTask('L'), id: 't1b' }; t2.closeRequest = { ...t2.closeRequest, submittedAt: iso(2026, 11, 9) };
     const R = mkRoles(); R.tasks.t1b = R.tasks.t1;
     const p = mkProjects(t2); p.pr.programs[0].workstreams[0].tasks.unshift(t1);
     p.pr.__v2.roles = R;
     const b = approvalBuckets(p, 'L', L(2026, 11, 11));
     expect(b.needsMine.map((i) => i.task.id)).toEqual(['t1', 't1b']);
+  });
+});
+
+describe('approvalBuckets owner escalation', () => {
+  it('PM approver waiting >= 3 working days appears for an Owner, escalated', () => {
+    const p = mkProjects(mkTask('P'));
+    expect(approvalBuckets(p, 'O', L(2026, 11, 10)).needsMine).toHaveLength(0);
+    const b = approvalBuckets(p, 'O', L(2026, 11, 11));
+    expect(b.needsMine).toHaveLength(1);
+    expect(b.needsMine[0].escalated).toBe(true);
   });
 });

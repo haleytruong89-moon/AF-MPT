@@ -60,7 +60,7 @@ export function approvalBuckets(projects, uid, now) {
         for (const task of workstream.tasks || []) {
           const cr = task?.closeRequest;
           if (!cr || statusOf(task) !== 'Submitted') continue;
-          const waitingDays = workingDaysSince(cr.requestedAt ?? cr.submittedAt, now);
+          const waitingDays = workingDaysSince(cr.submittedAt, now);
           const targets = escalationTargets(roles, task);
           const item = { project, program, workstream, task, waitingDays, escalated: waitingDays >= ESCALATION_DAYS && targets.length > 0 };
           const mine = cr.approverUid === uid || (waitingDays >= ESCALATION_DAYS && targets.includes(uid));
