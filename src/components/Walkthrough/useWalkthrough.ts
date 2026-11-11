@@ -1,6 +1,6 @@
 // Walkthrough state machine + persistence.
-// - Auto-triggers tour for first-time users (when Firestore flag + localStorage are both unset).
-// - skip()/finish() mark the tour completed (Firestore + localStorage).
+// - Auto-triggers tour for first-time users (Firestore flag + localStorage both unset), whatever the task count.
+// - close() (backdrop click) just hides it; skip()/finish() mark the tour completed (Firestore + localStorage).
 // - start() always resets to step 0; does NOT clear the flag (replay).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -12,31 +12,16 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { STEPS, FIRST_ADVANCED_STEP_INDEX } from './steps';
+import { shouldCheckAutoStart, isFirstVisit, dismissMarksSeen } from './tourRules';
 
 const USER_REF = (uid: string) => doc(db, 'users', uid);
 const LS_KEY = 'afmpt:tour:completed';
 const AUTO_TRIGGER_DELAY_MS = 800;
 
-type AnyProject = {
-  programs?: { workstreams?: { tasks?: unknown[] }[] }[];
-};
-
-function projectHasTasks(project: AnyProject | null | undefined): boolean {
-  if (!project) return false;
-  for (const pg of project.programs || []) {
-    for (const ws of pg.workstreams || []) {
-      if ((ws.tasks || []).length > 0) return true;
-    }
-  }
-  return false;
-}
-
 export interface UseWalkthroughArgs {
   uid: string | null | undefined;
   /** Whether the parent app finished bootstrapping (meta + project loaded). */
   ready: boolean;
-  /** Current project — used to gate auto-trigger by project-has-tasks. */
-  currentProject: AnyProject | null | undefined;
 }
 
 export interface WalkthroughApi {
@@ -45,6 +30,8 @@ export interface WalkthroughApi {
   start: () => void;
   next: () => void;
   skip: () => void;
+  /** Close without marking the tour as seen (backdrop click). */
+  close: () => void;
   finish: () => void;
   branchContinue: () => void;
   branchSkip: () => void;
@@ -53,19 +40,12 @@ export interface WalkthroughApi {
 export function useWalkthrough({
   uid,
   ready,
-  currentProject,
 }: UseWalkthroughArgs): WalkthroughApi {
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   // Auto-trigger fires exactly once per mount. start() (replay) does NOT reset
   // this ref — replay is manual-only via the "?" button.
   const autoTriggerRanRef = useRef(false);
-  // Latest project ref so the delayed auto-trigger re-checks tasks at fire time
-  // (the user may switch projects during the 800ms delay).
-  const currentProjectRef = useRef(currentProject);
-  useEffect(() => {
-    currentProjectRef.current = currentProject;
-  }, [currentProject]);
 
   const markCompleted = useCallback(async () => {
     try {
@@ -99,7 +79,12 @@ export function useWalkthrough({
 
   const skip = useCallback(() => {
     setActive(false);
-    void markCompleted();
+    if (dismissMarksSeen('skip')) void markCompleted();
+  }, [markCompleted]);
+
+  const close = useCallback(() => {
+    setActive(false);
+    if (dismissMarksSeen('backdrop')) void markCompleted();
   }, [markCompleted]);
 
   const finish = useCallback(() => {
@@ -119,18 +104,15 @@ export function useWalkthrough({
   // Auto-trigger for first-time users
   useEffect(() => {
     if (autoTriggerRanRef.current) return;
-    if (!ready || !uid) return;
-    if (!projectHasTasks(currentProject)) return;
-
+    let localSeen = false;
     // Quick localStorage gate — avoids racing the Firestore read
     try {
-      if (localStorage.getItem(LS_KEY) === '1') {
-        autoTriggerRanRef.current = true;
-        return;
-      }
+      localSeen = localStorage.getItem(LS_KEY) === '1';
     } catch {
       // ignore
     }
+    if (ready && uid && localSeen) autoTriggerRanRef.current = true;
+    if (!shouldCheckAutoStart({ ready, uid, localSeen })) return;
 
     autoTriggerRanRef.current = true;
 
@@ -138,14 +120,12 @@ export function useWalkthrough({
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     (async () => {
       try {
-        const snap = await getDoc(USER_REF(uid));
+        const snap = await getDoc(USER_REF(uid as string));
         const data = snap.exists() ? snap.data() : null;
-        if (!data || data.tourCompletedAt == null) {
+        if (isFirstVisit(data)) {
           if (cancelled) return;
           timeoutHandle = setTimeout(() => {
-            // Re-check project state at fire time: user may have switched
-            // projects during the 800ms delay to one with no tasks.
-            if (!cancelled && projectHasTasks(currentProjectRef.current)) start();
+            if (!cancelled) start();
           }, AUTO_TRIGGER_DELAY_MS);
         }
       } catch (err) {
@@ -157,7 +137,7 @@ export function useWalkthrough({
       cancelled = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
     };
-  }, [ready, uid, currentProject, start]);
+  }, [ready, uid, start]);
 
   return {
     active,
@@ -165,6 +145,7 @@ export function useWalkthrough({
     start,
     next,
     skip,
+    close,
     finish,
     branchContinue,
     branchSkip,

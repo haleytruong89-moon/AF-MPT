@@ -3643,7 +3643,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
         <div style={{ margin: '16px 0' }}>
           <FieldLabel>Status</FieldLabel>
-          {project.__v2 ? <CloseControl task={task} roles={project.__v2.roles} onUpdate={onUpdate} dialogs={dialogs} /> : (
+          {project.__v2 ? <div data-tour="task-close"><CloseControl task={task} roles={project.__v2.roles} onUpdate={onUpdate} dialogs={dialogs} /></div> : (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {STATUSES.map((s) => {
               const active = (task.status || 'Planned') === s;
@@ -8599,10 +8599,10 @@ function myWorkTimeAgo(ts) {
   return fmtDateShort(ts);
 }
 
-function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, headerRight, children }) {
+function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, headerRight, tour, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
+    <div data-tour={tour} style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, marginBottom: 12, overflow: 'hidden' }}>
       <div
         onClick={() => setOpen(!open)}
         style={{
@@ -11582,7 +11582,7 @@ function MyWorkView({
       {Header}
 
       {approvals.needsMine.length > 0 && (
-        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+        <MyWorkSection icon="⏳" tour="my-work-needs-approval" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
           {approvals.needsMine.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
@@ -11590,7 +11590,7 @@ function MyWorkView({
         </MyWorkSection>
       )}
       {approvals.sent.length > 0 && (
-        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+        <MyWorkSection icon="📤" tour="my-work-sent-approval" title="Sent for approval" count={approvals.sent.length} defaultOpen>
           {approvals.sent.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
@@ -14196,7 +14196,7 @@ export default function App() {
               const rs = myRoleSummary(project.__v2.roles || null, meValue?.uid || null, project);
               const viewOnly = rs.label === 'View only';
               return (
-                <span title={rs.detail.join('\n')} style={{
+                <span data-tour="role-chip" title={rs.detail.join('\n')} style={{
                   fontSize: 11, fontFamily: FONT_STACK, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 999,
                   border: '1px solid ' + (viewOnly ? TOK.line : TOK.lineStrong),
                   background: viewOnly ? TOK.bg : TOK.surface,
@@ -14204,10 +14204,10 @@ export default function App() {
                 }}>Your role: {rs.label}</span>
               );
             })()}
-            <Btn size="sm" variant="ghost" onClick={(e) => {
+            <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               setProjectMenu({ x: rect.left, y: rect.bottom + 4 });
-            }} title="Project options"><MoreHorizontal size={12} /></Btn>
+            }} title="Project options"><MoreHorizontal size={12} /></Btn></span>
             <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>
             <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
@@ -14269,7 +14269,7 @@ export default function App() {
               // v30 Phase 3 — during impersonation, only My Work tab is visible.
               const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
               return visibleTabs.map((v) => (
-                <button key={v.id} onClick={() => {
+                <button key={v.id} data-tour={'tab-' + v.id} onClick={() => {
                   if (v.id === 'raid') setRaidScopeProgramId(null);
                   setView(v.id);
                 }} style={{
@@ -14530,9 +14530,6 @@ export default function App() {
           ref={walkthroughRef}
           uid={authUser?.uid || null}
           ready={!loading && !!meta && !!currentId}
-          currentProject={project}
-          currentView={view}
-          setView={setView}
         />
 
         {projectMenu && (

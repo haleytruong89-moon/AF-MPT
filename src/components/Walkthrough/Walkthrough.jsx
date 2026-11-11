@@ -67,23 +67,15 @@ function tooltipPosition(rect, placement) {
 }
 
 const Walkthrough = forwardRef(function Walkthrough(
-  { uid, ready, currentProject, currentView, setView },
+  { uid, ready },
   ref
 ) {
-  const api = useWalkthrough({ uid, ready, currentProject });
-  const { active, stepIndex, start, next, skip, finish, branchContinue, branchSkip } = api;
+  const api = useWalkthrough({ uid, ready });
+  const { active, stepIndex, start, next, skip, close, finish, branchContinue, branchSkip } = api;
   const step = STEPS[stepIndex];
 
   // Expose start() to parent so the "?" button can replay
   useImperativeHandle(ref, () => ({ start }), [start]);
-
-  // For requireView: switch view before showing
-  useEffect(() => {
-    if (!active || !step) return;
-    if (step.type === 'spotlight' && step.requireView && currentView !== step.requireView) {
-      setView(step.requireView);
-    }
-  }, [active, step, currentView, setView]);
 
   // Resolve target rect for spotlight
   const [targetRect, setTargetRect] = useState(null);
@@ -112,9 +104,13 @@ const Walkthrough = forwardRef(function Walkthrough(
             setResolvedTarget(el2);
             setTargetRect(getRect(el2));
           } else {
-            // Fall back to centered modal mode
             setResolvedTarget(null);
             setTargetRect(null);
+            // Optional steps vanish when their target is not on screen;
+            // others fall back to a centered modal with fallbackNote.
+            if (step.skipIfMissing) {
+              if (stepIndex >= STEPS.length - 1) finish(); else next();
+            }
           }
         }, FALLBACK_RETRY_MS);
       }
@@ -124,7 +120,7 @@ const Walkthrough = forwardRef(function Walkthrough(
       cancelled = true;
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
-  }, [active, step]);
+  }, [active, step, stepIndex, next, finish]);
 
   // Reposition on resize/scroll
   useEffect(() => {
@@ -164,6 +160,7 @@ const Walkthrough = forwardRef(function Walkthrough(
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             pointerEvents: 'auto',
           }}
+          onClick={(e) => { if (e.target === e.currentTarget) close(); }}
         >
           <div
             role="dialog"
@@ -200,6 +197,7 @@ const Walkthrough = forwardRef(function Walkthrough(
           progressLabel={progressLabel}
           onNext={next}
           onSkip={skip}
+          onClose={close}
         />
       )}
     </div>
@@ -258,15 +256,15 @@ function btnStyle(variant) {
   return { ...base, background: 'transparent', color: '#666' };
 }
 
-function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, onSkip }) {
+function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, onSkip, onClose }) {
   // Four div dimmers around the target rect (no clip-path needed)
   const dimmer = { background: DIM, position: 'fixed', pointerEvents: 'auto' };
   return (
     <>
-      <div style={{ ...dimmer, top: 0, left: 0, right: 0, height: rect.top }} onClick={onSkip} />
-      <div style={{ ...dimmer, top: rect.bottom, left: 0, right: 0, bottom: 0 }} onClick={onSkip} />
-      <div style={{ ...dimmer, top: rect.top, left: 0, width: rect.left, height: rect.height }} onClick={onSkip} />
-      <div style={{ ...dimmer, top: rect.top, left: rect.right, right: 0, height: rect.height }} onClick={onSkip} />
+      <div style={{ ...dimmer, top: 0, left: 0, right: 0, height: rect.top }} onClick={onClose} />
+      <div style={{ ...dimmer, top: rect.bottom, left: 0, right: 0, bottom: 0 }} onClick={onClose} />
+      <div style={{ ...dimmer, top: rect.top, left: 0, width: rect.left, height: rect.height }} onClick={onClose} />
+      <div style={{ ...dimmer, top: rect.top, left: rect.right, right: 0, height: rect.height }} onClick={onClose} />
       {/* Outline ring around the target */}
       <div
         style={{
