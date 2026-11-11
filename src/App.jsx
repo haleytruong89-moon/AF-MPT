@@ -29,6 +29,7 @@ import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storag
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
+import { taskCountUnder, restoreTouchesV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
@@ -6703,12 +6704,14 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   };
   const actDelete = async (kind, pg, ws) => {
     if (kind === 'program') {
+      if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const r = rollup(pg);
       const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
+      if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${(ws.tasks || []).length} task${(ws.tasks || []).length === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({
@@ -6944,6 +6947,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
   };
   const deleteProgram = async (pg) => {
+    if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const r = rollup(pg);
     const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
@@ -6970,6 +6974,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     onActivity({ type: 'ws_rename', description: `Renamed work stream "${old}" → "${name}"` });
   };
   const deleteWorkstream = async (pg, ws) => {
+    if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const n = (ws.tasks || []).length;
     const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${n} task${n === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
@@ -13822,6 +13827,7 @@ export default function App() {
       const text = await file.text();
       const data = JSON.parse(text);
       if (!data.meta || !data.projects) throw new Error('Invalid backup file.');
+      if (restoreTouchesV2(data, projects)) { await dialogs.alert({ title: "Can't restore", message: V2_RESTORE_MESSAGE }); return; }
       await saveMeta(data.meta);
       const results = [];
       for (const pid of data.meta.projectIds) {
