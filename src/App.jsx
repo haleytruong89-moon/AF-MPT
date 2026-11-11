@@ -31,7 +31,7 @@ import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
-import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE } from './treeGuards.js';
+import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
@@ -1541,7 +1541,6 @@ async function ssetLocal(k, v) { try { await window.storage.set(k, v, false); re
 async function sdeleteShared(k) { try { await window.storage.delete(k, true); return true; } catch { return false; } }
 async function sdeleteLocal(k) { try { await window.storage.delete(k, false); return true; } catch { return false; } }
 
-async function loadMeta() { const r = await sgetShared(K.meta); if (!r) return null; try { return JSON.parse(r); } catch { return null; } }
 async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
 // Only for owner-field changes (transfer, workspace default view); see metaForWrite().
 async function saveMetaOwnerFields(m) { return ssetShared(K.meta, JSON.stringify({ ...m, [OWNER_WRITE_FLAG]: true })); }
@@ -6719,13 +6718,13 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     if (kind === 'program') {
       if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const r = rollup(pg);
-      const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
+      const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
       if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
-      const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${(ws.tasks || []).length} task${(ws.tasks || []).length === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
+      const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({
         ...project, programs: project.programs.map((p) =>
@@ -6962,7 +6961,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   const deleteProgram = async (pg) => {
     if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const r = rollup(pg);
-    const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
     onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
@@ -6989,7 +6988,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   const deleteWorkstream = async (pg, ws) => {
     if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const n = (ws.tasks || []).length;
-    const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${n} task${n === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({
       ...project, programs: project.programs.map((p) =>
@@ -13837,9 +13836,13 @@ export default function App() {
   };
   const backupJson = async () => {
     const everything = { meta, projects, activity: {} };
+    const unreadable = [];
     for (const pid of meta.projectIds) {
-      everything.activity[pid] = await loadActivity(pid);
+      const list = await loadActivityStrict(pid);
+      if (list === null) unreadable.push((projects[pid] && projects[pid].name) || pid);
+      else everything.activity[pid] = list;
     }
+    if (unreadable.length) { await dialogs.alert({ title: "Backup not created", message: `Couldn't read the activity of: ${unreadable.join(', ')}. Check your connection and try again.` }); return; }
     const blob = new Blob([JSON.stringify(everything, null, 2)], { type: 'application/json' });
     downloadBlob(blob, 'workspace_backup_' + toISODate(new Date()) + '.json');
     showToast('Backup downloaded');
@@ -13856,12 +13859,11 @@ export default function App() {
       await saveMeta(data.meta);
       const results = [];
       for (const pid of v1Ids) {
-        if (data.projects[pid]) {
-          // Explicit restore overrides the stale-write guard (B3) for this write only.
-          const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
-          results.push({ name: data.projects[pid].name || pid, status });
-        }
-        if (data.activity && data.activity[pid]) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
+        if (!data.projects[pid]) continue;
+        // Explicit restore overrides the stale-write guard (B3) for this write only.
+        const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
+        results.push({ name: data.projects[pid].name || pid, status });
+        if (activityToRestore(status, data.activity && data.activity[pid])) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
       }
       const failed = failedRestores(results);
       if (failed.length) {

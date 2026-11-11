@@ -27,3 +27,15 @@ describe('planActivityAppend', () => {
     expect(r.write[0]).toEqual(ev('new'));
   });
 });
+
+describe('planActivityAppend de-duplication (M-1)', () => {
+  it('does not repeat an entry whose id is already in read', () => {
+    const e = { id: 'x', t: 1 };
+    const r = planActivityAppend({ v2: false, read: [{ id: 'x', t: 1 }, { id: 'y' }], pending: [], entry: e });
+    expect(r.write.map((a) => a.id)).toEqual(['x', 'y']);
+  });
+  it('does not repeat a pending entry already in read, keeps first occurrence', () => {
+    const r = planActivityAppend({ v2: false, read: [{ id: 'p' }, { id: 'y' }], pending: [{ id: 'p' }], entry: { id: 'n' } });
+    expect(r.write.map((a) => a.id)).toEqual(['n', 'p', 'y']);
+  });
+});

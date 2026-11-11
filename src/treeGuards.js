@@ -23,3 +23,9 @@ export function splitRestoreByV2(data, liveProjects) {
   }
   return { v1Ids, v2Ids };
 }
+
+// Restore writes a project's activity only after its tree was saved and only when the backup has entries,
+// so a restore can never empty or replace a log for a project that was not restored.
+export function activityToRestore(status, list) {
+  return status === 'ok' && Array.isArray(list) && list.length > 0;
+}

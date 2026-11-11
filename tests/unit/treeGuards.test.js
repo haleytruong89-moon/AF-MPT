@@ -17,3 +17,17 @@ describe('treeGuards', () => {
     expect(splitRestoreByV2({ meta: { projectIds: ['x'] }, projects: {} }, {})).toEqual({ v1Ids: [], v2Ids: [] });
   });
 });
+
+import { activityToRestore } from '../../src/treeGuards.js';
+describe('activityToRestore', () => {
+  it('ok + non-empty list -> true', () => expect(activityToRestore('ok', [{ id: 'a' }])).toBe(true));
+  it('ok + empty list -> false', () => expect(activityToRestore('ok', [])).toBe(false));
+  it('non-ok status -> false', () => {
+    for (const s of ['conflict', 'denied', 'readonly', 'error']) expect(activityToRestore(s, [{ id: 'a' }])).toBe(false);
+  });
+  it('missing or non-array list -> false', () => {
+    expect(activityToRestore('ok', undefined)).toBe(false);
+    expect(activityToRestore('ok', null)).toBe(false);
+    expect(activityToRestore('ok', 'x')).toBe(false);
+  });
+});
