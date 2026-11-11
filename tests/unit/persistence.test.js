@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -277,8 +277,30 @@ describe('saveChip', () => {
   it('nothing -> empty label', () => {
     expect(saveChip({ pending: 0, saveState: {}, lastSavedAt: null })).toEqual({ label: '', tone: 'muted', retry: false });
   });
-  it('conflict/denied entries are not reported by the chip', () => {
-    const st = { a: { status: 'conflict', name: 'A' }, b: { status: 'denied', name: 'B' } };
-    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' }).label).toBe('Saved 09:05');
+  it('any non-error entry hides the chip (the sticky banner speaks; never Saved next to a refusal)', () => {
+    for (const status of ['conflict', 'denied', 'refused', 'history', 'readonly']) {
+      const st = { a: { status, name: 'A' } };
+      expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+      expect(saveChip({ pending: 1, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+    }
+  });
+  it('a non-error entry also hides the chip when an error entry exists (banner lists both)', () => {
+    const st = { a: { status: 'error', name: 'A' }, b: { status: 'conflict', name: 'B' } };
+    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+  });
+});
+
+describe('retryablePids', () => {
+  it('lists only projects whose save failed with error', () => {
+    const st = {
+      p1: { status: 'error', name: 'A' }, p2: { status: 'conflict', name: 'B' }, p3: { status: 'denied', name: 'C' },
+      p4: { status: 'refused', name: 'D' }, p5: { status: 'history', name: 'E' }, p6: { status: 'readonly', name: 'F' },
+      p7: { status: 'error', name: 'G' },
+    };
+    expect(retryablePids(st)).toEqual(['p1', 'p7']);
+  });
+  it('empty / missing state -> []', () => {
+    expect(retryablePids({})).toEqual([]);
+    expect(retryablePids(undefined)).toEqual([]);
   });
 });

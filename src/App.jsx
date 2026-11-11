@@ -18,14 +18,14 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
-import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
+import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
 import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
@@ -12649,6 +12649,9 @@ export default function App() {
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
   const [currentId, setCurrentId] = useState(null);
+  // Current project at the time an await resolves (activity logs must not land in another project's view).
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
   const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
@@ -13016,8 +13019,10 @@ export default function App() {
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
   const retryFailedSaves = useCallback(() => {
-    for (const [pid, v] of Object.entries(saveStateRef.current)) {
-      if (v.status === 'error' && projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+    for (const pid of retryablePids(saveStateRef.current)) {
+      if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+      // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
+      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
   }, [persistProject]);
   useEffect(() => {
@@ -13067,7 +13072,9 @@ export default function App() {
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
-    const log = await appendActivity(currentId, entry, { v2 });
+    const pid = currentId;
+    const log = await appendActivity(pid, entry, { v2 });
+    if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
     if (log) setActivity(log);
     else if (v2) setActivity((prev) => [entry, ...prev]);
   }, [currentId, author]);
@@ -13085,11 +13092,11 @@ export default function App() {
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
     const log = await appendActivity(projectId, entry, { v2 });
-    if (projectId === currentId) {
+    if (projectId === currentIdRef.current) {
       if (log) setActivity(log);
       else if (v2) setActivity((prev) => [entry, ...prev]);
     }
-  }, [author, currentId]);
+  }, [author]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen
@@ -13156,7 +13163,12 @@ export default function App() {
       showToastRef.current(chokeMessage(res.status));
       return;
     }
-    if (res.status !== 'ok') return; // the save banner reports it
+    if (res.status !== 'ok') {
+      // The save banner reports it. Drop the optimistic close (back to the last saved task) so
+      // Retry / online cannot later save an unlogged close through the general save path.
+      setTask(closeRollbackTask(v2SavedTree(projectId), oldTask.id, res.task));
+      return;
+    }
     if (res.task !== intent.task) {
       setTask(res.task);
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;

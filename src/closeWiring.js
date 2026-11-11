@@ -122,6 +122,19 @@ export function replaceTask(project, taskId, task) {
 }
 
 /**
+ * Final review PR-C #1: the task to show after a close that did not end 'ok' — the last
+ * saved version (from the saved tree), else `fallback`. Keeping the optimistic close in
+ * memory would let Retry / online re-save it through the general path, with no close log.
+ */
+export function closeRollbackTask(savedTree, taskId, fallback) {
+  for (const pg of savedTree?.programs || [])
+    for (const ws of pg.workstreams || [])
+      for (const t of ws.tasks || [])
+        if (t.id === taskId) return t;
+  return fallback;
+}
+
+/**
  * What CloseControl shows. buttons: ids in display order —
  * open: 'Planned', 'InProgress', then 'Completed' + 'Dropped' (direct) or
  * 'submit-done' + 'submit-dropped' (only when canSubmit), none for anyone else; Submitted: 'withdraw' (requester),
