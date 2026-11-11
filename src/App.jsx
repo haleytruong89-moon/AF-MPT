@@ -18,7 +18,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -12650,6 +12650,9 @@ export default function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
+  // C1: activity loads lazily; remembers which project's log is in `activity`. Failed project loads are retried from a banner.
+  const [activityLoadedId, setActivityLoadedId] = useState(null);
+  const [loadFailed, setLoadFailed] = useState([]);
   const [showImport, setShowImport] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
   const [scopeProgramId, setScopeProgramId] = useState(null);
@@ -12714,16 +12717,10 @@ export default function App() {
       setCurrentId(m.currentProjectId);
 
       const ps = {};
-      for (const pid of m.projectIds) {
-        const p = await loadProject(pid);
-        if (p) ps[pid] = ensureProjectRaid(p);
-      }
+      const results = await Promise.all(m.projectIds.map((pid) => loadProject(pid)));
+      m.projectIds.forEach((pid, i) => { if (results[i]) ps[pid] = ensureProjectRaid(results[i]); });
+      setLoadFailed(loadFailures(m.projectIds, results));
       setProjects(ps);
-
-      if (m.currentProjectId) {
-        const a = await loadActivity(m.currentProjectId);
-        setActivity(a);
-      }
 
       if (localUser) {
         // Back-compat: localUser was previously a plain string; now it's JSON {name, email}
@@ -13675,15 +13672,35 @@ export default function App() {
     setCurrentId(id);
     setSelectedTaskId(null);
     setScopeProgramId(null);
-    if (id === '__all__') {
-      setActivity([]);
-    } else {
-      const a = await loadActivity(id);
-      setActivity(a);
-    }
+    setActivity([]);
+    setActivityLoadedId(null);
     const m2 = { ...meta, currentProjectId: id };
     setMeta(m2);
     await saveMeta(m2);
+  };
+
+  // C1: load the activity log only when a view that shows it is open.
+  useEffect(() => {
+    if (view !== 'dashboard' && view !== 'activity') return;
+    if (!currentId || currentId === '__all__' || activityLoadedId === currentId) return;
+    let cancelled = false;
+    const id = currentId;
+    (async () => {
+      const list = await loadActivityStrict(id);
+      if (cancelled) return;
+      setActivity(list || []);
+      setActivityLoadedId(id);
+    })();
+    return () => { cancelled = true; };
+  }, [view, currentId, activityLoadedId]);
+
+  const retryFailedLoads = async () => {
+    const ids = loadFailed;
+    const results = await Promise.all(ids.map((pid) => loadProject(pid)));
+    const got = {};
+    ids.forEach((pid, i) => { if (results[i]) got[pid] = ensureProjectRaid(results[i]); });
+    if (Object.keys(got).length) setProjects((prev) => ({ ...prev, ...got }));
+    setLoadFailed(loadFailures(ids, results));
   };
 
   const changeOwnership = async (action, newOwner) => {
@@ -13888,7 +13905,7 @@ export default function App() {
     setMeta(m2); await saveMeta(m2);
     const np = { ...projects }; delete np[project.id]; setProjects(np);
     setCurrentId(next);
-    const a = await loadActivity(next); setActivity(a);
+    setActivity([]); setActivityLoadedId(null);
     showToast(`Deleted project "${project.name}"`);
   };
 
@@ -14065,6 +14082,17 @@ export default function App() {
             <ChevronDown size={11} style={{ opacity: 0.7 }} />
           </button>
         </div>
+
+        {loadFailed.length > 0 && (
+          <div role="alert" style={{ background: TOK.blockerBg, color: TOK.blocker, borderBottom: '1px solid currentColor', padding: '6px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {loadFailed.map((pid) => (
+              <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span>Couldn’t load {meta?.names?.[pid] || pid}</span>
+                <Btn size="sm" onClick={retryFailedLoads}>Retry</Btn>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Monday banner */}
         {!bannerDismissed && isMonday() && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (

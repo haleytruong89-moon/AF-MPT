@@ -107,3 +107,8 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
   if (writeId) doc.writeId = writeId;
   return { conflict: false, newRev, doc };
 }
+
+// C1: ids whose parallel project load came back empty (null/undefined).
+export function loadFailures(ids, results) {
+  return ids.filter((_, i) => !results[i]);
+}

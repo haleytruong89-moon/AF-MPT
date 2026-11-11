@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -244,5 +244,18 @@ describe('buildProjectWrite — v2 fields stay server-owned (P2.2 task 3)', () =
     expect('__v2' in doc).toBe(false);
     const created = buildProjectWrite(null, { name: 'P', __v2: { readOnly: true } }, opts({ knownRev: undefined }));
     expect('__v2' in created.doc).toBe(false);
+  });
+});
+
+describe('loadFailures (C1: parallel load reports which projects failed)', () => {
+  it('returns ids whose result is null', () => {
+    expect(loadFailures(['a', 'b', 'c'], [{ id: 'a' }, null, { id: 'c' }])).toEqual(['b']);
+  });
+  it('returns [] when all loaded or no ids', () => {
+    expect(loadFailures(['a'], [{ id: 'a' }])).toEqual([]);
+    expect(loadFailures([], [])).toEqual([]);
+  });
+  it('treats undefined result as failed', () => {
+    expect(loadFailures(['a', 'b'], [{ id: 'a' }])).toEqual(['b']);
   });
 });
