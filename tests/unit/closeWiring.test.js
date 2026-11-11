@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeControlModel,
-  DENIED_MESSAGE, NEEDS_REASON_MESSAGE,
+  DENIED_MESSAGE, NEEDS_REASON_MESSAGE, NO_APPROVER_MESSAGE,
 } from '../../src/closeWiring.js';
 import { applyCloseIntent, reassignClose } from '../../src/closeFlow.js';
 
@@ -31,8 +31,12 @@ describe('chokeMessage (verbatim copy)', () => {
     expect(chokeMessage('direct')).toBe(null);
     expect(chokeMessage('legacy')).toBe(null);
   });
+  it('no-approver (H4): verbatim copy', () => {
+    expect(chokeMessage('no-approver')).toBe('No one else can approve this — set a Deputy or another PM');
+    expect(chokeMessage('no-approver')).toBe(NO_APPROVER_MESSAGE);
+  });
   it('isCloseOutcome: plain edits and refusals are not close writes', () => {
-    for (const o of ['legacy', 'unchanged', 'denied', 'needs-reason']) expect(isCloseOutcome(o)).toBe(false);
+    for (const o of ['legacy', 'unchanged', 'denied', 'needs-reason', 'no-approver']) expect(isCloseOutcome(o)).toBe(false);
     for (const o of ['submit', 'direct', 'approve', 'reject', 'withdraw', 'reopen', 'prepared']) expect(isCloseOutcome(o)).toBe(true);
   });
 });

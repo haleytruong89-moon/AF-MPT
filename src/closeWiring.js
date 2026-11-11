@@ -10,11 +10,13 @@ export const DENIED_MESSAGE = "You can't change this task's status — ask your 
 export const NEEDS_REASON_MESSAGE = 'Use Reject to give a reason.';
 export const READ_ONLY_MESSAGE = 'View as is read-only';
 export const MANUAL_SPLIT_MESSAGE = 'Only the Owner can set a manual credit split';
+export const NO_APPROVER_MESSAGE = 'No one else can approve this — set a Deputy or another PM';
 
 /** Toast text for a choke-point outcome (null = no toast). */
 export function chokeMessage(outcome, approverName) {
   if (outcome === 'denied') return DENIED_MESSAGE;
   if (outcome === 'needs-reason') return NEEDS_REASON_MESSAGE;
+  if (outcome === 'no-approver') return NO_APPROVER_MESSAGE;
   if (outcome === 'submit') return `Submitted for approval — ${approverName || 'your approver'} will review.`;
   return null;
 }
@@ -27,7 +29,7 @@ export function replanMessage(outcome, approverName) {
 
 /** An outcome that writes a close transition (v2), as opposed to a plain edit. */
 export function isCloseOutcome(outcome) {
-  return !['legacy', 'unchanged', 'denied', 'needs-reason'].includes(outcome);
+  return !['legacy', 'unchanged', 'denied', 'needs-reason', 'no-approver'].includes(outcome);
 }
 
 /** Directory helpers keyed by uid (invites have no uid and are skipped). */
@@ -74,7 +76,7 @@ export function closeIntentFor({ roles, oldTask, nextTask, me, now, reason, isAc
  *   saved state with fresh roles: a manager who became PIC / contributor
  *   submits instead (rules check the new contributorUids).
  * Returns { status, outcome, task }: task = the last state saved (oldTask when
- * nothing was saved); status = 'ok', 'flush-failed' / 'save-failed' (saveStatus = that save's status), or 'denied' / 'needs-reason' (refused before any write).
+ * nothing was saved); status = 'ok', 'flush-failed' / 'save-failed' (saveStatus = that save's status), or 'denied' / 'needs-reason' / 'no-approver' (refused before any write).
  */
 export async function runCloseFlow({ initial, oldTask, nextTask, me, now, getRoles, flush, saveStep, isActive }) {
   const flushed = await flush();

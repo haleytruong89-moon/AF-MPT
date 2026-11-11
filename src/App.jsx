@@ -13131,7 +13131,7 @@ export default function App() {
       setTask(oldTask);
       return;
     }
-    if (res.status === 'denied' || res.status === 'needs-reason') {
+    if (res.status === 'denied' || res.status === 'needs-reason' || res.status === 'no-approver') {
       // Re-planned after a flush and refused before any write: undo the optimistic change.
       setTask(res.task);
       showToastRef.current(chokeMessage(res.status));
@@ -13293,7 +13293,7 @@ export default function App() {
         });
         return 'retry';
       }
-      if (intent.outcome === 'denied' || intent.outcome === 'needs-reason') {
+      if (intent.outcome === 'denied' || intent.outcome === 'needs-reason' || intent.outcome === 'no-approver') {
         showToastRef.current(chokeMessage(intent.outcome));
         return intent.outcome;
       }
