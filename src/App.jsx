@@ -20,13 +20,13 @@ import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildAct
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip } from './persistence';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
@@ -13696,9 +13696,8 @@ export default function App() {
     setScopeProgramId(null);
     setActivity([]);
     setActivityLoadedId(null);
-    const m2 = { ...meta, currentProjectId: id };
-    setMeta(m2);
-    await saveMeta(m2);
+    rememberCurrentProject(id);
+    setMeta({ ...meta, currentProjectId: id });
   };
 
   // C1: load the activity log only when a view that shows it is open.
@@ -14127,7 +14126,7 @@ export default function App() {
         )}
 
         {/* Monday banner */}
-        {!bannerDismissed && isMonday() && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
+        {!bannerDismissed && isMonday() && !isBriefingDismissed(todayISODate()) && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
           <div style={{
             padding: '10px 16px',
             background: isOwner ? '#e8f0fe' : '#fff8e1',
@@ -14149,10 +14148,8 @@ export default function App() {
             }}>
               {isOwner ? 'Generate digest' : 'Generate briefing'}
             </Btn>
-            <Btn size="sm" variant="ghost" onClick={async () => {
-              const dismissed = [...(meta?.dismissedBriefingDates || []), todayISODate()];
-              const m2 = { ...meta, dismissedBriefingDates: dismissed };
-              setMeta(m2); await saveMeta(m2);
+            <Btn size="sm" variant="ghost" onClick={() => {
+              dismissBriefing(todayISODate());
               setBannerDismissed(true);
             }} title="Dismiss for today">
               <X size={14} />
