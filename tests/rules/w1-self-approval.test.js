@@ -76,6 +76,8 @@ describe('W1 H4: no self-approval by a PIC manager (non-Owner)', () => {
     await assertSucceeds(up(DEPUTY, approve(DEPUTY)));
   });
 
+  // Seeded state is artificial (the requester is neither the PIC nor a manager): it only isolates
+  // the new picUid term, which is what separates the denied approve from the allowed PM approve.
   it('W1-H4-05 Sub-PM-PIC named as approver approves / rejects: denied; PM approves: allowed', async () => {
     await seed(submittedPic(LEAD, cr(ASG, LEAD)));
     await assertFails(up(LEAD, approve(LEAD)));
@@ -89,6 +91,17 @@ describe('W1 H4: no self-approval by a PIC manager (non-Owner)', () => {
       closeRequest: cr(LEAD, to), closeRequestHistory: [hist('Reassigned', PM), ...base.closeRequestHistory],
     });
     await assertFails(up(PM, ra(DEPUTY)));
+    await assertSucceeds(up(PM, ra(OWNER)));
+  });
+
+  it('W1-H4-06b rollout escape: PM-PIC named approver of a pending request reassigns it to the Deputy / an Owner: allowed; to self: denied', async () => {
+    const ra = (to) => ({
+      closeRequest: cr(LEAD, to), closeRequestHistory: [hist('Reassigned', PM), ...base.closeRequestHistory],
+    });
+    await seed(submittedPic(PM, cr(LEAD, PM)));
+    await assertFails(up(PM, ra(PM)));
+    await assertSucceeds(up(PM, ra(DEPUTY)));
+    await seed(submittedPic(PM, cr(LEAD, PM)));
     await assertSucceeds(up(PM, ra(OWNER)));
   });
 
