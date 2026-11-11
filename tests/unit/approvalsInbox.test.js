@@ -51,7 +51,7 @@ describe('escalationTargets', () => {
     const R2 = mkRoles(); R2.tasks.t1.picUid = 'D';
     expect(escalationTargets(R2, mkTask('L'))).toEqual(['P']);
     const R3 = mkRoles(); R3.tasks.t1.picUid = 'O';
-    expect(escalationTargets(R3, mkTask('P'))).toEqual([]);
+    expect(escalationTargets(R3, mkTask('P'))).toEqual(['O']); // Owners can always decide (canDecideClose)
   });
   it('lead approver with no PM/Deputy -> Owners', () => {
     const R2 = mkRoles(); R2.programs.p1 = {};
