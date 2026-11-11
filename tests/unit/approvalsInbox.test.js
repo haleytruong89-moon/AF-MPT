@@ -46,12 +46,24 @@ describe('escalationTargets', () => {
     expect(escalationTargets(R, mkTask('O'))).toEqual([]);
   });
   it('excludes requester and PIC', () => {
-    const t = mkTask('L'); t.closeRequest.requestedByUid = 'P';
-    expect(escalationTargets(R, t)).toEqual(['D']);
+    const t = mkTask('L'); t.closeRequest.requestedByUid = 'P'; // D cannot decide a PM's request (canDecideClose), so Owners
+    expect(escalationTargets(R, t)).toEqual(['O']);
     const R2 = mkRoles(); R2.tasks.t1.picUid = 'D';
     expect(escalationTargets(R2, mkTask('L'))).toEqual(['P']);
     const R3 = mkRoles(); R3.tasks.t1.picUid = 'O';
     expect(escalationTargets(R3, mkTask('P'))).toEqual([]);
+  });
+  it('lead approver with no PM/Deputy -> Owners', () => {
+    const R2 = mkRoles(); R2.programs.p1 = {};
+    expect(escalationTargets(R2, mkTask('L'))).toEqual(['O']);
+  });
+  it('lead who is also the PM -> Owners, not themselves', () => {
+    const R2 = mkRoles(); R2.programs.p1 = { pmUid: 'L' };
+    expect(escalationTargets(R2, mkTask('L'))).toEqual(['O']);
+  });
+  it('a PM who is a contributor is excluded -> falls back to Owners', () => {
+    const R2 = mkRoles(); R2.programs.p1 = { pmUid: 'P' }; R2.tasks.t1.contributorUids = ['P'];
+    expect(escalationTargets(R2, mkTask('L'))).toEqual(['O']);
   });
 });
 

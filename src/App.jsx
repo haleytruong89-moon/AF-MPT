@@ -8632,7 +8632,7 @@ function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
   const { project, program, workstream, task, waitingDays, escalated } = item;
   const cr = task.closeRequest || {};
   const who = mode === 'needs'
-    ? `Requested by ${me.nameOf(cr.requestedByUid) || '—'}`
+    ? `Requested by ${me.nameOf(cr.requestedByUid) || cr.requestedBy || '—'}`
     : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
   const waiting = waitingDays === 0 ? 'Sent today' : `Waiting ${waitingDays} working day${waitingDays === 1 ? '' : 's'}`;
   return (
@@ -12831,6 +12831,7 @@ export default function App() {
         if (dpProj && (dpAct || dpTask)) {
           if (ps[dpProj]) {
             setCurrentId(dpProj);
+            rememberCurrentProject(dpProj);
             if (dpTask) {
               // Task panel renders beside any view; keep the current one.
               setSelectedTaskId(dpTask);

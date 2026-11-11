@@ -22,26 +22,26 @@ export function workingDaysSince(fromISO, now) {
 
 /**
  * Who may also decide a request that has waited too long. Ws lead approver ->
- * PM + Deputy; any other non-Owner approver -> Owners; Owner approver -> [].
- * Never the requester or the task's PIC.
+ * PM + Deputy (if the lead is PM/Deputy too, treat as PM-level); any other
+ * non-Owner approver -> Owners; Owner approver -> []. Empty result falls back to Owners.
+ * Only people who pass canDecideClose and are not the approver.
  */
 export function escalationTargets(roles, task) {
   const cr = task?.closeRequest;
   if (!roles || !cr || !cr.approverUid) return [];
+  const approver = cr.approverUid;
   const owners = Array.isArray(roles.ownerUids) ? roles.ownerUids : [];
-  if (owners.includes(cr.approverUid)) return [];
+  if (owners.includes(approver)) return [];
   const info = roles.tasks?.[task.id] || {};
   const ws = info.workstreamId != null ? roles.workstreams?.[info.workstreamId] : null;
-  let pool;
-  if (ws && ws.leadUid && ws.leadUid === cr.approverUid) {
-    const m = (info.programId != null && roles.programs?.[info.programId]) || {};
-    pool = [m.pmUid, m.deputyUid];
-  } else {
-    pool = owners;
-  }
+  const m = (info.programId != null && roles.programs?.[info.programId]) || {};
+  const isPmLevel = m.pmUid === approver || m.deputyUid === approver;
+  const pool = ws && ws.leadUid === approver && !isPmLevel ? [m.pmUid, m.deputyUid] : owners;
+  const ok = (u) => u && u !== approver && canDecideClose(roles, task, u);
   const out = [];
-  for (const u of pool) {
-    if (u && u !== cr.requestedByUid && u !== info.picUid && !out.includes(u)) out.push(u);
+  for (const u of pool) if (ok(u) && !out.includes(u)) out.push(u);
+  if (out.length === 0) {
+    for (const u of owners) if (ok(u) && !out.includes(u)) out.push(u);
   }
   return out;
 }
