@@ -10,12 +10,16 @@ export function taskCountUnder(node) {
   return n;
 }
 
-// True when a backup restore would write over a v2 project.
-export function restoreTouchesV2(data, loadedProjects) {
+// Splits the backup's projects into those safe to restore (v1 in the backup and live) and v2 ones.
+export function splitRestoreByV2(data, liveProjects) {
   const ids = (data && data.meta && data.meta.projectIds) || [];
-  return ids.some((pid) => {
+  const v1Ids = [];
+  const v2Ids = [];
+  for (const pid of ids) {
     const bp = data.projects && data.projects[pid];
-    if (!bp) return false;
-    return bp.schemaVersion === 2 || !!(loadedProjects && loadedProjects[pid] && loadedProjects[pid].__v2);
-  });
+    if (!bp) continue;
+    if (bp.schemaVersion === 2 || !!(liveProjects && liveProjects[pid] && liveProjects[pid].__v2)) v2Ids.push(pid);
+    else v1Ids.push(pid);
+  }
+  return { v1Ids, v2Ids };
 }

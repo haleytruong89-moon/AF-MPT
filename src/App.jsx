@@ -29,7 +29,7 @@ import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storag
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
-import { taskCountUnder, restoreTouchesV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE } from './treeGuards.js';
+import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
@@ -13821,16 +13821,17 @@ export default function App() {
     showToast('Backup downloaded');
   };
   const restoreJson = async (file) => {
-    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: 'This will REPLACE all shared workspace data (projects, check-ins, activity) for everyone using this artifact. Continue?', danger: true, okLabel: 'Restore' });
+    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: 'This will REPLACE the shared data (tasks, check-ins, activity) of the projects in this backup. Projects that use the new storage are skipped. Continue?', danger: true, okLabel: 'Restore' });
     if (!ok) return;
     try {
       const text = await file.text();
       const data = JSON.parse(text);
       if (!data.meta || !data.projects) throw new Error('Invalid backup file.');
-      if (restoreTouchesV2(data, projects)) { await dialogs.alert({ title: "Can't restore", message: V2_RESTORE_MESSAGE }); return; }
+      const { v1Ids, v2Ids } = splitRestoreByV2(data, projects);
+      if (v1Ids.length === 0 && v2Ids.length > 0) { await dialogs.alert({ title: "Can't restore", message: V2_RESTORE_MESSAGE }); return; }
       await saveMeta(data.meta);
       const results = [];
-      for (const pid of data.meta.projectIds) {
+      for (const pid of v1Ids) {
         if (data.projects[pid]) {
           // Explicit restore overrides the stale-write guard (B3) for this write only.
           const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
@@ -13841,6 +13842,10 @@ export default function App() {
       const failed = failedRestores(results);
       if (failed.length) {
         await dialogs.alert({ title: 'Restore incomplete', message: `These projects were NOT restored: ${failed.join(', ')}. Check your permissions or connection and try again. Other projects were restored.` });
+      }
+      if (v2Ids.length) {
+        const names = v2Ids.map((pid) => data.projects[pid].name || pid).join(', ');
+        await dialogs.alert({ title: 'Some projects skipped', message: `${V2_RESTORE_MESSAGE} Skipped: ${names}.` });
       }
       window.location.reload();
     } catch (err) { await dialogs.alert({ title: 'Restore failed', message: err.message }); }
