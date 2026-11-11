@@ -14215,7 +14215,7 @@ export default function App() {
             <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
-            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: rect.left - 120, y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
+            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
           </div>
 
           {/* Scope / focus selector */}
@@ -14539,7 +14539,7 @@ export default function App() {
           <PopoverMenu x={helpMenu.x} y={helpMenu.y} onClose={() => setHelpMenu(null)}
             items={[{ label: 'Walkthrough', icon: <HelpCircle size={13} />, onClick: () => walkthroughRef.current?.start() }, { label: 'Glossary', icon: <BookOpen size={13} />, onClick: () => setShowGlossary(true) }]} />
         )}
-        {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList /></Modal>}
+        {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList muted={TOK.muted} /></Modal>}
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
             items={[
