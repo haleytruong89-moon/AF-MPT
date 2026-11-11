@@ -31,6 +31,7 @@ import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
+import { approvalBuckets } from './approvalsInbox.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -8609,6 +8610,43 @@ function MyWorkBreadcrumb({ project, program, workstream }) {
   return <span style={{ fontSize: 11, color: TOK.muted }}>{parts.join(' › ')}</span>;
 }
 
+// U1: one close request in My Work ("needs" = I decide, "sent" = I asked).
+// The buttons are the task panel's CloseControl, writing through the same
+// onTaskUpdate -> applyTaskUpdate choke point as every other My Work edit.
+function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
+  const me = useContext(MeContext);
+  const { project, program, workstream, task, waitingDays, escalated } = item;
+  const cr = task.closeRequest || {};
+  const who = mode === 'needs'
+    ? `Requested by ${me.nameOf(cr.requestedByUid) || '—'}`
+    : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
+  const waiting = waitingDays === 0 ? 'Sent today' : `Waiting ${waitingDays} working day${waitingDays === 1 ? '' : 's'}`;
+  return (
+    <div style={{ borderLeft: '3px solid ' + (escalated ? TOK.overdueFg : TOK.inprogFg), padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
+      <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+        <span role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+          onClick={() => onTaskClick(task.id, project.id)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(task.id, project.id); }}>
+          {task.name}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <MyWorkBreadcrumb project={project} program={program} workstream={workstream} />
+        <span>· {who}</span>
+        <span>· {cr.outcome === 'Dropped' ? 'Submitted as dropped' : 'Submitted as done'}</span>
+        {escalated ? (
+          <span style={{ color: TOK.overdueFg, background: TOK.overdueBg, fontWeight: 600, padding: '1px 7px', borderRadius: 999 }}>
+            {`Waiting ${waitingDays} working days — escalated`}
+          </span>
+        ) : <span>· {waiting}</span>}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <CloseControl task={task} roles={project.__v2.roles} onUpdate={(t) => onTaskUpdate(t, project.id)} dialogs={dialogs} />
+      </div>
+    </div>
+  );
+}
+
 function MyWorkDeadlineTypePill({ type }) {
   if (!type) return null;
   const hard = type === 'hard';
@@ -11250,7 +11288,7 @@ function MyWorkView({
   onTaskUpdate: onTaskUpdateProp, onActionUpdate: onActionUpdateProp, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
-  onNavigateRaid,
+  onNavigateRaid, dialogs = null,
 }) {
   // P3-16: the App passes null handlers while "View as" is on; a write attempt toasts.
   const readOnlyWrite = () => { if (showToast) showToast(READ_ONLY_MESSAGE); return 'read-only'; };
@@ -11260,6 +11298,10 @@ function MyWorkView({
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
+  // U1: close requests waiting on me / sent by me (v2 projects). Keyed on the
+  // signed-in uid, so hidden under View as. `now` is read per render.
+  const me = useContext(MeContext);
+  const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
@@ -11349,7 +11391,8 @@ function MyWorkView({
   };
   const hasAnyAssignment = (
     counts.owned + myWork.tasksContributing.length + counts.actions +
-    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length
+    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length +
+    approvals.needsMine.length + approvals.sent.length
   ) > 0;
   const urgentEmpty = (
     myWork.needsAttention.length === 0 && myWork.unreadMentions.length === 0 &&
@@ -11458,6 +11501,23 @@ function MyWorkView({
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
       {Header}
+
+      {approvals.needsMine.length > 0 && (
+        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+          {approvals.needsMine.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
+      {approvals.sent.length > 0 && (
+        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+          {approvals.sent.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
 
       {viewMode === 'project' ? (
         <ByProjectView
@@ -12947,6 +13007,9 @@ export default function App() {
   }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
+  // U1: the My Work tab count adds close requests waiting on me (not under View as:
+  // the approvals shown are keyed on the signed-in uid). `now` is read per render.
+  const myWorkTabCount = myWorkBadge + (impersonatingAs ? 0 : approvalBuckets(projects, authUser?.uid || null, new Date()).needsMine.length);
   // Role assignment: people a role picker of the current v2 project offers (memberUids
   // come from the shim cache; `project` changes after a role / member refresh).
   const rolePeople = useMemo(() => (project?.__v2
@@ -14082,12 +14145,12 @@ export default function App() {
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkBadge > 0 && (
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
                     background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
                     lineHeight: '14px', minWidth: 16, textAlign: 'center',
-                  }}>{myWorkBadge}</span>
+                  }}>{myWorkTabCount}</span>
                 )}{v.id === 'raid' && raidPendingBadge > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
@@ -14222,6 +14285,7 @@ export default function App() {
                   onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
                   onMarkSeen={impersonatingAs ? null : markMyWorkSeen}
                   showToast={showToast}
+                  dialogs={dialogs}
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} />}
