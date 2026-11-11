@@ -112,3 +112,12 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
 export function loadFailures(ids, results) {
   return ids.filter((_, i) => !results[i]);
 }
+
+// C2: header save chip. Only 'error' (network/unknown) is retryable and shown here;
+// conflict / denied / refused / history keep their own banner and are never auto-retried.
+export function saveChip({ pending, saveState, lastSavedAt }) {
+  if (Object.values(saveState || {}).some((v) => v.status === 'error')) return { label: 'Not saved — Retry', tone: 'error', retry: true };
+  if (pending > 0) return { label: 'Saving…', tone: 'muted', retry: false };
+  if (lastSavedAt) return { label: `Saved ${lastSavedAt}`, tone: 'ok', retry: false };
+  return { label: '', tone: 'muted', retry: false };
+}

@@ -18,7 +18,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -2032,7 +2032,7 @@ function FieldLabel({ children }) {
 // B2/B3: persistent banner for failed or refused project saves.
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
-function SaveBanner({ saveState }) {
+function SaveBanner({ saveState, onRetry }) {
   const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
   if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
@@ -2046,6 +2046,7 @@ function SaveBanner({ saveState }) {
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
+      {errorNames.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
@@ -12683,6 +12684,10 @@ export default function App() {
   // B2/B3: per-project save failures shown in a persistent banner.
   const [saveState, setSaveState] = useState({});
   const pendingSaves = useRef(0);
+  const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const saveStateRef = useRef({});
+  saveStateRef.current = saveState;
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
 
   // Roster of @mention-able teammates: derived from PICs + check-in/update authors + project teamMembers list + RBAC members (from user directory)
@@ -12983,7 +12988,7 @@ export default function App() {
   const closeBusy = useRef({});
   const persistProject = useCallback((p) => {
     if (!p) return;
-    if (!saveTimers.current[p.id]) pendingSaves.current += 1;
+    if (!saveTimers.current[p.id]) { pendingSaves.current += 1; setPendingN(pendingSaves.current); }
     clearTimeout(saveTimers.current[p.id]);
     pendingTree.current[p.id] = p;
     const fire = async () => {
@@ -12998,11 +13003,25 @@ export default function App() {
       const status = await pr;
       if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      setPendingN(pendingSaves.current);
+      if (status === 'ok') setLastSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }));
       setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
       refreshV2Roles(p.id);
     };
     saveTimers.current[p.id] = setTimeout(fire, 400);
   }, [refreshV2Roles]);
+
+  // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
+  // refused and history are never retried: that would fail again or overwrite.
+  const retryFailedSaves = useCallback(() => {
+    for (const [pid, v] of Object.entries(saveStateRef.current)) {
+      if (v.status === 'error' && projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+    }
+  }, [persistProject]);
+  useEffect(() => {
+    window.addEventListener('online', retryFailedSaves);
+    return () => window.removeEventListener('online', retryFailedSaves);
+  }, [retryFailedSaves]);
 
   // P3 (carry 2, 3): save a pending debounced edit of this project now (before a
   // close step), or wait for one in flight. -> that save's status, or null when nothing was pending.
@@ -13015,6 +13034,8 @@ export default function App() {
       if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return null; }
       const status = await saveProject(tree);
       pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      setPendingN(pendingSaves.current);
+      if (status === 'ok') setLastSavedAt(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }));
       setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
       refreshV2Roles(pid);
       return status;
@@ -14010,6 +14031,16 @@ export default function App() {
 
           <div style={{ flex: 1 }} />
 
+          {(() => {
+            const chip = saveChip({ pending: pendingN, saveState, lastSavedAt });
+            if (!chip.label) return null;
+            const col = chip.tone === 'error' ? TOK.overdueFg : chip.tone === 'ok' ? TOK.doneFg : TOK.muted;
+            const st = { fontSize: 11, color: col, whiteSpace: 'nowrap', fontFamily: FONT_STACK };
+            return chip.retry
+              ? <button onClick={retryFailedSaves} title="Retry saving" style={{ ...st, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>{chip.label}</button>
+              : <span role="status" style={st}>{chip.label}</span>;
+          })()}
+
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
             {(() => {
               const allTabs = [
@@ -14280,7 +14311,7 @@ export default function App() {
             onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
-        <SaveBanner saveState={saveState} />
+        <SaveBanner saveState={saveState} onRetry={retryFailedSaves} />
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough

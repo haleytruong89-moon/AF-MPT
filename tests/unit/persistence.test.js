@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -257,5 +257,28 @@ describe('loadFailures (C1: parallel load reports which projects failed)', () =>
   });
   it('treats undefined result as failed', () => {
     expect(loadFailures(['a', 'b'], [{ id: 'a' }])).toEqual(['b']);
+  });
+});
+
+describe('saveChip', () => {
+  const err = { p1: { status: 'error', name: 'A' } };
+  it('error entry -> Not saved — Retry with retry true', () => {
+    expect(saveChip({ pending: 0, saveState: err, lastSavedAt: '09:05' })).toEqual({ label: 'Not saved — Retry', tone: 'error', retry: true });
+  });
+  it('error wins over pending', () => {
+    expect(saveChip({ pending: 2, saveState: err, lastSavedAt: null }).label).toBe('Not saved — Retry');
+  });
+  it('pending -> Saving…', () => {
+    expect(saveChip({ pending: 1, saveState: {}, lastSavedAt: '09:05' })).toEqual({ label: 'Saving…', tone: 'muted', retry: false });
+  });
+  it('saved time -> Saved hh:mm', () => {
+    expect(saveChip({ pending: 0, saveState: {}, lastSavedAt: '09:05' })).toEqual({ label: 'Saved 09:05', tone: 'ok', retry: false });
+  });
+  it('nothing -> empty label', () => {
+    expect(saveChip({ pending: 0, saveState: {}, lastSavedAt: null })).toEqual({ label: '', tone: 'muted', retry: false });
+  });
+  it('conflict/denied entries are not reported by the chip', () => {
+    const st = { a: { status: 'conflict', name: 'A' }, b: { status: 'denied', name: 'B' } };
+    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' }).label).toBe('Saved 09:05');
   });
 });
