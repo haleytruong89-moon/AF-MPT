@@ -130,9 +130,9 @@ describe('P2.2 pre-P2.2 gate rules', () => {
     await assertSucceeds(v1up(OWNER, P2, { schemaVersion: 2 }));
   });
 
-  it('G-4 create: non-Owner may not include v2 keys; plain create and Owner create with them allowed', async () => {
+  it('G-4 create: Owner only (W2 R4); a non-Owner is denied with or without v2 keys; Owner create with them allowed', async () => {
     const base = (u) => ({ name: 'N', memberIds: [u.uid], roles: { [u.uid]: 'owner' } });
-    await assertSucceeds(setDoc(doc(await as(OP), `${WS}/projects/n1`), base(OP)));
+    await assertFails(setDoc(doc(await as(OP), `${WS}/projects/n1`), base(OP)));
     await assertFails(setDoc(doc(await as(OP), `${WS}/projects/n2`), { ...base(OP), visibility: 'department' }));
     await assertFails(setDoc(doc(await as(OP), `${WS}/projects/n3`), { ...base(OP), programMeta: {} }));
     await assertFails(setDoc(doc(await as(OP), `${WS}/projects/n4`), { ...base(OP), memberUids: [OP.uid] }));

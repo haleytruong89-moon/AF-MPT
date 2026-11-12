@@ -6,6 +6,11 @@ import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
 const OWNER = { uid: 'u_owner', email: 'hattt4@smartosc.com' };
 const USER = { uid: 'u_user', email: 'staff@smartosc.com' };
 const META = 'workspaces/main';
+// W2 R4: a non-Owner meta write needs an active member doc.
+const seedActiveUser = () => seedDoc(`${META}/members/${USER.uid}`, {
+  email: USER.email, displayName: 'Staff', aliases: [], department: 'AF', status: 'active',
+  updatedAt: '2026-10-23T00:00:00Z', updatedBy: OWNER.email,
+});
 
 const baseMeta = () => ({
   seeded: true,
@@ -39,7 +44,8 @@ describe('B1: workspace owner fields are owner-only', () => {
     await assertFails(updateDoc(doc(db, META), { defaultView: 'gantt' }));
   });
 
-  it('B1-4 non-owner stale full-meta merge (same owner fields) still succeeds', async () => {
+  it('B1-4 active-member stale full-meta merge (same owner fields) still succeeds', async () => {
+    await seedActiveUser();
     const db = await asUser(USER.uid, USER.email);
     await assertSucceeds(setDoc(doc(db, META), {
       ...baseMeta(),
@@ -172,7 +178,8 @@ describe('P2.1: ownerUids with legacy email fallback', () => {
     await assertFails(setDoc(doc(db, META), { seeded: true, ownerUids: [USER.uid] }));
   });
 
-  it('OU-8 non-owner ordinary writes still pass, including a stale identical ownerUids echo', async () => {
+  it('OU-8 active-member ordinary writes still pass, including a stale identical ownerUids echo', async () => {
+    await seedActiveUser();
     const db = await asUser(USER.uid, USER.email);
     await assertSucceeds(updateDoc(doc(db, META), { userPreferences: { Staff: { x: 1 } } }));
     await assertSucceeds(setDoc(doc(db, META), {

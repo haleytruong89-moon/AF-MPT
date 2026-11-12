@@ -30,7 +30,10 @@ service cloud.firestore {
     function isSmartOSC() {
       return request.auth != null
         && request.auth.token.email_verified == true
-        && request.auth.token.email.matches('.*@smartosc[.]com$');
+        && request.auth.token.email.matches('.*@smartosc[.]com$')
+        // W2 R8: Google sign-in only (a password / email-link account on the
+        // domain is refused). No get() cost.
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
     }
 
     function projectData(pid) {
@@ -68,7 +71,7 @@ service cloud.firestore {
     // P2.1 (2026-10-23): ownerUids[] (set by scripts/p2-set-owner-uids.mjs) is
     // owner-only like the other owner fields; the client never writes it.
     function ownerFields() {
-      return ['workspaceOwner', 'ownershipLog', 'defaultView', 'ownerUids'];
+      return ['workspaceOwner', 'ownershipLog', 'defaultView', 'ownerUids', 'config'];
     }
 
     // Owner = uid in ownerUids[] OR the legacy workspaceOwner email (kept until
@@ -111,9 +114,14 @@ service cloud.firestore {
       allow create: if isSmartOSC() && workspace == 'main'
         && !request.resource.data.keys().hasAny(ownerFields());
 
+      // W2 R4: a non-Owner write needs an ACTIVE member doc (self-claim runs
+      // before the app's first meta write). Owner branch first: no get().
+      // get(): members/{uid} = 2 access calls (exists + get), only on the
+      // non-Owner branch.
       allow update: if isSmartOSC() && workspace == 'main' && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
-        || (isWorkspaceOwner() && ownerWriteIsValid())
+        (isWorkspaceOwner() && ownerWriteIsValid())
+        || (!request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
+          && isActiveMember('main'))
       );
 
       allow delete: if false;
@@ -207,7 +215,8 @@ service cloud.firestore {
       );
 
       // CREATE — creator must put themselves as owner; required fields enforced.
-      // A non-Owner create may not carry the owner-only v2 keys (get(): 1).
+      // W2 R4: only the workspace Owner creates projects (get(): 1,
+      // workspaces/main). This also covers the owner-only v2 keys.
       allow create: if isSmartOSC()
         && request.resource.data.keys().hasAll(['name', 'memberIds', 'roles'])
         && request.resource.data.name is string
@@ -215,7 +224,7 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 200
         && request.auth.uid in request.resource.data.memberIds
         && request.resource.data.roles[request.auth.uid] == 'owner'
-        && (!request.resource.data.keys().hasAny(ownerOnlyProjectKeys()) || isDirectoryOwner());
+        && isDirectoryOwner();
 
       // UPDATE — owners can change anything (must keep at least one owner).
       // Operators can change content but not membership/roles, name,
