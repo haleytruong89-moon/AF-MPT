@@ -70,7 +70,7 @@ describe('uiCaps', () => {
     expect(caps('V', { isOwner: true })).toEqual(ALL_TRUE);
   });
   it('v2 PM and Deputy of the program', () => {
-    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true, wsMove: true, taskMove: true };
+    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true, taskMove: true };
     expect(caps('P')).toEqual(exp);
     expect(caps('D')).toEqual(exp);
   });
@@ -79,7 +79,7 @@ describe('uiCaps', () => {
     expect(caps('P').programEdit).toBe(false);
   });
   it('v2 Sub-PM of the ws: tasks only (no workstream writes, rules ~487)', () => {
-    expect(caps('L')).toEqual({ ...ALL_FALSE, taskAdd: true, taskEdit: true, taskMove: true });
+    expect(caps('L')).toEqual({ ...ALL_FALSE, taskAdd: true, taskEdit: true });
   });
   it('v2 Viewer / assignee: all false', () => {
     expect(caps('V')).toEqual(ALL_FALSE);
@@ -249,10 +249,10 @@ describe('isWorkspaceOwner (O1, mirrors rules isOwnerIn)', () => {
 });
 
 describe('move caps and canDropMove (O2)', () => {
-  it('PM / Deputy: ws and task move; Sub-PM: task only; stranger: none', () => {
-    expect(caps('P')).toMatchObject({ wsMove: true, taskMove: true });
-    expect(caps('D')).toMatchObject({ wsMove: true, taskMove: true });
-    expect(caps('L')).toMatchObject({ wsMove: false, taskMove: true });
+  it('v2: ws moves Owner-only; PM / Deputy move tasks; Sub-PM and stranger none', () => {
+    expect(caps('P')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('D')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('L')).toMatchObject({ wsMove: false, taskMove: false });
     expect(caps('V')).toMatchObject({ wsMove: false, taskMove: false });
   });
   const base = { isOwner: false, isV2: true, roles, uid: 'P', kind: 'task', sourcePgId: 'p1', targetPgId: 'p1', targetWsId: 'w1' };
@@ -265,9 +265,9 @@ describe('move caps and canDropMove (O2)', () => {
     expect(canDropMove({ ...base, targetPgId: 'p2', targetWsId: 'w2' })).toBe(false);
     expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p2' })).toBe(false);
   });
-  it('Sub-PM only into a work stream they lead; never a ws move', () => {
-    expect(canDropMove({ ...base, uid: 'L' })).toBe(true);
-    expect(canDropMove({ ...base, uid: 'L', targetWsId: 'w9' })).toBe(false);
+  it('Sub-PM never drops a task or ws; PM never moves a ws', () => {
+    expect(canDropMove({ ...base, uid: 'L' })).toBe(false);
     expect(canDropMove({ ...base, uid: 'L', kind: 'ws' })).toBe(false);
+    expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p1' })).toBe(false);
   });
 });

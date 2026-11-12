@@ -63,8 +63,8 @@ export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
     wsDelete: pm,
     taskAdd: pm || lead,
     taskEdit: pm || lead,
-    wsMove: pm,
-    taskMove: pm || lead,
+    wsMove: false, // Ruling W2-20: wsUpdateOk refuses programId changes for non-Owners
+    taskMove: pm, // a Sub-PM may not change a task's workstreamId (taskLeadOk)
   };
 }
 
@@ -78,14 +78,14 @@ export function isWorkspaceOwner(meta, uid, email) {
 }
 
 /**
- * Wave 2 O2: may a drop be attempted? Owner / v1: yes. v2 non-Owner: never across
- * programs (rules); a Sub-PM (not PM) only into a work stream they lead.
+ * Wave 2 O2: may a drop be attempted? Owner / v1: yes. v2 non-Owner: work stream
+ * moves never (W2-20); a task only by the PM / Deputy, within their own program.
  */
-export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId, targetWsId }) {
+export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId }) {
   if (isOwner || !isV2) return true;
   if (sourcePgId !== targetPgId) return false;
-  if (kind === 'ws') return isPmOf(roles, sourcePgId, uid);
-  return isPmOf(roles, sourcePgId, uid) || isLeadOf(roles, targetWsId, targetPgId, uid);
+  if (kind === 'ws') return false;
+  return isPmOf(roles, sourcePgId, uid);
 }
 
 // PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).

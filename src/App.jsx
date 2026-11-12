@@ -7493,7 +7493,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                     onDrop={() => dropTaskIntoWs(pg, ws)}
                     style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
                     <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg, flexWrap: showRoles ? 'wrap' : undefined }}>
-                      <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span>
+                      {wsCaps.wsMove ? <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span> : <span style={{ width: 12 }} />}
                       <button onClick={() => toggleExpand(ws.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.workstreamFg, padding: 2, display: 'flex' }}>
                         {wsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </button>
@@ -7544,7 +7544,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                           }}
                           onMouseEnter={(e) => { if (!sel) e.currentTarget.style.background = TOK.bg; }}
                           onMouseLeave={(e) => { if (!sel) e.currentTarget.style.background = TOK.surface; }}>
-                          <span style={{ cursor: 'grab', color: TOK.subtle, display: 'flex' }}><Grip size={11} /></span>
+                          {wsCaps.taskMove ? <span style={{ cursor: 'grab', color: TOK.subtle, display: 'flex' }}><Grip size={11} /></span> : <span style={{ width: 11 }} />}
                           {!dropped && <HealthDot health={t.health || 'green'} size={8} />}
                           <span style={{
                             fontSize: 12.5, color: TOK.ink, flex: 1,
@@ -13086,7 +13086,7 @@ export default function App() {
   const verifiedEmail = authUser?.email || authorEmail || null;
   const isOwner = isWorkspaceOwner(meta, authUser?.uid, verifiedEmail);
 
-  const [localSeenAt, setLocalSeenAt] = useState(null); // null = read from storage
+  const [localSeenAt, setLocalSeenAt] = useState(null); // { uid, at } from this tab; null = read from storage
   // v30 — per-user preferences (lastSeenMyWorkAt, defaultViewOverride, etc.)
   // meta.userPreferences is optional; default to {} so legacy workspaces just work.
   const userPrefs = useMemo(
@@ -13094,7 +13094,7 @@ export default function App() {
       if (!author) return {};
       const shared = meta?.userPreferences?.[author] || {};
       // O3: "seen" is per browser; fall back to the old shared value once so the marker does not reset on deploy.
-      const local = localSeenAt || lastSeenMyWork(authUser?.uid);
+      const local = (localSeenAt && localSeenAt.uid === authUser?.uid ? localSeenAt.at : null) || lastSeenMyWork(authUser?.uid);
       return local ? { ...shared, lastSeenMyWorkAt: local } : shared;
     },
     [meta, author, authUser?.uid, localSeenAt]
@@ -13158,7 +13158,7 @@ export default function App() {
     // O3: per-browser marker; no workspaces/main write.
     const iso = new Date().toISOString();
     markMyWorkSeenLocal(authUser.uid, iso);
-    setLocalSeenAt(iso);
+    setLocalSeenAt({ uid: authUser.uid, at: iso });
   }, [author, authUser?.uid]);
 
   // v30 Phase 4 — Owner picks the workspace-wide default landing view.
@@ -14758,6 +14758,7 @@ export default function App() {
           <MembersModal
             projectId={project.id}
             currentUserId={authUser.uid}
+            isWorkspaceOwner={isOwner}
             onClose={() => setShowMembers(false)}
             showToast={showToast}
           />
@@ -14826,7 +14827,7 @@ export default function App() {
               </div>
               <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
                 <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Workspace owner</div>
-                {meta?.workspaceOwner ? (
+                {(meta?.workspaceOwner || isOwner) ? (
                   <>
                     <div style={{ color: TOK.ink, marginBottom: 6 }}>
                       {isOwner ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : meta.workspaceOwner}
