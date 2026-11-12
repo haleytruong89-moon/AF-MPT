@@ -6807,13 +6807,14 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   };
 
   // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
-  const latest = () => { const l = getLatestProject && getLatestProject(); return l && l.id === project.id ? l : project; };
+  const latest = () => (getLatestProject ? getLatestProject(project.id) : null);
   // Actions
   const actAddProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
     const cur = latest();
+    if (!cur) return;
     onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     // Expand the new program so its (empty) workstream slot is visible
     setCollapsed((s) => { const n = new Set(s); n.delete(p.id); return n; });
@@ -6824,6 +6825,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
     const cur = latest();
+    if (!cur) return;
     if (!findProgram(cur, pg.id)) return;
     onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     onActivity({ type: 'ws_add', description: `Added work stream "${w.name}" under "${pg.name}"` });
@@ -6833,6 +6835,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
     const cur = latest();
+    if (!cur) return;
     if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
       ...cur, programs: cur.programs.map((p) =>
@@ -6849,6 +6852,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       if (!name || name === pg.name) return;
       const old = pg.name;
       const cur = latest();
+      if (!cur) return;
       if (!findProgram(cur, pg.id)) return;
       onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
       onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
@@ -6857,6 +6861,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       if (!name || name === ws.name) return;
       const old = ws.name;
       const cur = latest();
+      if (!cur) return;
       if (!findWorkstream(cur, pg.id, ws.id)) return;
       onProjectUpdate({
         ...cur, programs: cur.programs.map((p) =>
@@ -6874,6 +6879,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       if (!ok) return;
       // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
       const cur = latest();
+      if (!cur) return;
       const curPg = findProgram(cur, pg.id);
       if (!curPg) return;
       if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
@@ -6884,6 +6890,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       const cur = latest();
+      if (!cur) return;
       const curWs = findWorkstream(cur, pg.id, ws.id);
       if (!curWs) return;
       if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
@@ -7110,12 +7117,13 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
   const toggleExpand = (id) => setExpanded((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
-  const latest = () => { const l = getLatestProject && getLatestProject(); return l && l.id === project.id ? l : project; };
+  const latest = () => (getLatestProject ? getLatestProject(project.id) : null);
   const addProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
     const cur = latest();
+    if (!cur) return;
     onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     setExpanded((s) => new Set([...s, p.id]));
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
@@ -7125,6 +7133,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!name || name === pg.name) return;
     const old = pg.name;
     const cur = latest();
+    if (!cur) return;
     if (!findProgram(cur, pg.id)) return;
     onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
@@ -7136,6 +7145,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!ok) return;
     // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
     const cur = latest();
+    if (!cur) return;
     const curPg = findProgram(cur, pg.id);
     if (!curPg) return;
     if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
@@ -7147,6 +7157,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
     const cur = latest();
+    if (!cur) return;
     if (!findProgram(cur, pg.id)) return;
     onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     setExpanded((s) => new Set([...s, w.id]));
@@ -7157,6 +7168,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!name || name === ws.name) return;
     const old = ws.name;
     const cur = latest();
+    if (!cur) return;
     if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
       ...cur, programs: cur.programs.map((p) =>
@@ -7170,6 +7182,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     const cur = latest();
+    if (!cur) return;
     const curWs = findWorkstream(cur, pg.id, ws.id);
     if (!curWs) return;
     if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
@@ -7186,6 +7199,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
     const cur = latest();
+    if (!cur) return;
     if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
       ...cur, programs: cur.programs.map((p) =>
@@ -13373,7 +13387,8 @@ export default function App() {
   }, [saveState]);
 
   // Latest tree of the open project; views read it after a dialog closes (W6).
-  const getLatestProject = useCallback(() => projectsRef.current[currentIdRef.current], []);
+  // Ref-based and dependency-free on purpose: looks the project up by id so a deleted project is never resurrected.
+  const getLatestProject = useCallback((id) => projectsRef.current[id], []);
 
   const updateProject = useCallback((updated) => {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
