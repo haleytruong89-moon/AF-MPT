@@ -627,14 +627,23 @@ window.storage = {
           const known = v2ActivityKnown.get(pid) || new Set<string>();
           v2ActivityKnown.set(pid, known);
           const fresh = list.filter((e) => e && typeof e.id === 'string' && e.id && !known.has(e.id)).reverse();
+          // W5: a rules refusal is permanent for that entry: skip it, keep writing the rest and report
+          // its id so the caller drops it (retrying it would block every later event).
+          const deniedIds: string[] = [];
           for (const e of fresh) {
-            // R3: allow-listed fields only; no author / timestamp (rules refuse them).
-            await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
-              ...activityDocFor(e, user.uid), createdAt: serverTimestamp(),
-            });
-            known.add(e.id as string);
+            try {
+              // R3: allow-listed fields only; no author / timestamp (rules refuse them).
+              await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
+                ...activityDocFor(e, user.uid), createdAt: serverTimestamp(),
+              });
+              known.add(e.id as string);
+            } catch (err) {
+              if ((err as { code?: string })?.code !== 'permission-denied') throw err;
+              console.warn('[activity] write refused by rules, entry dropped:', e.type, e.id);
+              deniedIds.push(e.id as string);
+            }
           }
-          return { key, value, shared: true };
+          return { key, value, shared: true, ...(deniedIds.length ? { deniedIds } : {}) };
         }
         const incoming = JSON.parse(value);
         let entries: Array<Record<string, unknown>> = Array.isArray(incoming) ? incoming : [];

@@ -1581,8 +1581,11 @@ function appendActivity(id, e, { v2 = false, track } = {}) {
       const read = v2 ? null : await loadActivityStrict(id);
       const plan = planActivityAppend({ v2, read, pending, entry: e });
       if (plan.write) {
-        const wrote = await ssetShared(K.activity(id), JSON.stringify(plan.write));
-        if (!wrote) { ok = false; activityPending.set(id, [...(e ? [e] : []), ...pending]); return null; }
+        let r = null;
+        try { r = await window.storage.set(K.activity(id), JSON.stringify(plan.write), true); } catch { r = null; }
+        if (!r) { ok = false; activityPending.set(id, [...(e ? [e] : []), ...pending]); return null; }
+        // W5: the shim skips entries the rules refused (result.deniedIds) and writes the rest, so a
+        // successful write clears pending below: a refused entry is dropped for good, no banner.
       } else if (!v2 && read === null) ok = false; // v1 read failed: entry kept pending
       if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
       return plan.display;
@@ -13267,24 +13270,31 @@ export default function App() {
 
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
+  // W5: re-send a project's pending activity. Project gone: drop the entry and its queue.
+  const retryActivityKey = useCallback((key) => {
+    const pid = projectIdOfKey(key);
+    if (impersonatingRef.current) return; // P3-16: View as is read-only
+    if (!projectsRef.current[pid]) { activityPending.delete(pid); setSaveState((prev) => nextSaveState(prev, key, 'ok')); return; }
+    flushActivity(pid, { v2: !!projectsRef.current[pid].__v2, track: activityTrack });
+  }, [activityTrack]);
   const retryFailedSaves = useCallback(() => {
     for (const key of retryablePids(saveStateRef.current)) {
       const pid = projectIdOfKey(key);
-      if (isActivityKey(key)) { flushActivity(pid, { v2: !!projectsRef.current[pid]?.__v2, track: activityTrack }); continue; }
+      if (isActivityKey(key)) { retryActivityKey(key); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
       else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
-  }, [persistProject, activityTrack]);
+  }, [persistProject, retryActivityKey]);
   // Banner Retry: also re-runs an unknown-person state (manual only, not on 'online').
   const retryManually = useCallback(() => {
     for (const key of manualRetryPids(saveStateRef.current)) {
       const pid = projectIdOfKey(key);
-      if (isActivityKey(key)) { flushActivity(pid, { v2: !!projectsRef.current[pid]?.__v2, track: activityTrack }); continue; }
+      if (isActivityKey(key)) { retryActivityKey(key); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       else setSaveState((prev) => nextSaveState(prev, key, 'ok'));
     }
-  }, [persistProject, activityTrack]);
+  }, [persistProject, retryActivityKey]);
   useEffect(() => {
     window.addEventListener('online', retryFailedSaves);
     return () => window.removeEventListener('online', retryFailedSaves);
