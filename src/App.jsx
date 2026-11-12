@@ -4508,10 +4508,12 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
               </ul>
             </div>
           )}
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
-            {onEdit && <Btn size="sm" variant="ghost" onClick={() => onEdit(decision)}><Edit2 size={11} /> Edit</Btn>}
-            {onDelete && <Btn size="sm" variant="ghost" onClick={() => onDelete(decision)}><Trash2 size={11} /> Delete</Btn>}
-          </div>
+          {(onEdit || onDelete) && (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
+              {onEdit && <Btn size="sm" variant="ghost" onClick={() => onEdit(decision)}><Edit2 size={11} /> Edit</Btn>}
+              {onDelete && <Btn size="sm" variant="ghost" onClick={() => onDelete(decision)}><Trash2 size={11} /> Delete</Btn>}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -8667,18 +8669,18 @@ function StatusQuickPill({ status, onChange, statuses }) {
     <>
       <button
         type="button"
-        onClick={openMenu}
-        title="Change status"
+        onClick={onChange ? openMenu : (e) => e.stopPropagation()}
+        title={onChange ? 'Change status' : undefined}
         style={{
           fontFamily: FONT_STACK, fontSize: 10.5, fontWeight: 500,
           padding: '2px 7px', borderRadius: 999, border: 'none',
-          color: s.fg, background: s.bg, cursor: 'pointer',
+          color: s.fg, background: s.bg, cursor: onChange ? 'pointer' : 'default',
           display: 'inline-flex', alignItems: 'center', gap: 3,
         }}>
         {s.icon} {STATUS_LABEL[safeStatus] || safeStatus}
-        <ChevronDown size={9} style={{ opacity: 0.7, marginLeft: 1 }} />
+        {onChange && <ChevronDown size={9} style={{ opacity: 0.7, marginLeft: 1 }} />}
       </button>
-      {menu && (
+      {menu && onChange && (
         <PopoverMenu
           x={menu.x}
           y={menu.y}
@@ -9161,7 +9163,13 @@ function MitigationRowInline({
   showToast,
 }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  const me = useContext(MeContext);
   const { mitigation, parentItem, parentProgram, project } = entry;
+  // Wave 2 R5: on v2 a mitigation is part of raid/{programId}: editable only by the
+  // Owner or a PM / Deputy / Sub-PM of that program; read-only otherwise. v1 unchanged.
+  const canEdit = canEditRaid({
+    isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2?.roles || null, uid: me.uid, programId: parentProgram.id,
+  });
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(mitigation.name || '');
   useEffect(() => { setTitleDraft(mitigation.name || ''); }, [mitigation.name]);
@@ -9207,7 +9215,7 @@ function MitigationRowInline({
         style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 44 }}>
         <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          {expanded ? (
+          {expanded && canEdit ? (
             <input
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
@@ -9238,9 +9246,9 @@ function MitigationRowInline({
           <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{derivedPriority}</span>
         )}
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={mitigation.status || 'Open'} onChange={(st) => writePatch({ status: st })} statuses={MITIGATION_STATUSES} />
+          <StatusQuickPill status={mitigation.status || 'Open'} onChange={canEdit ? (st) => writePatch({ status: st }) : null} statuses={MITIGATION_STATUSES} />
         </span>
-        {mitigation.status !== 'Done' && (
+        {canEdit && mitigation.status !== 'Done' && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); markDone(); }} title="Mark done">✓</Btn>
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
@@ -9251,7 +9259,8 @@ function MitigationRowInline({
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={mitigation.pic || ''}
-              onChange={(e) => writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
+              disabled={!canEdit}
+              onChange={(e) => canEdit && writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -9263,7 +9272,8 @@ function MitigationRowInline({
             <input
               type="date"
               value={mitigation.due || ''}
-              onChange={(e) => writePatch({ due: e.target.value || null })}
+              disabled={!canEdit}
+              onChange={(e) => canEdit && writePatch({ due: e.target.value || null })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink }}
             />
@@ -9272,7 +9282,7 @@ function MitigationRowInline({
             💬 Comments and full risk context live in the RAID detail. Use "Open RAID item" below to view or comment.
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid ' + TOK.line }}>
-            {mitigation.status !== 'Done' && (
+            {canEdit && mitigation.status !== 'Done' && (
               <Btn size="sm" variant="primary" onClick={markDone}>✓ Mark done</Btn>
             )}
             <Btn size="sm" variant="ghost" onClick={() => onNavigateRaid && onNavigateRaid(project.id, parentProgram.id)}>
@@ -11984,11 +11994,14 @@ function MyWorkView({
                   {d.expectedReviewDate && <span style={{ color: reviewOverdue ? TOK.overdueFg : TOK.muted, fontWeight: reviewOverdue ? 500 : 400 }}>· review {fmtDateShort(d.expectedReviewDate)}{reviewOverdue ? ' ⚠' : ''}</span>}
                 </div>
               </div>
+              {/* Wave 2 R5 / W2-9: read-only unless the decision's stored program is mine (v2). */}
               <span onClick={(ev) => ev.stopPropagation()} style={{ display: 'inline-flex' }}>
                 <StatusQuickPill
                   status={d.followUpStatus || 'Open'}
                   statuses={FOLLOWUP_STATUSES}
-                  onChange={(st) => onDecisionUpdate && onDecisionUpdate({ ...d, followUpStatus: st }, e.project.id)}
+                  onChange={canEditDecision({ isOwner, isV2: !!e.project.__v2, roles: e.project.__v2?.roles || null, uid: me.uid, decision: d })
+                    ? (st) => onDecisionUpdate && onDecisionUpdate({ ...d, followUpStatus: st }, e.project.id)
+                    : null}
                 />
               </span>
               {onDecisionClick && <Btn size="sm" variant="ghost" onClick={() => onDecisionClick(e.project.id, d.id)} title="Open in Decisions tab">→</Btn>}

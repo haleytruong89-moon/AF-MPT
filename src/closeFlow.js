@@ -379,11 +379,7 @@ export function canActivateRaid(roles, programId, uid) {
   return isOwnerUid(roles, uid) || isPMOrDeputy(programOf(roles, programId), uid);
 }
 
-/**
- * Q1 (pre wave 2): an Owner or any PM/Deputy/Sub-PM in the project. Since wave 2
- * R5 this only answers "may create a new decision"; editing RAID / an existing
- * decision needs a role in that program (roleUi canEditRaid / canEditDecision).
- */
+/** Q1: RAID / Decisions writers = an Owner or any PM/Deputy/Sub-PM in the project (rules claimWriterOk). */
 export function canWriteRaid(roles, uid) {
   if (!roles || !uid) return false;
   if (isOwnerUid(roles, uid)) return true;
