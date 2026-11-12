@@ -147,6 +147,46 @@ describe('canDecideClose (mirror of rules canDecide + Owner branch)', () => {
   });
 });
 
+// Wave 1 H4 (Ruling W1-1): a non-Owner manager never decides a close request
+// on a task they are PIC of (rules eligibleWith / canDecide picUid checks).
+describe('H4: no self-approval by a PIC manager (non-Owner)', () => {
+  it('the PM who is PIC is not eligible for a Sub-PM request', () => {
+    expect(eligibleApprovers(R, 'tP', 'L')).toEqual(['D', 'O']);
+    expect(directApprover(R, 'tP', 'L')).toBe('D');
+  });
+  it('the Deputy / Sub-PM who is PIC is not eligible either', () => {
+    expect(eligibleApprovers(R, 'tD', 'L')).toEqual(['P', 'O']);
+    expect(eligibleApprovers(R, 'tL', 'A')).toEqual(['P', 'D', 'O']);
+  });
+  it('an Owner who is PIC stays eligible', () => {
+    expect(eligibleApprovers(R, 'tO', 'L')).toEqual(['P', 'D', 'O']);
+  });
+  it('canDecideClose: PM-PIC named as approver -> false; Deputy / Owner -> true', () => {
+    const tp = { ...task('tP', 'Submitted'), closeRequest: { requestedByUid: 'L', approverUid: 'P', outcome: 'Completed' } };
+    expect(canDecideClose(R, tp, 'P')).toBe(false);
+    expect(canDecideClose(R, tp, 'D')).toBe(true);
+    expect(canDecideClose(R, tp, 'O')).toBe(true);
+  });
+  it('canDecideClose: PM-PIC via the PM branch (Deputy named) -> false', () => {
+    const tp = { ...task('tP', 'Submitted'), closeRequest: { requestedByUid: 'L', approverUid: 'D', outcome: 'Completed' } };
+    expect(canDecideClose(R, tp, 'P')).toBe(false);
+  });
+  it('canDecideClose: the PM decides when the PIC is someone else', () => {
+    const ta = { ...task('tA', 'Submitted'), closeRequest: { requestedByUid: 'A', approverUid: 'P', outcome: 'Completed' } };
+    expect(canDecideClose(R, ta, 'P')).toBe(true);
+  });
+  it('canDecideClose: Owner who is PIC still decides (W1-1)', () => {
+    const to = { ...task('tO', 'Submitted'), closeRequest: { requestedByUid: 'L', approverUid: 'O', outcome: 'Completed' } };
+    expect(canDecideClose(R, to, 'O')).toBe(true);
+  });
+  it('applyCloseIntent: a non-Owner submit with no eligible approver -> no-approver', () => {
+    const r0 = withRoles((b) => ({ ownerUids: [], programs: { ...b.programs, p1: { pmUid: 'P', deputyUid: null } } }));
+    const r = applyCloseIntent({ roles: r0, oldTask: task('tP', 'InProgress'), nextTask: task('tP', 'Completed'), me: me('P'), now: NOW });
+    expect(r.outcome).toBe('no-approver');
+    expect(r.steps).toEqual([]);
+  });
+});
+
 describe('applyCloseIntent', () => {
   const run = (uid, oldTask, nextTask, extra = {}) =>
     applyCloseIntent({ roles: R, oldTask, nextTask, me: me(uid), now: NOW, ...extra });

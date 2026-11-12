@@ -17,92 +17,85 @@ export type SpotlightStep = StepBase & {
   type: 'spotlight';
   target: string; // matches data-tour="..." attribute
   placement?: 'auto' | 'top' | 'bottom' | 'left' | 'right';
-  requireView?: 'mindmap'; // force-switch view before showing
+  skipIfMissing?: boolean; // silently skip the step when the target is not on screen
   fallbackNote?: string; // shown when target element not found
   primaryCta: string;
 };
 
-export type BranchStep = StepBase & {
-  type: 'branch';
-  continueLabel: string;
-  skipLabel: string;
-};
-
-export type Step = ModalStep | SpotlightStep | BranchStep;
+export type Step = ModalStep | SpotlightStep;
 
 export const STEPS: Step[] = [
   {
     id: 'welcome',
     type: 'modal',
-    title: 'Welcome to AFMPT!',
-    body: 'This tracker organizes your work as: Project → Programs → Workstreams → Tasks. Let’s take a quick 1-minute tour.',
+    title: 'Welcome to AF-MPT',
+    body: 'Plan work as Project → Program → Work stream → Task. This 1-minute tour shows where to find your own work, approvals and roles.',
     primaryCta: 'Start tour',
     secondaryCta: 'Skip tour',
+  },
+  {
+    id: 'my-work',
+    type: 'spotlight',
+    target: 'tab-my-work',
+    placement: 'bottom',
+    title: 'My Work',
+    body: 'Start here every day. Your tasks are grouped by Today, Week and Later, across all projects.',
+    primaryCta: 'Next',
+  },
+  {
+    id: 'approvals',
+    type: 'modal',
+    title: 'Approvals in My Work',
+    body: 'Requests waiting for your approval appear in My Work under "Needs my approval" (the My Work tab shows a count). Your own requests are under "Sent for approval". A request waiting 3+ working days also goes to the next level.',
+    primaryCta: 'Next',
+  },
+  {
+    id: 'submit-as-done',
+    type: 'modal',
+    title: 'Submit as done',
+    body: 'Open a task and the PIC uses Submit as done when the work is finished. The manager then approves it, or rejects it with a reason.',
+    primaryCta: 'Next',
+  },
+  {
+    id: 'roles',
+    type: 'modal',
+    title: 'Who does what',
+    body: 'The Owner (HOD) sees everything and can approve or close any task. The Owner assigns PM and Deputy; a PM or Deputy assigns the Sub-PM of their program’s work streams and approves. Sub-PM plans and approves tasks in a work stream. Assignee / PIC does the task and submits it as done.',
+    primaryCta: 'Next',
+  },
+  {
+    id: 'role-chip',
+    type: 'spotlight',
+    target: 'role-chip',
+    placement: 'bottom',
+    skipIfMissing: true,
+    title: 'Your role',
+    body: 'This chip shows your highest role in the current project. Hover it to see every role you hold.',
+    primaryCta: 'Next',
+  },
+  {
+    id: 'roles-menu',
+    type: 'spotlight',
+    target: 'project-menu',
+    placement: 'bottom',
+    title: 'Assigning roles',
+    body: 'Open the ⋯ menu and choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
+    primaryCta: 'Next',
   },
   {
     id: 'view-tabs',
     type: 'spotlight',
     target: 'view-tabs',
     placement: 'bottom',
-    title: 'Switching views',
-    body: 'AFMPT has multiple views of the same project. Mind Map is the visual canvas, Outline edits the tree, Dashboard shows stats. Try clicking between them later.',
-    primaryCta: 'Next',
-  },
-  {
-    id: 'first-task',
-    type: 'spotlight',
-    target: 'first-task',
-    requireView: 'mindmap',
-    placement: 'auto',
-    title: 'Click a task to open details',
-    body: 'Inside, you can log check-ins, change status, set dates, and @mention teammates — they’ll see it in the activity feed.',
-    fallbackNote: 'This step is about clicking a task — try it once you’ve added one.',
-    primaryCta: 'Next',
-  },
-  {
-    id: 'branch',
-    type: 'branch',
-    title: 'You’ve got the basics!',
-    body: 'Want to see the advanced features (search, members, action items)?',
-    continueLabel: 'Show me more',
-    skipLabel: 'Skip — I’ll explore',
-  },
-  {
-    id: 'search',
-    type: 'spotlight',
-    target: 'search',
-    placement: 'bottom',
-    title: 'Quick search',
-    body: 'Press Ctrl+K (Cmd+K on Mac) anywhere to jump to any task or project instantly.',
-    primaryCta: 'Next',
-  },
-  {
-    id: 'members',
-    type: 'spotlight',
-    target: 'members',
-    placement: 'bottom',
-    title: 'Members & roles',
-    body: 'Each project has roles: Owner (manages membership), Operator (edits content), Viewer (read-only). Click the people icon to manage.',
-    fallbackNote: 'You’ll see this when you’re a member with permissions.',
-    primaryCta: 'Next',
-  },
-  {
-    id: 'specialty-tabs',
-    type: 'spotlight',
-    target: 'view-tabs',
-    placement: 'bottom',
-    title: 'Beyond tasks',
-    body: 'Use the Decisions, Actions, and Aggregation tabs for decision logs, action items with PIC, and cross-project rollups. The ▶ Meeting button (right of tabs) launches a presentation mode for stand-ups with auto-generated minutes.',
+    title: 'Mind map and Outline',
+    body: 'Mind map is the visual canvas; Outline edits the same tree as a list. Both show the same project.',
     primaryCta: 'Next',
   },
   {
     id: 'closing',
     type: 'modal',
-    title: 'You’re all set!',
-    body: 'Click the ? icon in the header anytime to replay this tour. Happy tracking!',
-    primaryCta: 'Got it',
+    title: 'You’re all set',
+    body: 'Click the ? icon in the header to replay this walkthrough; it also has a Glossary of terms.',
+    primaryCta: 'Done',
   },
 ];
-
-export const BRANCH_STEP_INDEX = STEPS.findIndex((s) => s.type === 'branch');
-export const FIRST_ADVANCED_STEP_INDEX = BRANCH_STEP_INDEX + 1;

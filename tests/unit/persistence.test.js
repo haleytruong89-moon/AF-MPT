@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -244,5 +244,63 @@ describe('buildProjectWrite — v2 fields stay server-owned (P2.2 task 3)', () =
     expect('__v2' in doc).toBe(false);
     const created = buildProjectWrite(null, { name: 'P', __v2: { readOnly: true } }, opts({ knownRev: undefined }));
     expect('__v2' in created.doc).toBe(false);
+  });
+});
+
+describe('loadFailures (C1: parallel load reports which projects failed)', () => {
+  it('returns ids whose result is null', () => {
+    expect(loadFailures(['a', 'b', 'c'], [{ id: 'a' }, null, { id: 'c' }])).toEqual(['b']);
+  });
+  it('returns [] when all loaded or no ids', () => {
+    expect(loadFailures(['a'], [{ id: 'a' }])).toEqual([]);
+    expect(loadFailures([], [])).toEqual([]);
+  });
+  it('treats undefined result as failed', () => {
+    expect(loadFailures(['a', 'b'], [{ id: 'a' }])).toEqual(['b']);
+  });
+});
+
+describe('saveChip', () => {
+  const err = { p1: { status: 'error', name: 'A' } };
+  it('error entry -> Not saved — Retry with retry true', () => {
+    expect(saveChip({ pending: 0, saveState: err, lastSavedAt: '09:05' })).toEqual({ label: 'Not saved — Retry', tone: 'error', retry: true });
+  });
+  it('error wins over pending', () => {
+    expect(saveChip({ pending: 2, saveState: err, lastSavedAt: null }).label).toBe('Not saved — Retry');
+  });
+  it('pending -> Saving…', () => {
+    expect(saveChip({ pending: 1, saveState: {}, lastSavedAt: '09:05' })).toEqual({ label: 'Saving…', tone: 'muted', retry: false });
+  });
+  it('saved time -> Saved hh:mm', () => {
+    expect(saveChip({ pending: 0, saveState: {}, lastSavedAt: '09:05' })).toEqual({ label: 'Saved 09:05', tone: 'ok', retry: false });
+  });
+  it('nothing -> empty label', () => {
+    expect(saveChip({ pending: 0, saveState: {}, lastSavedAt: null })).toEqual({ label: '', tone: 'muted', retry: false });
+  });
+  it('any non-error entry hides the chip (the sticky banner speaks; never Saved next to a refusal)', () => {
+    for (const status of ['conflict', 'denied', 'refused', 'history', 'readonly']) {
+      const st = { a: { status, name: 'A' } };
+      expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+      expect(saveChip({ pending: 1, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+    }
+  });
+  it('a non-error entry also hides the chip when an error entry exists (banner lists both)', () => {
+    const st = { a: { status: 'error', name: 'A' }, b: { status: 'conflict', name: 'B' } };
+    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '09:05' })).toEqual({ label: '', tone: 'muted', retry: false });
+  });
+});
+
+describe('retryablePids', () => {
+  it('lists only projects whose save failed with error', () => {
+    const st = {
+      p1: { status: 'error', name: 'A' }, p2: { status: 'conflict', name: 'B' }, p3: { status: 'denied', name: 'C' },
+      p4: { status: 'refused', name: 'D' }, p5: { status: 'history', name: 'E' }, p6: { status: 'readonly', name: 'F' },
+      p7: { status: 'error', name: 'G' },
+    };
+    expect(retryablePids(st)).toEqual(['p1', 'p7']);
+  });
+  it('empty / missing state -> []', () => {
+    expect(retryablePids({})).toEqual([]);
+    expect(retryablePids(undefined)).toEqual([]);
   });
 });

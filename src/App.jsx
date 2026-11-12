@@ -5,32 +5,37 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2
+  Move, FileText, History, Grip, BarChart3, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
 import { GanttView } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
+import { GlossaryList } from './components/Glossary';
 import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
-import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
+import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
-import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storage-shim';
+import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
+import { taskUrl, parseDeepLink } from './deepLink';
 import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
+import { approvalBuckets } from './approvalsInbox.js';
+// Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary } from './roleUi.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -2032,7 +2037,9 @@ function FieldLabel({ children }) {
 // B2/B3: persistent banner for failed or refused project saves.
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
-function SaveBanner({ saveState }) {
+const nowHHMM = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+function SaveBanner({ saveState, onRetry }) {
   const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
   if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
@@ -2046,6 +2053,7 @@ function SaveBanner({ saveState }) {
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
+      {errorNames.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
@@ -3256,7 +3264,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const me = useContext(MeContext);
   // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
@@ -3272,6 +3280,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(loc?.task || null);
   const [showDeadlineRequest, setShowDeadlineRequest] = useState(false);
+  // Wave 1 U4: { key: 'start' | 'end', text } when a date was refused (outside the WS).
+  const [dateNote, setDateNote] = useState(null);
   // B4: resizable width (persisted per browser) and expanded overlay mode.
   const [panelWidth, setPanelWidth] = useState(() => {
     try { return clampPanelWidth(localStorage.getItem('afmpt.taskPanelWidth')); } catch { return clampPanelWidth(null); }
@@ -3298,6 +3308,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     setDraft(loc?.task || null);
     setShowDeadlineRequest(false);
     setCreditNote(null);
+    setDateNote(null);
   }, [taskId]); // eslint-disable-line
 
   // P3 (v2): once the task is Submitted, a PM / Sub-PM may not change PIC /
@@ -3355,6 +3366,20 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   const v2Role = v2Roles ? managerLevel(v2Roles, task.id, me.uid) : null;
   const canSplitCredit = project.__v2 ? canEditCreditSplit(v2Role, task) : isOwner;
   const canEditPeople = project.__v2 ? canEditCreditFields(v2Role, task) : true;
+  // Wave 1 U4 / U6 (v2): PM / Deputy / Sub-PM edit Start / End within the WS
+  // dates; Edit / Drop hidden when the rules would refuse. v1 unchanged.
+  const isV2 = !!project.__v2;
+  const caps = uiCaps({ isOwner, isV2, roles: v2Roles, uid: me.uid, programId: program.id, wsId: workstream.id });
+  const canDates = isV2 ? canEditTaskDates({ isOwner, isV2, roles: v2Roles, taskId: task.id, uid: me.uid }) : isOwner;
+  const wsWindow = (v2Roles && v2Roles.workstreams && v2Roles.workstreams[workstream.id]) || workstream;
+  const setDraftDate = (key, v) => {
+    setDateNote(null);
+    setDraft({ ...draft, [key]: v || null });
+  };
+  const datesOutsideWs = () => isV2 && !isOwner && !datesWithinWs(draft.start, draft.end, wsWindow);
+  const dateNoteFor = () => (dateNote
+    ? <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 3 }}>{dateNote}</div>
+    : null);
   // A manager may not produce manual mode (PIC removed / 3+ contributors): block it.
   const autoCreditOrBlock = (next, pic, contributors) => {
     if ((next.creditSharesMode || 'auto') !== 'auto') return next;
@@ -3389,6 +3414,11 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   ];
 
   const save = () => {
+    if (datesOutsideWs()) {
+      setDateNote(`Outside the work stream dates (${wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – ${wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}). Use Request change.`);
+      return;
+    }
+    setDateNote(null);
     const editedDraft = { ...draft };
     for (const f of LIVE_FIELDS) delete editedDraft[f];
     let toSave = { ...task, ...editedDraft };
@@ -3561,6 +3591,19 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {program.name} › {workstream.name}
         </div>
         <div style={{ display: 'flex', gap: 2 }}>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(taskUrl(window.location.origin, project.id, task.id));
+                showToast?.('Link copied');
+              } catch {
+                showToast?.("Couldn't copy the link");
+              }
+            }}
+            title="Copy link" aria-label="Copy link to this task"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'inline-flex', alignItems: 'center' }}>
+            <LinkIcon size={14} />
+          </button>
           <button onClick={() => setExpanded((v) => !v)} title={expanded ? 'Back to side panel' : 'Expand'} aria-label={expanded ? 'Back to side panel' : 'Expand task panel'}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, fontSize: 14, lineHeight: 1 }}>
             {expanded ? '⤡' : '⤢'}
@@ -3586,14 +3629,14 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           <HealthPill health={task.health || 'green'} size="sm" />
           {isOverdue(task) && <Pill overdue />}
           <div style={{ flex: 1 }} />
-          {!editing ? (
+          {!editing ? (caps.taskEdit && (
             <>
               <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit task"><Edit2 size={12} /></Btn>
               <Btn variant="ghost" size="sm" onClick={() => onDelete(task)} title="Drop task" aria-label="Drop task"><Trash2 size={12} /></Btn>
             </>
-          ) : (
+          )) : (
             <>
-              <Btn size="sm" onClick={() => { setDraft(task); setEditing(false); }}>Cancel</Btn>
+              <Btn size="sm" onClick={() => { setDraft(task); setEditing(false); setDateNote(null); }}>Cancel</Btn>
               <Btn size="sm" variant="primary" onClick={save}>Save</Btn>
             </>
           )}
@@ -3702,13 +3745,34 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               </div>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <div style={{ flex: 1 }}><FieldLabel>Start</FieldLabel><Input type="date" value={draft.start || ''} onChange={(v) => setDraft({ ...draft, start: v || null })} /></div>
+              <div style={{ flex: 1 }}>
+                <FieldLabel>Start</FieldLabel>
+                {(!isV2 || canDates) ? (
+                  <Input type="date" value={draft.start || ''} onChange={(v) => setDraftDate('start', v)} />
+                ) : (
+                  <div style={{
+                    padding: '8px 10px', background: TOK.bg, border: '1px dashed ' + TOK.lineStrong, borderRadius: 7,
+                    fontSize: 13, color: TOK.muted, cursor: 'not-allowed',
+                  }}>
+                    🔒 {draft.start ? fmtDateShort(draft.start) : '—'}
+                  </div>
+                )}
+              </div>
               <div style={{ flex: 1 }}>
                 <FieldLabel>
-                  End {!isOwner && <span style={{ color: TOK.subtle, fontWeight: 400 }}>(request change)</span>}
+                  End {!canDates && <span style={{ color: TOK.subtle, fontWeight: 400 }}>(request change)</span>}
                 </FieldLabel>
-                {isOwner ? (
-                  <Input type="date" value={draft.end || ''} onChange={(v) => setDraft({ ...draft, end: v || null })} />
+                {canDates ? (
+                  <>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <div style={{ flex: 1 }}><Input type="date" value={draft.end || ''} onChange={(v) => setDraftDate('end', v)} /></div>
+                      {!isOwner && (
+                        <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
+                          {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                        </Btn>
+                      )}
+                    </div>
+                  </>
                 ) : (
                   <div style={{ display: 'flex', gap: 6 }}>
                     <div style={{
@@ -3725,6 +3789,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 )}
               </div>
             </div>
+            {dateNoteFor()}
             <div>
               <FieldLabel>Deadline type</FieldLabel>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -3771,6 +3836,14 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
             )}
             <Row k="Start" v={fmtDate(task.start)} />
             <Row k="End" v={fmtDate(task.end)} />
+            {isV2 && !caps.taskEdit && me.uid && ((v2Roles?.tasks?.[task.id]?.picUid ?? task.picUid) === me.uid) && (
+              // Wave 1 U6: Edit is hidden for the Assignee; keep the request path.
+              <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '2px 0 4px' }}>
+                <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
+                  {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                </Btn>
+              </div>
+            )}
             <Row k="Deadline" v={(task.deadlineType || DEFAULT_DEADLINE_TYPE) === 'hard' ? '🔒 Hard deadline' : '🎯 Soft target'} />
             <Row k="Duration" v={task.duration != null ? `${task.duration} days` : '—'} />
             <Row k="Deliverables" v={task.deliverables || '—'} multiline />
@@ -6550,7 +6623,11 @@ function buildMindTree(project, collapsed) {
   return mk(project, 'project', programs);
 }
 
-function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles }) {
+function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles, isOwner = false, uid = null }) {
+  // Wave 1 U6 (v2): menu items the rules would refuse are hidden. v1 / Owner: all.
+  const capsFor = (programId, wsId) => uiCaps({ isOwner, isV2: !!project.__v2, roles, uid, programId, wsId });
+  // Drop a separator left at the end (or doubled) once items are hidden.
+  const tidyMenu = (items) => items.filter(Boolean).filter((it, i, arr) => !it.separator || (i < arr.length - 1 && !arr[i + 1].separator && i > 0));
   // Role assignment: v2 projects show PM / Sub-PM on nodes; changes go through the Roles modal.
   const roleText = (n) => (nameOf ? mindNodeRoleText(roles, n.kind, n.id, nameOf) : null);
   // Filter project if scoping to a program
@@ -6738,37 +6815,39 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   const menuItems = (node) => {
     if (!node) return [];
     if (node.kind === 'project') {
-      return [
-        { label: 'Add program', icon: <Plus size={13} />, onClick: actAddProgram },
+      return tidyMenu([
+        capsFor(null, null).programEdit && { label: 'Add program', icon: <Plus size={13} />, onClick: actAddProgram },
         { separator: true },
         { label: 'Expand all', icon: <ChevronDown size={13} />, onClick: expandAll },
         { label: 'Collapse to programs', icon: <ChevronRight size={13} />, onClick: collapseToPrograms },
         { label: 'Fit view', icon: <Maximize2 size={13} />, onClick: fit },
-      ];
+      ]);
     }
     if (node.kind === 'program') {
       const pg = node.data;
-      return [
-        { label: 'Add work stream', icon: <Plus size={13} />, onClick: () => actAddWorkstream(pg) },
+      const c = capsFor(pg.id, null);
+      return tidyMenu([
+        c.wsAdd && { label: 'Add work stream', icon: <Plus size={13} />, onClick: () => actAddWorkstream(pg) },
         { label: (node.isCollapsed ? 'Expand' : 'Collapse'), icon: node.isCollapsed ? <ChevronDown size={13} /> : <ChevronRight size={13} />, onClick: () => toggle(node.id) },
         ...(roles && onOpenRoles ? [{ label: 'Roles (PM, Deputy)…', icon: <Users size={13} />, onClick: () => onOpenRoles({ programId: pg.id }) }] : []),
         { separator: true },
-        { label: 'Rename program', icon: <Edit2 size={13} />, onClick: () => actRename('program', pg) },
-        { label: 'Delete program', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('program', pg) },
-      ];
+        c.programEdit && { label: 'Rename program', icon: <Edit2 size={13} />, onClick: () => actRename('program', pg) },
+        c.programEdit && { label: 'Delete program', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('program', pg) },
+      ]);
     }
     if (node.kind === 'workstream') {
       const ws = node.data;
       // Find parent program
       const pg = (project.programs || []).find((p) => (p.workstreams || []).some((w) => w.id === ws.id));
-      return [
-        { label: 'Add task', icon: <Plus size={13} />, onClick: () => actAddTask(pg, ws) },
+      const c = capsFor(pg ? pg.id : null, ws.id);
+      return tidyMenu([
+        c.taskAdd && { label: 'Add task', icon: <Plus size={13} />, onClick: () => actAddTask(pg, ws) },
         { label: (node.isCollapsed ? 'Expand' : 'Collapse'), icon: node.isCollapsed ? <ChevronDown size={13} /> : <ChevronRight size={13} />, onClick: () => toggle(node.id) },
         ...(roles && onOpenRoles && pg ? [{ label: 'Roles (Sub-PM)…', icon: <Users size={13} />, onClick: () => onOpenRoles({ programId: pg.id, wsId: ws.id }) }] : []),
         { separator: true },
-        { label: 'Rename work stream', icon: <Edit2 size={13} />, onClick: () => actRename('workstream', pg, ws) },
-        { label: 'Delete work stream', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('workstream', pg, ws) },
-      ];
+        c.wsEdit && { label: 'Rename work stream', icon: <Edit2 size={13} />, onClick: () => actRename('workstream', pg, ws) },
+        c.wsDelete && { label: 'Delete work stream', icon: <Trash2 size={13} />, danger: true, onClick: () => actDelete('workstream', pg, ws) },
+      ]);
     }
     return [];
   };
@@ -6776,8 +6855,8 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: FONT_STACK, background: TOK.bg }}>
       <div style={{ padding: '10px 16px', borderBottom: '1px solid ' + TOK.line, background: TOK.surface, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Btn size="sm" variant="primary" onClick={actAddProgram} title="Add a new program to this project"><FolderPlus size={12} /> Program</Btn>
-        <div style={{ width: 1, height: 20, background: TOK.line, margin: '0 2px' }} />
+        {capsFor(null, null).programEdit && <Btn size="sm" variant="primary" onClick={actAddProgram} title="Add a new program to this project"><FolderPlus size={12} /> Program</Btn>}
+        {capsFor(null, null).programEdit && <div style={{ width: 1, height: 20, background: TOK.line, margin: '0 2px' }} />}
         <Btn size="sm" onClick={collapseToPrograms}>Programs only</Btn>
         <Btn size="sm" onClick={showWorkstreams}>Work streams</Btn>
         <Btn size="sm" onClick={expandAll}>Expand all</Btn>
@@ -6913,6 +6992,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   const dirIndex = useContext(DirectoryIndexContext);
   // Role assignment: pickers only on v2 projects.
   const showRoles = !!(project.__v2 && roles && me);
+  // Wave 1 U6 (v2): hide what the rules would refuse. v1 / Owner: all true.
+  const capsFor = (programId, wsId) => uiCaps({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, programId, wsId });
+  const projectCaps = capsFor(null, null);
   // Filter programs by scope
   const visiblePrograms = useMemo(() => {
     if (!scopeProgramId) return project.programs || [];
@@ -7181,7 +7263,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
           <Input value={query} onChange={setQuery} placeholder="Search programs, work streams, tasks…" style={{ paddingLeft: 30 }} />
         </div>
         <div style={{ flex: 1 }} />
-        <Btn size="sm" onClick={addProgram}><FolderPlus size={12} /> Program</Btn>
+        {projectCaps.programEdit && <Btn size="sm" onClick={addProgram}><FolderPlus size={12} /> Program</Btn>}
         <div style={{ fontSize: 11, color: TOK.muted }}>
           <Move size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />
           Drag tasks between work streams · Drag work streams between programs
@@ -7214,7 +7296,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
               )}
               <span>Allocated: <strong style={{ color: TOK.ink }}>{Math.round(creditInfo.result.programPoolCp * 10) / 10} cp</strong></span>
               <span>Earned so far: <strong style={{ color: TOK.healthGreen }}>{Math.round(creditInfo.workspaceEarned * 10) / 10} cp</strong> <span style={{ opacity: 0.7 }}>(only Completed tasks)</span></span>
-              {creditInfo.topPics.length > 0 && (
+              {isOwner && creditInfo.topPics.length > 0 && (
                 <span style={{ flex: 1, textAlign: 'right' }}>
                   Top: {creditInfo.topPics.map((p) => `${p.name} ${Math.round(p.projected * 10) / 10}`).join(' · ')}
                 </span>
@@ -7231,6 +7313,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
           const dropOn = dragOver === 'pg_' + pg.id;
           const pgIdx = (project.programs || []).findIndex((p) => p.id === pg.id);
           const pgEffWeight = pgIdx >= 0 ? (programWeights[pgIdx] || 0) : 0;
+          const pgCaps = capsFor(pg.id, null);
           return (
             <div key={pg.id}
               onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id) onDragOverZone(e, 'pg_' + pg.id); }}
@@ -7264,9 +7347,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                 <div style={{ width: 100, height: 5, background: 'rgba(12,68,124,0.15)', borderRadius: 999, overflow: 'hidden' }}>
                   <div style={{ width: `${r.pct}%`, height: '100%', background: TOK.programFg }} />
                 </div>
-                <Btn size="sm" variant="ghost" onClick={() => addWorkstream(pg)} title="Add work stream"><Plus size={12} /></Btn>
-                <Btn size="sm" variant="ghost" onClick={() => renameProgram(pg)} title="Rename"><Edit2 size={12} /></Btn>
-                <Btn size="sm" variant="ghost" onClick={() => deleteProgram(pg)} title="Delete"><Trash2 size={12} /></Btn>
+                {pgCaps.wsAdd && <Btn size="sm" variant="ghost" onClick={() => addWorkstream(pg)} title="Add work stream"><Plus size={12} /></Btn>}
+                {pgCaps.programEdit && <Btn size="sm" variant="ghost" onClick={() => renameProgram(pg)} title="Rename"><Edit2 size={12} /></Btn>}
+                {pgCaps.programEdit && <Btn size="sm" variant="ghost" onClick={() => deleteProgram(pg)} title="Delete"><Trash2 size={12} /></Btn>}
               </div>
               {pgOpen && (pg.workstreams || []).map((ws) => {
                 const wsR = rollup(ws);
@@ -7280,6 +7363,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                 const wsEffWeights = wsWeightsMap.get(pg.id) || [];
                 const wsEffWeight = wsIdx >= 0 ? (wsEffWeights[wsIdx] || 0) : 0;
                 const taskWeightInfo = taskWeightsMap.get(ws.id) || { eligible: [], weights: [] };
+                const wsCaps = capsFor(pg.id, ws.id);
                 return (
                   <div key={ws.id}
                     draggable onDragStart={(e) => onDragStartWs(e, ws, pg)}
@@ -7315,9 +7399,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                       <div style={{ width: 80, height: 4, background: 'rgba(15,110,86,0.2)', borderRadius: 999, overflow: 'hidden' }}>
                         <div style={{ width: `${wsR.pct}%`, height: '100%', background: TOK.workstreamFg }} />
                       </div>
-                      <Btn size="sm" variant="ghost" onClick={() => addTask(pg, ws)} title="Add task"><Plus size={12} /></Btn>
-                      <Btn size="sm" variant="ghost" onClick={() => renameWorkstream(pg, ws)} title="Rename"><Edit2 size={12} /></Btn>
-                      <Btn size="sm" variant="ghost" onClick={() => deleteWorkstream(pg, ws)} title="Delete"><Trash2 size={12} /></Btn>
+                      {wsCaps.taskAdd && <Btn size="sm" variant="ghost" onClick={() => addTask(pg, ws)} title="Add task"><Plus size={12} /></Btn>}
+                      {wsCaps.wsEdit && <Btn size="sm" variant="ghost" onClick={() => renameWorkstream(pg, ws)} title="Rename"><Edit2 size={12} /></Btn>}
+                      {wsCaps.wsDelete && <Btn size="sm" variant="ghost" onClick={() => deleteWorkstream(pg, ws)} title="Delete"><Trash2 size={12} /></Btn>}
                     </div>
                     {wsOpen && sortTasksByStart(ws.tasks).map((t) => {
                       if (q && !pgMatches && !wsMatches && !matches(t.name)) return null;
@@ -7367,7 +7451,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
                     })}
                     {wsOpen && (!ws.tasks || !ws.tasks.length) && (
                       <div style={{ padding: '10px 52px', fontSize: 11, color: TOK.subtle, borderTop: '1px solid ' + TOK.line }}>
-                        No tasks yet. <button onClick={() => addTask(pg, ws)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 11, padding: 0 }}>Add one</button>
+                        No tasks yet. {wsCaps.taskAdd && <button onClick={() => addTask(pg, ws)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 11, padding: 0 }}>Add one</button>}
                       </div>
                     )}
                   </div>
@@ -7375,7 +7459,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
               })}
               {pgOpen && (!pg.workstreams || !pg.workstreams.length) && (
                 <div style={{ padding: '10px 12px 10px 28px', fontSize: 11, color: TOK.subtle, borderTop: '1px solid ' + TOK.line }}>
-                  No work streams yet. <button onClick={() => addWorkstream(pg)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 11, padding: 0 }}>Add one</button>
+                  No work streams yet. {pgCaps.wsAdd && <button onClick={() => addWorkstream(pg)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 11, padding: 0 }}>Add one</button>}
                 </div>
               )}
             </div>
@@ -7383,7 +7467,7 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
         })}
         {(!visiblePrograms || !visiblePrograms.length) && (
           <div style={{ textAlign: 'center', padding: 40, color: TOK.muted, fontSize: 13 }}>
-            No programs yet. <button onClick={addProgram} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Add one</button>
+            No programs yet. {projectCaps.programEdit && <button onClick={addProgram} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Add one</button>}
           </div>
         )}
       </div>
@@ -8604,6 +8688,43 @@ function StatusQuickPill({ status, onChange, statuses }) {
 function MyWorkBreadcrumb({ project, program, workstream }) {
   const parts = [project?.name, program?.name, workstream?.name].filter(Boolean);
   return <span style={{ fontSize: 11, color: TOK.muted }}>{parts.join(' › ')}</span>;
+}
+
+// U1: one close request in My Work ("needs" = I decide, "sent" = I asked).
+// The buttons are the task panel's CloseControl, writing through the same
+// onTaskUpdate -> applyTaskUpdate choke point as every other My Work edit.
+function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
+  const me = useContext(MeContext);
+  const { project, program, workstream, task, waitingDays, escalated } = item;
+  const cr = task.closeRequest || {};
+  const who = mode === 'needs'
+    ? `Requested by ${me.nameOf(cr.requestedByUid) || cr.requestedBy || '—'}`
+    : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
+  const waiting = waitingDays === 0 ? 'Sent today' : `Waiting ${waitingDays} working day${waitingDays === 1 ? '' : 's'}`;
+  return (
+    <div style={{ borderLeft: '3px solid ' + (escalated ? TOK.overdueFg : TOK.inprogFg), padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
+      <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+        <span role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+          onClick={() => onTaskClick(task.id, project.id)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(task.id, project.id); }}>
+          {task.name}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <MyWorkBreadcrumb project={project} program={program} workstream={workstream} />
+        <span>· {who}</span>
+        <span>· {cr.outcome === 'Dropped' ? 'Submitted as dropped' : 'Submitted as done'}</span>
+        {escalated ? (
+          <span style={{ color: TOK.overdueFg, background: TOK.overdueBg, fontWeight: 600, padding: '1px 7px', borderRadius: 999 }}>
+            {`Waiting ${waitingDays} working days — escalated`}
+          </span>
+        ) : <span>· {waiting}</span>}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <CloseControl task={task} roles={project.__v2.roles} onUpdate={(t) => onTaskUpdate(t, project.id)} dialogs={dialogs} />
+      </div>
+    </div>
+  );
 }
 
 function MyWorkDeadlineTypePill({ type }) {
@@ -11247,7 +11368,7 @@ function MyWorkView({
   onTaskUpdate: onTaskUpdateProp, onActionUpdate: onActionUpdateProp, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
-  onNavigateRaid,
+  onNavigateRaid, dialogs = null,
 }) {
   // P3-16: the App passes null handlers while "View as" is on; a write attempt toasts.
   const readOnlyWrite = () => { if (showToast) showToast(READ_ONLY_MESSAGE); return 'read-only'; };
@@ -11257,6 +11378,10 @@ function MyWorkView({
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
+  // U1: close requests waiting on me / sent by me (v2 projects). Keyed on the
+  // signed-in uid, so hidden under View as. `now` is read per render.
+  const me = useContext(MeContext);
+  const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
@@ -11346,7 +11471,8 @@ function MyWorkView({
   };
   const hasAnyAssignment = (
     counts.owned + myWork.tasksContributing.length + counts.actions +
-    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length
+    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length +
+    approvals.needsMine.length + approvals.sent.length
   ) > 0;
   const urgentEmpty = (
     myWork.needsAttention.length === 0 && myWork.unreadMentions.length === 0 &&
@@ -11455,6 +11581,23 @@ function MyWorkView({
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
       {Header}
+
+      {approvals.needsMine.length > 0 && (
+        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+          {approvals.needsMine.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
+      {approvals.sent.length > 0 && (
+        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+          {approvals.sent.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
 
       {viewMode === 'project' ? (
         <ByProjectView
@@ -12646,10 +12789,16 @@ export default function App() {
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
   const [currentId, setCurrentId] = useState(null);
+  // Current project at the time an await resolves (activity logs must not land in another project's view).
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
   const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
+  // C1: activity loads lazily; remembers which project's log is in `activity`. Failed project loads are retried from a banner.
+  const [activityLoadedId, setActivityLoadedId] = useState(null);
+  const [loadFailed, setLoadFailed] = useState([]);
   const [showImport, setShowImport] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
   const [scopeProgramId, setScopeProgramId] = useState(null);
@@ -12663,6 +12812,8 @@ export default function App() {
   const [meetingMode, setMeetingMode] = useState(false);
   const [showMeetingExport, setShowMeetingExport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [helpMenu, setHelpMenu] = useState(null);
+  const [showGlossary, setShowGlossary] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [showBriefingDialog, setShowBriefingDialog] = useState(false);
   const [briefingDialogIsOwnerMode, setBriefingDialogIsOwnerMode] = useState(false);
@@ -12680,6 +12831,11 @@ export default function App() {
   // B2/B3: per-project save failures shown in a persistent banner.
   const [saveState, setSaveState] = useState({});
   const pendingSaves = useRef(0);
+  const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
+  const bumpPending = useCallback((d) => { pendingSaves.current = Math.max(0, pendingSaves.current + d); setPendingN(pendingSaves.current); }, []);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const saveStateRef = useRef({});
+  saveStateRef.current = saveState;
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
 
   // Roster of @mention-able teammates: derived from PICs + check-in/update authors + project teamMembers list + RBAC members (from user directory)
@@ -12714,16 +12870,10 @@ export default function App() {
       setCurrentId(m.currentProjectId);
 
       const ps = {};
-      for (const pid of m.projectIds) {
-        const p = await loadProject(pid);
-        if (p) ps[pid] = ensureProjectRaid(p);
-      }
+      const results = await Promise.all(m.projectIds.map((pid) => loadProject(pid)));
+      m.projectIds.forEach((pid, i) => { if (results[i]) ps[pid] = ensureProjectRaid(results[i]); });
+      setLoadFailed(loadFailures(m.projectIds, results));
       setProjects(ps);
-
-      if (m.currentProjectId) {
-        const a = await loadActivity(m.currentProjectId);
-        setActivity(a);
-      }
 
       if (localUser) {
         // Back-compat: localUser was previously a plain string; now it's JSON {name, email}
@@ -12745,14 +12895,21 @@ export default function App() {
       // the project and Actions tab if the user has access. Clear the params so a
       // refresh doesn't re-trigger.
       try {
-        const params = new URLSearchParams(window.location.search);
-        const dpProj = params.get('project');
-        const dpAct = params.get('action');
-        if (dpProj && dpAct && ps[dpProj]) {
-          setCurrentId(dpProj);
-          setView('actions');
-          setInitialActionEditId(dpAct);
-          // Opens the action's edit form via ActionItemsView's initialEditId prop.
+        const { project: dpProj, action: dpAct, task: dpTask } = parseDeepLink(window.location.search);
+        if (dpProj && (dpAct || dpTask)) {
+          if (ps[dpProj]) {
+            setCurrentId(dpProj);
+            rememberCurrentProject(dpProj);
+            if (dpTask) {
+              // Task panel renders beside any view; keep the current one.
+              setSelectedTaskId(dpTask);
+            } else {
+              setView('actions');
+              setInitialActionEditId(dpAct);
+              // Opens the action's edit form via ActionItemsView's initialEditId prop.
+            }
+          }
+          // Always clear, even when the project is inaccessible (nothing opens).
           window.history.replaceState({}, '', window.location.pathname);
         }
       } catch {
@@ -12819,8 +12976,10 @@ export default function App() {
   // personal override → workspace default → 'my-work' (the new v30 default).
   useEffect(() => {
     if (view !== null || !meta || !author) return;
-    setView(userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work');
-  }, [meta, author, view, userPrefs]);
+    const v = userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work';
+    // Activity is workspace-owner only (PR-E U5): never land a non-Owner there.
+    setView(v === 'activity' && !isOwner ? 'my-work' : v);
+  }, [meta, author, view, userPrefs, isOwner]);
 
   // v30.A.1 — modal state for creating an action from My Work + state
   // for routing "→ Open" from My Work to a specific action's Edit form.
@@ -12939,6 +13098,9 @@ export default function App() {
   }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
+  // U1: the My Work tab count adds close requests waiting on me (not under View as:
+  // the approvals shown are keyed on the signed-in uid). `now` is read per render.
+  const myWorkTabCount = myWorkBadge + (impersonatingAs ? 0 : approvalBuckets(projects, authUser?.uid || null, new Date()).needsMine.length);
   // Role assignment: people a role picker of the current v2 project offers (memberUids
   // come from the shim cache; `project` changes after a role / member refresh).
   const rolePeople = useMemo(() => (project?.__v2
@@ -12986,7 +13148,7 @@ export default function App() {
   const closeBusy = useRef({});
   const persistProject = useCallback((p) => {
     if (!p) return;
-    if (!saveTimers.current[p.id]) pendingSaves.current += 1;
+    if (!saveTimers.current[p.id]) bumpPending(1);
     clearTimeout(saveTimers.current[p.id]);
     pendingTree.current[p.id] = p;
     const fire = async () => {
@@ -13000,12 +13162,27 @@ export default function App() {
       inflightSaves.current[p.id] = pr;
       const status = await pr;
       if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
       refreshV2Roles(p.id);
     };
     saveTimers.current[p.id] = setTimeout(fire, 400);
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
+
+  // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
+  // refused and history are never retried: that would fail again or overwrite.
+  const retryFailedSaves = useCallback(() => {
+    for (const pid of retryablePids(saveStateRef.current)) {
+      if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+      // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
+      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+    }
+  }, [persistProject]);
+  useEffect(() => {
+    window.addEventListener('online', retryFailedSaves);
+    return () => window.removeEventListener('online', retryFailedSaves);
+  }, [retryFailedSaves]);
 
   // P3 (carry 2, 3): save a pending debounced edit of this project now (before a
   // close step), or wait for one in flight. -> that save's status, or null when nothing was pending.
@@ -13015,16 +13192,17 @@ export default function App() {
       delete saveTimers.current[pid];
       const tree = pendingTree.current[pid];
       delete pendingTree.current[pid];
-      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return null; }
+      if (!tree) { bumpPending(-1); return null; }
       const status = await saveProject(tree);
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
       refreshV2Roles(pid);
       return status;
     }
     if (inflightSaves.current[pid]) return await inflightSaves.current[pid];
     return null;
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
@@ -13048,7 +13226,9 @@ export default function App() {
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
-    const log = await appendActivity(currentId, entry, { v2 });
+    const pid = currentId;
+    const log = await appendActivity(pid, entry, { v2 });
+    if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
     if (log) setActivity(log);
     else if (v2) setActivity((prev) => [entry, ...prev]);
   }, [currentId, author]);
@@ -13066,11 +13246,11 @@ export default function App() {
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
     const log = await appendActivity(projectId, entry, { v2 });
-    if (projectId === currentId) {
+    if (projectId === currentIdRef.current) {
       if (log) setActivity(log);
       else if (v2) setActivity((prev) => [entry, ...prev]);
     }
-  }, [author, currentId]);
+  }, [author]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen
@@ -13131,30 +13311,66 @@ export default function App() {
       setTask(oldTask);
       return;
     }
-    if (res.status === 'denied' || res.status === 'needs-reason') {
+    if (res.status === 'denied' || res.status === 'needs-reason' || res.status === 'no-approver') {
       // Re-planned after a flush and refused before any write: undo the optimistic change.
       setTask(res.task);
       showToastRef.current(chokeMessage(res.status));
       return;
     }
-    if (res.status !== 'ok') return; // the save banner reports it
+    if (res.status !== 'ok') {
+      // The save banner reports it. Drop the optimistic close (back to the last saved task) so
+      // Retry / online cannot later save an unlogged close through the general save path.
+      setTask(closeRollbackTask(v2SavedTree(projectId), oldTask.id, res.task));
+      return;
+    }
     if (res.task !== intent.task) {
       setTask(res.task);
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
       if (msg) showToastRef.current(msg);
     }
-    for (const ev of closeEventsFor(oldTask, res.task, meRef.current.nameOf)) {
+    const closeEvents = closeEventsFor(oldTask, res.task, meRef.current.nameOf);
+    for (const ev of closeEvents) {
       logActivityForProject(projectId, { ...ev, description: ev.description + tag });
+    }
+    // Google Chat card on a submit / reject (only when the project has a webhook). Fire-and-forget.
+    const webhook = projectsRef.current[projectId]?.googleChatWebhook;
+    if (webhook) {
+      const nameOf = meRef.current.nameOf;
+      const pname = projectsRef.current[projectId]?.name || 'project';
+      const url = taskUrl(window.location.origin, projectId, oldTask.id);
+      let card = null;
+      if (closeEvents.some((e) => e.type === 'close_submitted')) {
+        const cr = res.task.closeRequest || {};
+        card = buildCloseSubmittedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          requesterName: nameOf(cr.requestedByUid) || cr.requestedBy || 'Someone',
+          approverName: nameOf(cr.approverUid) || 'the approver',
+          outcome: cr.outcome, note: cr.note, taskUrl: url,
+        });
+      } else if (closeEvents.some((e) => e.type === 'close_rejected')) {
+        const h = (res.task.closeRequestHistory || [])[0] || {};
+        card = buildCloseRejectedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          deciderName: me.name || nameOf(me.uid) || 'Someone',
+          requesterName: nameOf(h.requestedByUid) || 'the requester',
+          reason: h.reason || '', taskUrl: url,
+        });
+      }
+      if (card) {
+        postToChat(webhook, card).then((r) => {
+          if (!r.ok) showToastRef.current(`Chat notify failed: ${r.status} ${r.statusText}`);
+        });
+      }
     }
   }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
   const runV2Close = useCallback((args) => {
     const pid = args.projectId;
     closeBusy.current[pid] = (closeBusy.current[pid] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const done = () => {
       closeBusy.current[pid] -= 1;
       if (!closeBusy.current[pid]) delete closeBusy.current[pid];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
     };
     const run = (closeChain.current[pid] || Promise.resolve())
       .then(() => runV2CloseNow(args))
@@ -13162,7 +13378,7 @@ export default function App() {
       .finally(done);
     closeChain.current[pid] = run;
     return run;
-  }, [runV2CloseNow]);
+  }, [runV2CloseNow, bumpPending]);
 
   // Role assignment (spec §7): the role write never carries tree edits. Pending edits
   // are flushed first, the role goes through changeRoleV2, then pending close requests
@@ -13248,7 +13464,7 @@ export default function App() {
     if (!ok) return;
     // Same per-project chain as closes; debounced saves of the project wait meanwhile.
     closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const state = { roleSaved: false };
     const run = (closeChain.current[projectId] || Promise.resolve())
       .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid, state }))
@@ -13261,11 +13477,11 @@ export default function App() {
       .finally(() => {
         closeBusy.current[projectId] -= 1;
         if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
-        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+        bumpPending(-1);
       });
     closeChain.current[projectId] = run;
     return run;
-  }, [rolesNowFor, changeRoleNow, dialogs]);
+  }, [rolesNowFor, changeRoleNow, dialogs, bumpPending]);
 
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
@@ -13293,7 +13509,7 @@ export default function App() {
         });
         return 'retry';
       }
-      if (intent.outcome === 'denied' || intent.outcome === 'needs-reason') {
+      if (intent.outcome === 'denied' || intent.outcome === 'needs-reason' || intent.outcome === 'no-approver') {
         showToastRef.current(chokeMessage(intent.outcome));
         return intent.outcome;
       }
@@ -13675,15 +13891,34 @@ export default function App() {
     setCurrentId(id);
     setSelectedTaskId(null);
     setScopeProgramId(null);
-    if (id === '__all__') {
-      setActivity([]);
-    } else {
-      const a = await loadActivity(id);
-      setActivity(a);
-    }
-    const m2 = { ...meta, currentProjectId: id };
-    setMeta(m2);
-    await saveMeta(m2);
+    setActivity([]);
+    setActivityLoadedId(null);
+    rememberCurrentProject(id);
+    setMeta({ ...meta, currentProjectId: id });
+  };
+
+  // C1: load the activity log only when a view that shows it is open.
+  useEffect(() => {
+    if (view !== 'dashboard' && view !== 'activity') return;
+    if (!currentId || currentId === '__all__' || activityLoadedId === currentId) return;
+    let cancelled = false;
+    const id = currentId;
+    (async () => {
+      const list = await loadActivityStrict(id);
+      if (cancelled || !list) return; // failed read: keep the list, stay unloaded so it retries
+      setActivity(list);
+      setActivityLoadedId(id);
+    })();
+    return () => { cancelled = true; };
+  }, [view, currentId, activityLoadedId]);
+
+  const retryFailedLoads = async () => {
+    const ids = loadFailed;
+    const results = await Promise.all(ids.map((pid) => loadProject(pid)));
+    const got = {};
+    ids.forEach((pid, i) => { if (results[i]) got[pid] = ensureProjectRaid(results[i]); });
+    if (Object.keys(got).length) setProjects((prev) => ({ ...prev, ...got }));
+    setLoadFailed(loadFailures(ids, results));
   };
 
   const changeOwnership = async (action, newOwner) => {
@@ -13888,7 +14123,7 @@ export default function App() {
     setMeta(m2); await saveMeta(m2);
     const np = { ...projects }; delete np[project.id]; setProjects(np);
     setCurrentId(next);
-    const a = await loadActivity(next); setActivity(a);
+    setActivity([]); setActivityLoadedId(null);
     showToast(`Deleted project "${project.name}"`);
   };
 
@@ -13959,15 +14194,28 @@ export default function App() {
               <option disabled>──────────</option>
               {meta.projectIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
             </select>
-            <Btn size="sm" variant="ghost" onClick={(e) => {
+            {project && project.__v2 && (() => {
+              // Wave 1 U6: my highest role on this (v2) project; tooltip lists all.
+              const rs = myRoleSummary(project.__v2.roles || null, meValue?.uid || null, project);
+              const viewOnly = rs.label === 'View only';
+              return (
+                <span data-tour="role-chip" title={rs.detail.join('\n')} style={{
+                  fontSize: 11, fontFamily: FONT_STACK, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 999,
+                  border: '1px solid ' + (viewOnly ? TOK.line : TOK.lineStrong),
+                  background: viewOnly ? TOK.bg : TOK.surface,
+                  color: viewOnly ? TOK.muted : TOK.ink, fontWeight: viewOnly ? 400 : 500,
+                }}>Your role: {rs.label}</span>
+              );
+            })()}
+            <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect();
               setProjectMenu({ x: rect.left, y: rect.bottom + 4 });
-            }} title="Project options"><MoreHorizontal size={12} /></Btn>
+            }} title="Project options"><MoreHorizontal size={12} /></Btn></span>
             <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>
             <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
-            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => walkthroughRef.current?.start()} title="Show walkthrough"><HelpCircle size={12} /></Btn></span>
+            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
           </div>
 
           {/* Scope / focus selector */}
@@ -13993,6 +14241,16 @@ export default function App() {
 
           <div style={{ flex: 1 }} />
 
+          {(() => {
+            const chip = saveChip({ pending: pendingN, saveState, lastSavedAt });
+            if (!chip.label) return null;
+            const col = chip.tone === 'error' ? TOK.overdueFg : chip.tone === 'ok' ? TOK.doneFg : TOK.muted;
+            const st = { fontSize: 11, color: col, whiteSpace: 'nowrap', fontFamily: FONT_STACK };
+            return chip.retry
+              ? <button onClick={retryFailedSaves} title="Retry saving" style={{ ...st, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>{chip.label}</button>
+              : <span role="status" style={st}>{chip.label}</span>;
+          })()}
+
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
             {(() => {
               const allTabs = [
@@ -14005,7 +14263,8 @@ export default function App() {
                 { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
                 { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
                 { id: 'raid', label: 'RAID', icon: <AlertTriangle size={12} /> },
-                { id: 'activity', label: 'Activity', icon: <Activity size={12} /> },
+                // Wave 1 U5: Activity is Owner-only for now (Q3).
+                ...(isOwner ? [{ id: 'activity', label: 'Activity', icon: <Activity size={12} />, ownerOnly: true }] : []),
                 ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
                 ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
                 ...(isOwner ? [{ id: 'team-overview', label: 'Team', icon: <Users size={12} />, ownerOnly: true }] : []),
@@ -14013,7 +14272,7 @@ export default function App() {
               // v30 Phase 3 — during impersonation, only My Work tab is visible.
               const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
               return visibleTabs.map((v) => (
-                <button key={v.id} onClick={() => {
+                <button key={v.id} data-tour={'tab-' + v.id} onClick={() => {
                   if (v.id === 'raid') setRaidScopeProgramId(null);
                   setView(v.id);
                 }} style={{
@@ -14022,12 +14281,12 @@ export default function App() {
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkBadge > 0 && (
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
                     background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
                     lineHeight: '14px', minWidth: 16, textAlign: 'center',
-                  }}>{myWorkBadge}</span>
+                  }}>{myWorkTabCount}</span>
                 )}{v.id === 'raid' && raidPendingBadge > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
@@ -14066,8 +14325,19 @@ export default function App() {
           </button>
         </div>
 
+        {loadFailed.length > 0 && (
+          <div role="alert" style={{ background: TOK.blockerBg, color: TOK.blocker, borderBottom: '1px solid currentColor', padding: '6px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {loadFailed.map((pid) => (
+              <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span>Couldn't load {meta?.names?.[pid] || pid} —</span>
+                <Btn size="sm" onClick={retryFailedLoads}>Retry</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Monday banner */}
-        {!bannerDismissed && isMonday() && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
+        {!bannerDismissed && isMonday() && !isBriefingDismissed(todayISODate()) && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
           <div style={{
             padding: '10px 16px',
             background: isOwner ? '#e8f0fe' : '#fff8e1',
@@ -14089,10 +14359,8 @@ export default function App() {
             }}>
               {isOwner ? 'Generate digest' : 'Generate briefing'}
             </Btn>
-            <Btn size="sm" variant="ghost" onClick={async () => {
-              const dismissed = [...(meta?.dismissedBriefingDates || []), todayISODate()];
-              const m2 = { ...meta, dismissedBriefingDates: dismissed };
-              setMeta(m2); await saveMeta(m2);
+            <Btn size="sm" variant="ghost" onClick={() => {
+              dismissBriefing(todayISODate());
               setBannerDismissed(true);
             }} title="Dismiss for today">
               <X size={14} />
@@ -14153,9 +14421,10 @@ export default function App() {
                   onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
                   onMarkSeen={impersonatingAs ? null : markMyWorkSeen}
                   showToast={showToast}
+                  dialogs={dialogs}
                 />
               )}
-              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} />}
+              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
@@ -14182,7 +14451,12 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
-              {view === 'activity' && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} />}
+              {view === 'activity' && isOwner && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} />}
+              {view === 'activity' && !isOwner && (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
+                  Activity view is workspace-owner only.
+                </div>
+              )}
               {view === 'portfolio' && isOwner && (
                 <PortfolioView projects={projects} onProjectClick={(pid) => switchProject(pid)} />
               )}
@@ -14217,7 +14491,7 @@ export default function App() {
                   <div>🌐 This view is project-specific.</div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <Btn size="sm" onClick={() => setView('aggregation')}>Open Aggregation</Btn>
-                    <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn>
+                    {isOwner && <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn>}
                   </div>
                 </div>
               )}
@@ -14227,7 +14501,7 @@ export default function App() {
             </ErrorBoundary>
           </div>
           {selectedTaskId && project && (
-            <TaskDetail project={project} taskId={selectedTaskId} author={author} teamMembers={teamMembers} dialogs={dialogs}
+            <TaskDetail project={project} taskId={selectedTaskId} showToast={showToast} author={author} teamMembers={teamMembers} dialogs={dialogs}
               onClose={() => setSelectedTaskId(null)}
               onUpdate={onTaskUpdate}
               onDelete={onTaskDelete}
@@ -14252,18 +14526,20 @@ export default function App() {
             onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
-        <SaveBanner saveState={saveState} />
+        <SaveBanner saveState={saveState} onRetry={retryFailedSaves} />
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough
           ref={walkthroughRef}
           uid={authUser?.uid || null}
           ready={!loading && !!meta && !!currentId}
-          currentProject={project}
-          currentView={view}
-          setView={setView}
         />
 
+        {helpMenu && (
+          <PopoverMenu x={helpMenu.x} y={helpMenu.y} onClose={() => setHelpMenu(null)}
+            items={[{ label: 'Walkthrough', icon: <HelpCircle size={13} />, onClick: () => walkthroughRef.current?.start() }, { label: 'Glossary', icon: <BookOpen size={13} />, onClick: () => setShowGlossary(true) }]} />
+        )}
+        {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList muted={TOK.muted} /></Modal>}
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
             items={[
@@ -14427,7 +14703,7 @@ export default function App() {
                   onChange={(e) => setPersonalDefaultOverride(e.target.value || null)}
                   style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
                   <option value="">(Use workspace default)</option>
-                  {DEFAULT_VIEW_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  {DEFAULT_VIEW_OPTIONS.filter((o) => isOwner || o.id !== 'activity').map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                 </select>
                 <div style={{ fontSize: 10.5, color: TOK.muted }}>Applies on your next app load.</div>
               </div>

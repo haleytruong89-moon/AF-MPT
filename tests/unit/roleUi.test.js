@@ -1,0 +1,140 @@
+import { describe, it, expect } from 'vitest';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary } from '../../src/roleUi.js';
+
+const info = (picUid, extra = {}) => ({ programId: 'p1', workstreamId: 'w1', picUid, contributorUids: [], ...extra });
+const roles = {
+  ownerUids: ['O'],
+  programs: { p1: { pmUid: 'P', deputyUid: 'D' }, p2: { pmUid: 'P2', deputyUid: null } },
+  workstreams: {
+    w1: { programId: 'p1', leadUid: 'L', start: '2026-01-01', end: '2026-12-31' },
+    w2: { programId: 'p2', leadUid: 'L2', start: null, end: null },
+    wOrphan: { programId: 'zz', leadUid: 'X', start: null, end: null },
+  },
+  tasks: { tA: info('A'), tOrphan: { programId: 'zz', workstreamId: 'wOrphan', picUid: 'Q' } },
+};
+const project = {
+  programs: [
+    { id: 'p1', name: 'Planning', workstreams: [{ id: 'w1', name: 'FX hedging' }] },
+    { id: 'p2', name: 'Reporting', workstreams: [{ id: 'w2', name: 'Monthly pack' }] },
+  ],
+};
+const ALL_TRUE = { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true };
+const ALL_FALSE = Object.fromEntries(Object.keys(ALL_TRUE).map((k) => [k, false]));
+const caps = (uid, over = {}) => uiCaps({ isOwner: false, isV2: true, roles, uid, programId: 'p1', wsId: 'w1', ...over });
+
+describe('datesWithinWs (mirrors rules withinWs)', () => {
+  const ws = { start: '2026-01-01', end: '2026-12-31' };
+  it('inside, on the bounds, outside', () => {
+    expect(datesWithinWs('2026-01-01', '2026-12-31', ws)).toBe(true);
+    expect(datesWithinWs('2025-12-31', '2026-06-01', ws)).toBe(false);
+    expect(datesWithinWs('2026-06-01', '2027-01-01', ws)).toBe(false);
+  });
+  it('null ws bound = no limit; null ws dates = no limit', () => {
+    expect(datesWithinWs('1999-01-01', '2099-01-01', { start: null, end: null })).toBe(true);
+    expect(datesWithinWs('1999-01-01', '2026-06-01', { start: null, end: '2026-12-31' })).toBe(true);
+    expect(datesWithinWs('1999-01-01', '2099-01-01', {})).toBe(true);
+    expect(datesWithinWs('2027-01-01', '2027-02-01', { start: '2026-01-01', end: null })).toBe(true);
+  });
+  it('null task date passes', () => {
+    expect(datesWithinWs(null, null, ws)).toBe(true);
+    expect(datesWithinWs(null, '2027-01-01', ws)).toBe(false);
+    expect(datesWithinWs('2025-01-01', null, ws)).toBe(false);
+  });
+  it('null ws object = no limit', () => {
+    expect(datesWithinWs('2026-01-01', '2026-02-01', null)).toBe(true);
+  });
+});
+
+describe('canEditTaskDates', () => {
+  const a = (uid, over = {}) => canEditTaskDates({ isOwner: false, isV2: true, roles, taskId: 'tA', uid, ...over });
+  it('owner always', () => {
+    expect(a('x', { isOwner: true })).toBe(true);
+    expect(a('x', { isOwner: true, isV2: false })).toBe(true);
+  });
+  it('v2 pm / deputy / lead true; assignee, viewer false', () => {
+    expect(a('P')).toBe(true);
+    expect(a('D')).toBe(true);
+    expect(a('L')).toBe(true);
+    expect(a('A')).toBe(false);
+    expect(a('V')).toBe(false);
+    expect(a('L2')).toBe(false);
+  });
+  it('v1 non-owner false', () => {
+    expect(a('P', { isV2: false })).toBe(false);
+  });
+});
+
+describe('uiCaps', () => {
+  it('v1 or Owner: everything true', () => {
+    expect(caps('V', { isV2: false })).toEqual(ALL_TRUE);
+    expect(caps('V', { isOwner: true })).toEqual(ALL_TRUE);
+  });
+  it('v2 PM and Deputy of the program', () => {
+    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true };
+    expect(caps('P')).toEqual(exp);
+    expect(caps('D')).toEqual(exp);
+  });
+  it('rules: PM may not change ws dates or program (wsUpdateOk) -> wsDates false', () => {
+    expect(caps('P').wsDates).toBe(false);
+    expect(caps('P').programEdit).toBe(false);
+  });
+  it('v2 Sub-PM of the ws: tasks only (no workstream writes, rules ~487)', () => {
+    expect(caps('L')).toEqual({ ...ALL_FALSE, taskAdd: true, taskEdit: true });
+  });
+  it('v2 Viewer / assignee: all false', () => {
+    expect(caps('V')).toEqual(ALL_FALSE);
+    expect(caps('A')).toEqual(ALL_FALSE);
+  });
+  it('PM of another program / Sub-PM of another ws: false', () => {
+    expect(caps('P2')).toEqual(ALL_FALSE);
+    expect(caps('L2')).toEqual(ALL_FALSE);
+  });
+  it('program-level scope (no wsId): PM may add tasks, Sub-PM may not', () => {
+    expect(caps('P', { wsId: null }).taskAdd).toBe(true);
+    expect(caps('L', { wsId: null }).taskAdd).toBe(false);
+  });
+  it('rules leadOfWs: a Sub-PM whose ws program is not in programMeta has no rights', () => {
+    expect(caps('X', { programId: 'zz', wsId: 'wOrphan' })).toEqual(ALL_FALSE);
+  });
+  it('rules wsInProgram: Sub-PM of a ws in a different program than programId has no task rights', () => {
+    expect(caps('L', { programId: 'p2', wsId: 'w1' }).taskAdd).toBe(false);
+  });
+  it('missing roles: all false on v2', () => {
+    expect(uiCaps({ isOwner: false, isV2: true, roles: null, uid: 'P', programId: 'p1', wsId: 'w1' })).toEqual(ALL_FALSE);
+  });
+});
+
+describe('myRoleSummary', () => {
+  it('Owner outranks everything', () => {
+    const r = { ...roles, ownerUids: ['P'] };
+    expect(myRoleSummary(r, 'P', project)).toEqual({ label: 'Owner', detail: ['Owner', 'PM · Planning'] });
+  });
+  it('PM', () => {
+    expect(myRoleSummary(roles, 'P', project)).toEqual({ label: 'PM · Planning', detail: ['PM · Planning'] });
+  });
+  it('Deputy', () => {
+    expect(myRoleSummary(roles, 'D', project).label).toBe('Deputy · Planning');
+  });
+  it('Sub-PM', () => {
+    expect(myRoleSummary(roles, 'L', project)).toEqual({ label: 'Sub-PM · FX hedging', detail: ['Sub-PM · FX hedging'] });
+  });
+  it('detail lists every role held; label is the highest', () => {
+    const r = { ...roles, workstreams: { ...roles.workstreams, w2: { programId: 'p2', leadUid: 'P', start: null, end: null } } };
+    expect(myRoleSummary(r, 'P', project)).toEqual({ label: 'PM · Planning', detail: ['PM · Planning', 'Sub-PM · Monthly pack'] });
+  });
+  it('Assignee = PIC of a task', () => {
+    expect(myRoleSummary(roles, 'A', project)).toEqual({ label: 'Assignee', detail: ['Assignee'] });
+  });
+  it('Sub-PM who is also assignee: label Sub-PM, detail has both', () => {
+    const r = { ...roles, tasks: { ...roles.tasks, tL: info('L') } };
+    expect(myRoleSummary(r, 'L', project)).toEqual({ label: 'Sub-PM · FX hedging', detail: ['Sub-PM · FX hedging', 'Assignee'] });
+  });
+  it('View only', () => {
+    expect(myRoleSummary(roles, 'V', project)).toEqual({ label: 'View only', detail: ['View only'] });
+    expect(myRoleSummary(null, 'V', project)).toEqual({ label: 'View only', detail: ['View only'] });
+    expect(myRoleSummary(roles, null, project).label).toBe('View only');
+  });
+  it('falls back to the id when the name is unknown', () => {
+    expect(myRoleSummary(roles, 'P', { programs: [] }).label).toBe('PM · p1');
+  });
+});

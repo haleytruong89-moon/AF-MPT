@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeControlModel,
-  DENIED_MESSAGE, NEEDS_REASON_MESSAGE,
+  chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeRollbackTask, closeControlModel,
+  DENIED_MESSAGE, NEEDS_REASON_MESSAGE, NO_APPROVER_MESSAGE,
 } from '../../src/closeWiring.js';
 import { applyCloseIntent, reassignClose } from '../../src/closeFlow.js';
 
@@ -31,8 +31,12 @@ describe('chokeMessage (verbatim copy)', () => {
     expect(chokeMessage('direct')).toBe(null);
     expect(chokeMessage('legacy')).toBe(null);
   });
+  it('no-approver (H4): verbatim copy', () => {
+    expect(chokeMessage('no-approver')).toBe('No one else can approve this — set a Deputy or another PM');
+    expect(chokeMessage('no-approver')).toBe(NO_APPROVER_MESSAGE);
+  });
   it('isCloseOutcome: plain edits and refusals are not close writes', () => {
-    for (const o of ['legacy', 'unchanged', 'denied', 'needs-reason']) expect(isCloseOutcome(o)).toBe(false);
+    for (const o of ['legacy', 'unchanged', 'denied', 'needs-reason', 'no-approver']) expect(isCloseOutcome(o)).toBe(false);
     for (const o of ['submit', 'direct', 'approve', 'reject', 'withdraw', 'reopen', 'prepared']) expect(isCloseOutcome(o)).toBe(true);
   });
 });
@@ -197,6 +201,19 @@ describe('replaceTask', () => {
     expect(p.programs[0].workstreams[0].tasks[0].closeRequest).toBe('keep?');
   });
   it('unknown task: same project', () => expect(replaceTask(p, 'nope', task('nope', 'Planned'))).toBe(p));
+});
+
+describe('closeRollbackTask (a failed close goes back to the last saved task)', () => {
+  const savedT1 = task('t1', 'InProgress');
+  const saved = { id: 'x', programs: [{ id: 'p1', workstreams: [{ id: 'w1', tasks: [savedT1] }] }] };
+  const fallback = task('t1', 'Planned');
+  it('takes the task from the last saved tree', () => {
+    expect(closeRollbackTask(saved, 't1', fallback)).toBe(savedT1);
+  });
+  it('falls back when there is no saved tree or the task is not in it', () => {
+    expect(closeRollbackTask(null, 't1', fallback)).toBe(fallback);
+    expect(closeRollbackTask(saved, 'nope', fallback)).toBe(fallback);
+  });
 });
 
 describe('closeControlModel', () => {
