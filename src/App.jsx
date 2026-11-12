@@ -36,6 +36,7 @@ import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
 import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode } from './roleUi.js';
+import { findProgram, findWorkstream } from './treeLatest.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -6686,7 +6687,7 @@ function buildMindTree(project, collapsed) {
   return mk(project, 'project', programs);
 }
 
-function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles, isOwner = false, uid = null }) {
+function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, getLatestProject, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles, isOwner = false, uid = null }) {
   // Wave 1 U6 (v2): menu items the rules would refuse are hidden. v1 / Owner: all.
   const capsFor = (programId, wsId) => uiCaps({ isOwner, isV2: !!project.__v2, roles, uid, programId, wsId });
   // Drop a separator left at the end (or doubled) once items are hidden.
@@ -6805,12 +6806,15 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     setMenu({ x: clientX - rect.left, y: clientY - rect.top, node: n });
   };
 
+  // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
+  const latest = () => { const l = getLatestProject && getLatestProject(); return l && l.id === project.id ? l : project; };
   // Actions
   const actAddProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
-    onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
+    const cur = latest();
+    onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     // Expand the new program so its (empty) workstream slot is visible
     setCollapsed((s) => { const n = new Set(s); n.delete(p.id); return n; });
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
@@ -6819,15 +6823,19 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     const name = await dialogs.prompt({ title: 'New work stream', message: `Under "${pg.name}"`, placeholder: 'Work stream name', okLabel: 'Create' });
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
+    const cur = latest();
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     onActivity({ type: 'ws_add', description: `Added work stream "${w.name}" under "${pg.name}"` });
   };
   const actAddTask = async (pg, ws) => {
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const cur = latest();
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...(w.tasks || []), t] } : w) } : p
       ),
     });
@@ -6840,14 +6848,18 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       const name = await dialogs.prompt({ title: 'Rename program', initial: pg.name, okLabel: 'Rename' });
       if (!name || name === pg.name) return;
       const old = pg.name;
-      onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
+      const cur = latest();
+      if (!findProgram(cur, pg.id)) return;
+      onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
       onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
     } else {
       const name = await dialogs.prompt({ title: 'Rename work stream', initial: ws.name, okLabel: 'Rename' });
       if (!name || name === ws.name) return;
       const old = ws.name;
+      const cur = latest();
+      if (!findWorkstream(cur, pg.id, ws.id)) return;
       onProjectUpdate({
-        ...project, programs: project.programs.map((p) =>
+        ...cur, programs: cur.programs.map((p) =>
           p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, name } : w) } : p
         ),
       });
@@ -6860,18 +6872,27 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       const r = rollup(pg);
       const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
-      onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
+      // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
+      const cur = latest();
+      const curPg = findProgram(cur, pg.id);
+      if (!curPg) return;
+      if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
       if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
+      const cur = latest();
+      const curWs = findWorkstream(cur, pg.id, ws.id);
+      if (!curWs) return;
+      if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       onProjectUpdate({
-        ...project, programs: project.programs.map((p) =>
+        ...cur, programs: cur.programs.map((p) =>
           p.id === pg.id ? { ...p, workstreams: p.workstreams.filter((w) => w.id !== ws.id) } : p
         ),
       });
-      onActivity({ type: 'ws_delete', description: `Deleted work stream "${ws.name}" (${(ws.tasks || []).length} tasks)` });
+      onActivity({ type: 'ws_delete', description: `Deleted work stream "${ws.name}" (${(curWs.tasks || []).length} tasks)` });
     }
   };
 
@@ -7051,7 +7072,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
+function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
   const dirIndex = useContext(DirectoryIndexContext);
   // Role assignment: pickers only on v2 projects.
   const showRoles = !!(project.__v2 && roles && me);
@@ -7088,11 +7109,14 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
 
   const toggleExpand = (id) => setExpanded((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
+  // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
+  const latest = () => { const l = getLatestProject && getLatestProject(); return l && l.id === project.id ? l : project; };
   const addProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
-    onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
+    const cur = latest();
+    onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     setExpanded((s) => new Set([...s, p.id]));
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
   };
@@ -7100,7 +7124,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'Rename program', initial: pg.name, okLabel: 'Rename' });
     if (!name || name === pg.name) return;
     const old = pg.name;
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
+    const cur = latest();
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
   };
   const deleteProgram = async (pg) => {
@@ -7108,14 +7134,21 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const r = rollup(pg);
     const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
-    onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
+    // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
+    const cur = latest();
+    const curPg = findProgram(cur, pg.id);
+    if (!curPg) return;
+    if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
     onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
   };
   const addWorkstream = async (pg) => {
     const name = await dialogs.prompt({ title: `New work stream`, message: `Under program "${pg.name}"`, placeholder: 'Work stream name', okLabel: 'Create' });
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...p.workstreams, w] } : p) });
+    const cur = latest();
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     setExpanded((s) => new Set([...s, w.id]));
     onActivity({ type: 'ws_add', description: `Added work stream "${w.name}" under "${pg.name}"` });
   };
@@ -7123,8 +7156,10 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'Rename work stream', initial: ws.name, okLabel: 'Rename' });
     if (!name || name === ws.name) return;
     const old = ws.name;
+    const cur = latest();
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, name } : w) } : p
       ),
     });
@@ -7132,11 +7167,15 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   };
   const deleteWorkstream = async (pg, ws) => {
     if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
-    const n = (ws.tasks || []).length;
     const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
+    const cur = latest();
+    const curWs = findWorkstream(cur, pg.id, ws.id);
+    if (!curWs) return;
+    if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    const n = (curWs.tasks || []).length;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.filter((w) => w.id !== ws.id) } : p
       ),
     });
@@ -7146,9 +7185,11 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const cur = latest();
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
-        p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...w.tasks, t] } : w) } : p
+      ...cur, programs: cur.programs.map((p) =>
+        p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...(w.tasks || []), t] } : w) } : p
       ),
     });
     onActivity({ type: 'task_add', description: `Added task "${t.name}" in "${ws.name}"` });
@@ -13331,6 +13372,9 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [saveState]);
 
+  // Latest tree of the open project; views read it after a dialog closes (W6).
+  const getLatestProject = useCallback(() => projectsRef.current[currentIdRef.current], []);
+
   const updateProject = useCallback((updated) => {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     setProjects((prev) => ({ ...prev, [updated.id]: updated }));
@@ -14543,8 +14587,8 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
-              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
+              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
