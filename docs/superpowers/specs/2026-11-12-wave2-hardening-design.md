@@ -1,7 +1,7 @@
 # Wave 2 — hardening before moving the last v1 projects and onboarding — design
 
 - Date: 12/11/2026
-- Status: draft, waiting for HOD answers (§4) and OK on the whole
+- Status: HOD answered §4 on 12/11/2026 (Q1 yes, Q2 yes, Q3 not now); ready for plan
 - Inputs: security/integrity review 05/11 (`docs/reviews/2026-11-05-security-integrity-review.md`: rules findings F*, write-path findings #*, client/ops findings H/M/L*), wave-1 follow-ups (`CLAUDE.md` Current Status), wave-1 spec §3 (items deferred here)
 - Parent specs: `2026-10-14-roles-permissions-v2-design.md`, `2026-11-11-wave1-hardening-ux-design.md`
 
@@ -31,20 +31,20 @@ Moving the four v1 projects to v2 also closes every v1-only finding (F1, F5, F7,
 
 - No v1 rules changes (v1 projects disappear in this wave's migration step). Tightening / removing v1 rule paths = P2.5, after all projects are on v2.
 - No backend / serverless (Chat webhook stays readable by members — the person who submits must be able to post; see R7).
-- No Firebase plan change in this spec (§4 Q3 is a separate HOD decision).
+- No Firebase plan change (§4 Q3). Read-quota risk (review H2) stays: keep reads lean; the load-failure banners from wave 1 are the warning sign.
 - No separate dev Firebase project (review M2): the app never runs `npm run dev` against production for write-path testing; this stays a rule for the maintainer, not a code change.
 - No Approvals page (P3.2), no scoped upload (P3.3), no Replace person (its own spec), no header / Aggregation change (HOD has not decided).
 - Assignee free-form history fields (F15, display-only spoof) and string size caps beyond the fields named below (F17).
 - Hiding the people directory from non-AF company accounts (F14): the app lists `members` and `invites` at start-up for everyone, including an invited person before they claim; restricting the list would lock new people out. Low sensitivity; revisit with multi-workspace.
 - v1 activity forgery (F5) stays possible on MA, CRP, UBO, AF Lean until each one moves (accepted: days, not weeks).
 
-## 4. Questions for HOD
+## 4. Decisions (HOD, 12/11/2026)
 
-| # | Question | Claude's recommendation |
+| # | Question | Decision |
 |---|---|---|
-| Q1 | RAID and Decisions: today (HOD 23/10) **any** PM / Sub-PM of the project may write **any program's** RAID and decisions, and a PM can delete any decision. Narrow to **own program**? | **Yes, own program** (Owner: all). Delete of a decision or a RAID doc: Owner only. Keeps 23/10 for creating and editing in one's own area; stops edits in other programs' risk logs |
+| Q1 | RAID and Decisions: today (HOD 23/10) **any** PM / Sub-PM of the project may write **any program's** RAID and decisions, and a PM can delete any decision. Narrow to **own program**? | **Yes, own program** (Owner: all). Delete of a decision or a RAID doc: Owner only. Narrows HOD 23/10 Q1 |
 | Q2 | Program / work-stream `weight` (feeds credit): today a PM can change their work streams' weights. Owner only? | **Yes, Owner only** for program and WS weight. Task weight: PM / Sub-PM while the task is open, Owner only once closed (R1) |
-| Q3 | Firebase Blaze plan before onboarding (read quota: ~1,000 reads per page load once all 7 projects are v2; Spark = 50k/day ≈ 20 people × 3 loads; also unlocks daily export / PITR) | **Yes, before onboarding, with a budget alert** (expected cost: cents per month). Not needed for this wave's code |
+| Q3 | Firebase Blaze plan before onboarding (read quota: ~1,000 reads per page load once all 7 projects are v2; Spark = 50k/day ≈ 20 people × 3 loads; also unlocks daily export / PITR) | **Not now.** HOD plans to move the app to the company GitLab and company-standard data storage later; the read-quota risk stays open until then (see §3) |
 
 Still open from wave 1 (not blocking this spec): W1-1 (Owner self-close), glossary proofreading, Aggregation tab.
 
