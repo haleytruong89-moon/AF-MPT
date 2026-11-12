@@ -86,7 +86,7 @@ describe('metaForWrite', () => {
 
 describe('transferLocked', () => {
   it('never echoes config (owner-only in rules, W2 R4)', () => {
-    expect('config' in metaForWrite({ ...meta, config: { a: 1 } })).toBe(false);
+    expect('config' in metaForWrite({ seeded: true, config: { a: 1 } })).toBe(false);
   });
 
   it('locks in-app transfer while ownerUids is a non-empty list', () => {
