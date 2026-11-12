@@ -37,6 +37,7 @@ import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
 import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
+import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -14248,7 +14249,7 @@ export default function App() {
     downloadBlob(blob, project.name.replace(/[^a-z0-9]+/gi, '_') + '_' + toISODate(new Date()) + '.xlsx');
   };
   const backupJson = async () => {
-    const everything = { meta, projects, activity: {} };
+    const everything = { meta, projects: stripSecretsFromProjects(projects), activity: {} };
     const unreadable = [];
     for (const pid of meta.projectIds) {
       const list = await loadActivityStrict(pid);
@@ -14274,7 +14275,7 @@ export default function App() {
       for (const pid of v1Ids) {
         if (!data.projects[pid]) continue;
         // Explicit restore overrides the stale-write guard (B3) for this write only.
-        const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
+        const status = await saveProject({ ...projectForRestore(data.projects[pid], projects[pid]), [FORCE_WRITE_FLAG]: true });
         results.push({ name: data.projects[pid].name || pid, status });
         if (activityToRestore(status, data.activity && data.activity[pid])) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
       }
