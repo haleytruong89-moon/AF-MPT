@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary } from '../../src/roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision } from '../../src/roleUi.js';
 
 const info = (picUid, extra = {}) => ({ programId: 'p1', workstreamId: 'w1', picUid, contributorUids: [], ...extra });
 const roles = {
@@ -136,5 +136,80 @@ describe('myRoleSummary', () => {
   });
   it('falls back to the id when the name is unknown', () => {
     expect(myRoleSummary(roles, 'P', { programs: [] }).label).toBe('PM · p1');
+  });
+});
+
+// Wave 2 R5 (Ruling W2-4): RAID / decisions are edited within one's own program.
+describe('canEditRaid / canEditDecision / canDeleteRaidOrDecision', () => {
+  // P is PM of p1 and Sub-PM of w2 (in p2) in rMix; decisions carry the stored claim's program.
+  const rd = {
+    ...roles,
+    decisions: { d1: { programId: 'p1' }, d2: { programId: 'p2' }, dNone: { programId: null } },
+  };
+  const raid = (uid, programId, over = {}) => canEditRaid({ isOwner: false, isV2: true, roles: rd, uid, programId, ...over });
+  const dec = (uid, id, over = {}) => canEditDecision({ isOwner: false, isV2: true, roles: rd, uid, decision: { id }, ...over });
+
+  it('Owner and v1: always true', () => {
+    expect(raid('V', 'p1', { isOwner: true })).toBe(true);
+    expect(raid('V', 'p1', { isV2: false })).toBe(true);
+    expect(dec('V', 'dNone', { isOwner: true })).toBe(true);
+    expect(dec('V', 'd1', { isV2: false })).toBe(true);
+  });
+  it('RAID: PM / Deputy of the program, Sub-PM of a ws in it', () => {
+    expect(raid('P', 'p1')).toBe(true);
+    expect(raid('D', 'p1')).toBe(true);
+    expect(raid('L', 'p1')).toBe(true);
+    expect(raid('L2', 'p2')).toBe(true);
+  });
+  it('RAID: a role in another program does not help', () => {
+    expect(raid('P', 'p2')).toBe(false);
+    expect(raid('L', 'p2')).toBe(false);
+    expect(raid('P2', 'p1')).toBe(false);
+    expect(raid('X', 'zz')).toBe(false); // ws of a program not in programMeta
+    expect(raid('A', 'p1')).toBe(false);
+    expect(raid(null, 'p1')).toBe(false);
+    expect(raid('P', null)).toBe(false);
+  });
+  it('RAID: PM of p1 who is also Sub-PM of a ws in p2 edits both', () => {
+    const rMix = { ...rd, workstreams: { ...rd.workstreams, w2: { programId: 'p2', leadUid: 'P', start: null, end: null } } };
+    expect(canEditRaid({ isOwner: false, isV2: true, roles: rMix, uid: 'P', programId: 'p2' })).toBe(true);
+    expect(canEditRaid({ isOwner: false, isV2: true, roles: rMix, uid: 'L2', programId: 'p2' })).toBe(false);
+  });
+  it('decision: claim on the stored program only', () => {
+    expect(dec('P', 'd1')).toBe(true);
+    expect(dec('L', 'd1')).toBe(true);
+    expect(dec('P2', 'd1')).toBe(false);
+    expect(dec('L2', 'd1')).toBe(false);
+    expect(dec('L2', 'd2')).toBe(true);
+    expect(dec('P', 'd2')).toBe(false);
+  });
+  it('decision without a stored program (Owner-created / migrated): Owner only', () => {
+    expect(dec('P', 'dNone')).toBe(false);
+    expect(dec('L', 'dNone')).toBe(false);
+  });
+  it('decision not saved yet (not in the stored roles): anyone who may create one', () => {
+    expect(dec('P2', 'dNew')).toBe(true);
+    expect(dec('L', 'dNew')).toBe(true);
+    expect(dec('A', 'dNew')).toBe(false);
+    expect(dec('X', 'dNew')).toBe(false);
+    expect(canEditDecision({ isOwner: false, isV2: true, roles: { ...roles }, uid: 'P', decision: { id: 'd1' } })).toBe(true);
+  });
+  it('create gate: an empty decision ({}) = "holds any PM / Deputy / Sub-PM role"', () => {
+    const create = (uid, over = {}) => canEditDecision({ isOwner: false, isV2: true, roles: rd, uid, decision: {}, ...over });
+    expect(create('P')).toBe(true);
+    expect(create('D')).toBe(true);
+    expect(create('P2')).toBe(true);
+    expect(create('L2')).toBe(true);
+    expect(create('A')).toBe(false); // Assignee only
+    expect(create('V')).toBe(false); // no role
+    expect(create('X')).toBe(false); // lead of a ws whose program is not in programMeta
+    expect(create(null)).toBe(false);
+    expect(create('V', { isOwner: true })).toBe(true);
+    expect(create('V', { isV2: false })).toBe(true);
+  });
+  it('delete: Owner only on v2; v1 unchanged', () => {
+    expect(canDeleteRaidOrDecision({ isOwner: true, isV2: true })).toBe(true);
+    expect(canDeleteRaidOrDecision({ isOwner: false, isV2: true })).toBe(false);
+    expect(canDeleteRaidOrDecision({ isOwner: false, isV2: false })).toBe(true);
   });
 });

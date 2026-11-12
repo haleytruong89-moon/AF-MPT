@@ -30,7 +30,10 @@ service cloud.firestore {
     function isSmartOSC() {
       return request.auth != null
         && request.auth.token.email_verified == true
-        && request.auth.token.email.matches('.*@smartosc[.]com$');
+        && request.auth.token.email.matches('.*@smartosc[.]com$')
+        // W2 R8: Google sign-in only (a password / email-link account on the
+        // domain is refused). No get() cost.
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
     }
 
     function projectData(pid) {
@@ -68,7 +71,7 @@ service cloud.firestore {
     // P2.1 (2026-10-23): ownerUids[] (set by scripts/p2-set-owner-uids.mjs) is
     // owner-only like the other owner fields; the client never writes it.
     function ownerFields() {
-      return ['workspaceOwner', 'ownershipLog', 'defaultView', 'ownerUids'];
+      return ['workspaceOwner', 'ownershipLog', 'defaultView', 'ownerUids', 'config'];
     }
 
     // Owner = uid in ownerUids[] OR the legacy workspaceOwner email (kept until
@@ -111,9 +114,14 @@ service cloud.firestore {
       allow create: if isSmartOSC() && workspace == 'main'
         && !request.resource.data.keys().hasAny(ownerFields());
 
+      // W2 R4: a non-Owner write needs an ACTIVE member doc (self-claim runs
+      // before the app's first meta write). Owner branch first: no get().
+      // get(): members/{uid} = 2 access calls (exists + get), only on the
+      // non-Owner branch.
       allow update: if isSmartOSC() && workspace == 'main' && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
-        || (isWorkspaceOwner() && ownerWriteIsValid())
+        (isWorkspaceOwner() && ownerWriteIsValid())
+        || (!request.resource.data.diff(resource.data).affectedKeys().hasAny(ownerFields())
+          && isActiveMember('main'))
       );
 
       allow delete: if false;
@@ -207,7 +215,8 @@ service cloud.firestore {
       );
 
       // CREATE — creator must put themselves as owner; required fields enforced.
-      // A non-Owner create may not carry the owner-only v2 keys (get(): 1).
+      // W2 R4: only the workspace Owner creates projects (get(): 1,
+      // workspaces/main). This also covers the owner-only v2 keys.
       allow create: if isSmartOSC()
         && request.resource.data.keys().hasAll(['name', 'memberIds', 'roles'])
         && request.resource.data.name is string
@@ -215,7 +224,7 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 200
         && request.auth.uid in request.resource.data.memberIds
         && request.resource.data.roles[request.auth.uid] == 'owner'
-        && (!request.resource.data.keys().hasAny(ownerOnlyProjectKeys()) || isDirectoryOwner());
+        && isDirectoryOwner();
 
       // UPDATE — owners can change anything (must keep at least one owner).
       // Operators can change content but not membership/roles, name,
@@ -333,7 +342,8 @@ service cloud.firestore {
     }
 
     function isPM(wid, pid, prg) {
-      return isActiveMember(wid) && isPMIn(v2Project(wid, pid), prg);
+      // Wave 2 R6: also a project member (project doc already read, no extra get()).
+      return isActiveMember(wid) && projectMemberIn(v2Project(wid, pid)) && isPMIn(v2Project(wid, pid), prg);
     }
 
     function wsExists(wid, pid, wsId) {
@@ -345,6 +355,7 @@ service cloud.firestore {
     // Sub-PM rights, same as no PM rights).
     function isLead(wid, pid, wsId) {
       return isActiveMember(wid)
+        && projectMemberIn(v2Project(wid, pid))
         && wsExists(wid, pid, wsId)
         && v2WsData(wid, pid, wsId).get('leadUid', null) == request.auth.uid
         && v2WsData(wid, pid, wsId).get('programId', null) is string
@@ -448,12 +459,21 @@ service cloud.firestore {
       let p = v2Project(wid, pid);
       return isSmartOSC() && (
         isWsOwner(wid)
-        || (isActiveMember(wid) && (
-          p.get('visibility', 'restricted') == 'department'
-          || (p.get('memberUids', null) is list
-            ? request.auth.uid in p.memberUids
-            : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds))))
+        || (isActiveMember(wid) && projectMemberIn(p))
       );
+    }
+
+    // Wave 2 R6: the project-membership half of canReadProject, on the project
+    // data the caller already read (no extra get(); the active-member check is
+    // done by the caller with activeMemberDoc). Used by the Assignee, contributor
+    // and action-PIC branches so a person removed from the project (not in
+    // memberUids, restricted) can no longer write there. Department visibility
+    // keeps every active member in.
+    function projectMemberIn(p) {
+      return p.get('visibility', 'restricted') == 'department'
+        || (p.get('memberUids', null) is list
+          ? request.auth.uid in p.memberUids
+          : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds));
     }
 
     // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
@@ -479,8 +499,9 @@ service cloud.firestore {
     // reuses the project get (Owner-only create/update/delete: 2).
     function wsUpdateOk(wid, pid) {
       let ch = changedKeys();
+      // Wave 2 R2: WS weight is Owner-only too. No extra get().
       return isWsOwner(wid)
-        || (!ch.hasAny(['programId', 'start', 'end'])
+        || (!ch.hasAny(['programId', 'start', 'end', 'weight'])
           && isPM(wid, pid, resource.data.get('programId', null)));
     }
 
@@ -618,7 +639,9 @@ service cloud.firestore {
     // Ruling P3-C6′ (PROVISIONAL): see splitOk. The Assignee / contributor
     // key lists never had creditShares / creditSharesMode.
     function creditKeys() {
-      return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode'];
+      // Wave 2 R1: weight feeds credit (App.jsx creditOf), so it is a credit key:
+      // non-Owner managers change it only on an open task.
+      return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode', 'weight'];
     }
 
     function isClosedSt(s) {
@@ -839,7 +862,8 @@ service cloud.firestore {
         && appendOnly(ch, 'checkIns')
         && rv != 'edit'
         && (!cl || closeTransitionOk(wid, pid, ch, s0, s1, {'mgr': false, 'pm': false, 'm': {}}))
-        && activeMemberDoc(wid);
+        && activeMemberDoc(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     // Contributor (P2.2): uid in contributorUids and not the PIC (the PIC
@@ -851,14 +875,15 @@ service cloud.firestore {
       return ['updates', 'blockerResolutions', 'updatedAt', 'updatedBy', 'version'];
     }
 
-    function taskContributorUpdate(wid, ch, rv) {
+    function taskContributorUpdate(wid, pid, ch, rv) {
       return resource.data.get('contributorUids', null) is list
         && request.auth.uid in resource.data.contributorUids
         && resource.data.get('picUid', null) != request.auth.uid
         && ch.hasOnly(contributorKeys())
         && appendOnly(ch, 'updates')
         && rv != 'edit'
-        && activeMemberDoc(wid);
+        && activeMemberDoc(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     // Active member without re-running isSmartOSC (the allow rule did).
@@ -939,10 +964,27 @@ service cloud.firestore {
         && closeStampOk(ch, s1) && (
         inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
-        || taskContributorUpdate(wid, ch, rv)
-        || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
+        || taskContributorUpdate(wid, pid, ch, rv)
+        || (activeMemberDoc(wid) && projectMemberIn(v2Project(wid, pid)) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
         || isWsOwner(wid)
       );
+    }
+
+    // Wave 2 W4 / R1: a non-Owner create carries no close / approval /
+    // blocker state, an auto credit split, at most one update (their own)
+    // and bounded text. get(): 0 (request data only).
+    function taskCreateClean(n) {
+      return !n.keys().hasAny(['closeRequest', 'closeRequestHistory', 'approvedByUid',
+          'approvedAt', 'closedByUid', 'blockerResolutions'])
+        && n.get('creditSharesMode', null) in [null, 'auto']
+        && n.get('name', '').size() <= 500
+        && n.get('title', '').size() <= 500
+        && newCreateUpdatesOk(listOrEmpty(n, 'updates'));
+    }
+
+    function newCreateUpdatesOk(u) {
+      return u is list && (u.size() == 0
+        || (u.size() == 1 && u[0].get('authorUid', null) == request.auth.uid));
     }
 
     match /workspaces/{wid}/projects/{pid}/tasks/{tid} {
@@ -959,7 +1001,8 @@ service cloud.firestore {
             || isLead(wid, pid, request.resource.data.get('workstreamId', null)))
           && wsInProgram(wid, pid, request.resource.data.get('workstreamId', null),
                          request.resource.data.get('programId', null))
-          && taskWithinNewWs(wid, pid))
+          && taskWithinNewWs(wid, pid)
+          && taskCreateClean(request.resource.data))
       );
 
       // get(): up to 5 (workspace doc first for the ownerUids test, I1;
@@ -1000,20 +1043,21 @@ service cloud.firestore {
       return ['status', 'completedAt', 'subtasks', 'updates', 'updatedAt', 'updatedBy', 'version'];
     }
 
-    function actionPicUpdate(wid, ch) {
+    function actionPicUpdate(wid, pid, ch) {
       return resource.data.get('picUid', null) == request.auth.uid
         && ch.hasOnly(actionPicKeys())
         && resource.data.get('status', 'Pending') != 'Cancelled'
         && request.resource.data.get('status', 'Pending') != 'Cancelled'
         && appendOnly(ch, 'updates')
-        && isActiveMember(wid);
+        && isActiveMember(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     function actionUpdateOk(wid, pid) {
       let ch = changedKeys();
       return newEntryOk(ch, 'updates') && (
         isWsOwner(wid)
-        || actionPicUpdate(wid, ch)
+        || actionPicUpdate(wid, pid, ch)
         || (actionManager(wid, pid, resource.data)
           && (!ch.hasAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
       );
@@ -1034,19 +1078,18 @@ service cloud.firestore {
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe() && actionUpdateOk(wid, pid);
 
-      // get(): Owner 2, manager 4.
-      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
-        isWsOwner(wid)
-        || actionManager(wid, pid, resource.data)
-      );
+      // Wave 2 W4: workspace Owner only (managers set Cancelled instead).
+      // get(): 2.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && isWsOwner(wid);
     }
 
     // ─────── v2: RAID (one doc per program, P2.2 Ruling K') ───────
     // raid/{programId} = { workspaceId, projectId, programId, items,
     //   viaProgramId?, viaWorkstreamId?, updatedBy, version }.
-    // Write: Owner, or PM/Deputy of viaProgramId, or Sub-PM of
-    // viaWorkstreamId (a ws doc in THIS project path whose program is in
-    // programMeta) = "any PM/Sub-PM of the project" without iterating a map.
+    // Write (Wave 2 R5, HOD Q1 12/11): Owner, or a claim ON THIS PROGRAM:
+    // PM/Deputy of programId (viaProgramId == programId), or Sub-PM of
+    // viaWorkstreamId whose ws doc (THIS project path) has programId == the
+    // doc's program. A role in another program no longer helps.
     // The claim is read from the NEW data, so each writer must set its own
     // claim (a stale claim left by someone else does not help).
     // Always: programId == doc id and a key in programMeta; programId never
@@ -1054,16 +1097,28 @@ service cloud.firestore {
     // Delete: Owner only.
     // get(): create/update = workspace, project, members/{me}, ws = 4;
     //        read = 3; delete = 1 (P2.4 projectIsV2: 2; others unchanged).
-    // Shared by RAID and decisions: Owner, or the claim in the NEW data
-    // (viaProgramId = a program I am PM/Deputy of, viaWorkstreamId = a ws
-    // in this project I lead).
-    function claimWriterOk(wid, pid, p, n) {
-      return isWsOwner(wid)
-        || (n.get('viaProgramId', null) is string
-          && n.viaProgramId in p.get('programMeta', {})
-          && isPMIn(p, n.viaProgramId)
-          && isActiveMember(wid))
-        || isLead(wid, pid, n.get('viaWorkstreamId', null));
+
+    // Wave 2 R5: the claim in n resolves to program prg: viaProgramId == prg
+    // and I am its PM/Deputy, or (no viaProgramId) viaWorkstreamId is a ws of
+    // prg in this project that I lead. Shared by RAID and decisions.
+    // get(): members/{me} + ws (the project p is passed in) = up to 2.
+    function claimInProgram(wid, pid, p, n, prg) {
+      return prg is string && (
+        (n.get('viaProgramId', null) == prg && isPMIn(p, prg) && isActiveMember(wid) && projectMemberIn(p))
+        || (n.get('viaProgramId', null) == null
+          && isLead(wid, pid, n.get('viaWorkstreamId', null))
+          && v2WsData(wid, pid, n.viaWorkstreamId).programId == prg));
+    }
+
+    // Ruling W2-4: a decision's program = viaProgramId, else the program of
+    // the viaWorkstreamId ws doc; null when neither resolves (Owner only).
+    // get(): the ws doc when there is no viaProgramId = up to 1.
+    function decisionProgram(wid, pid, d) {
+      return d.get('viaProgramId', null) is string
+        ? d.viaProgramId
+        : (wsExists(wid, pid, d.get('viaWorkstreamId', null))
+          ? v2WsData(wid, pid, d.viaWorkstreamId).get('programId', null)
+          : null);
     }
 
     function raidWriterOk(wid, pid, prg) {
@@ -1071,7 +1126,7 @@ service cloud.firestore {
       let n = request.resource.data;
       return n.get('programId', null) == prg
         && prg in p.get('programMeta', {})
-        && claimWriterOk(wid, pid, p, n);
+        && (isWsOwner(wid) || claimInProgram(wid, pid, p, n, prg));
     }
 
     match /workspaces/{wid}/projects/{pid}/raid/{programId} {
@@ -1095,13 +1150,19 @@ service cloud.firestore {
     // ─────── v2: decisions (one doc per decision, P2.3 Ruling Q) ───────
     // decisions/{decisionId} = v1 decision object + { workspaceId, projectId,
     //   order, viaProgramId?, viaWorkstreamId?, updatedBy, version }.
-    // Write: same claims as RAID (claimWriterOk); no programId/doc-id rule.
-    // Path fields, stamping and version apply.
-    // Delete: Owner, or an active PM/Deputy of the STORED viaProgramId
-    // (no new data on delete); Sub-PMs set status instead.
-    // get(): create/update = workspace, project, members/{me}, ws = 4;
-    //        read = 3; delete = workspace, project, members/{me} = 3.
-    // P2.4 projectIsV2 reuses the project get: counts unchanged.
+    // Write (Wave 2 R5, Ruling W2-4): Owner, or a claim on the decision's
+    // program (claimInProgram). Create: the new claim must hold for the
+    // program it names (decisionProgram of the NEW data). Update: the new
+    // claim must be on the program of the STORED claim, so a decision never
+    // moves to another program and a role elsewhere never helps. A stored
+    // decision with no claim (Owner-created / migrated) is Owner-only.
+    // No programId/doc-id rule. Path fields, stamping and version apply.
+    // Delete: Owner only (Wave 2 R5; "re-claim then delete" closed).
+    // get(): create = workspace, project, members/{me}, ws = 4;
+    //        update = workspace, project, members/{me}, new ws, stored ws = 5
+    //        (4 when both name the same ws or the claims are viaProgramId);
+    //        read = 3; delete = 2.
+    // P2.4 projectIsV2 reuses the project get.
     match /workspaces/{wid}/projects/{pid}/decisions/{decisionId} {
       // get(): 3.
       allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
@@ -1109,21 +1170,19 @@ service cloud.firestore {
       // get(): up to 4.
       allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe()
-        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+        && (isWsOwner(wid)
+          || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
+            decisionProgram(wid, pid, request.resource.data)));
 
-      // get(): up to 4.
+      // get(): up to 5.
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe()
-        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+        && (isWsOwner(wid)
+          || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
+            decisionProgram(wid, pid, resource.data)));
 
-      // get(): up to 3.
-      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
-        isWsOwner(wid)
-        || (resource.data.get('viaProgramId', null) is string
-          && resource.data.viaProgramId in v2Project(wid, pid).get('programMeta', {})
-          && isPMIn(v2Project(wid, pid), resource.data.viaProgramId)
-          && isActiveMember(wid))
-      );
+      // Wave 2 R5: workspace Owner only. get(): 2.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && isWsOwner(wid);
     }
 
     // ─────── v2: approvals (P3 Task 4; Rulings P3-2, P3-4, P3-9, P3-20, P3-C3) ───────
@@ -1269,6 +1328,7 @@ service cloud.firestore {
       return (o.get('type', null) == 'mitigation_done'
           && o.get('requestedByUid', null) != request.auth.uid
           && activeMemberDoc(wid)
+          && projectMemberIn(v2Project(wid, pid))
           && (o.get('approverUid', null) == request.auth.uid
             || pmDecides(prgMetaOf(v2Project(wid, pid), o.scope.get('programId', null)), o)))
         || isWsOwner(wid);
@@ -1289,7 +1349,7 @@ service cloud.firestore {
         && n.approverUid != o.get('requestedByUid', null)
         && reassignLogOk(o, n, o.get('reassignLog', []), n.get('reassignLog', []))
         && approverForTypeOk(wid, pid, o, n, prgMetaOf(p, o.scope.get('programId', null)))
-        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid))
+        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid) && projectMemberIn(p))
           || isWsOwner(wid));
     }
 
@@ -1337,9 +1397,26 @@ service cloud.firestore {
     }
 
     // ─────── v2: activity (one event per doc, append-only) ───────
+    function activityShapeOk(d) {
+      return d.keys().hasOnly(['id', 'type', 'description', 'before', 'after',
+          'programId', 'workstreamId', 'projectId', 'workspaceId', 'authorUid', 'createdAt'])
+        && (!('description' in d) || (d.description is string && d.description.size() <= 2000));
+    }
+
+    // get(): 0 extra. isWsOwner and isPM reuse the workspace, members/{me} and
+    // project documents canReadProject already fetched on this path.
+    function activityRoleChangeOk(wid, pid, d) {
+      return d.get('type', null) != 'role_changed'
+        || isWsOwner(wid) || isPM(wid, pid, d.get('programId', null));
+    }
+
     // Any reader may append an event authored by themselves, stamped with
     // the server time (P2.3: createdAt == request.time, i.e. serverTimestamp()).
     // projectId/workspaceId are optional on events but must match when set.
+    // W2 A2 (R3): only allow-listed keys (src/activityDoc.js ACTIVITY_KEYS; no author /
+    // authorName / timestamp: the name comes from the directory by authorUid), description
+    // <= 2000 chars, and a role_changed event only from an Owner or the PM / Deputy of the
+    // event's programId.
     // get(): workspace, members/{me}, project = 3.
     match /workspaces/{wid}/projects/{pid}/activity/{eid} {
       // get(): 3 (P2.4 projectIsV2 shares the project get).
@@ -1350,7 +1427,9 @@ service cloud.firestore {
         && request.resource.data.get('authorUid', null) == request.auth.uid
         && request.resource.data.get('createdAt', null) == request.time
         && request.resource.data.get('projectId', pid) == pid
-        && request.resource.data.get('workspaceId', wid) == wid;
+        && request.resource.data.get('workspaceId', wid) == wid
+        && activityShapeOk(request.resource.data)
+        && activityRoleChangeOk(wid, pid, request.resource.data);
 
       allow update, delete: if false;
     }

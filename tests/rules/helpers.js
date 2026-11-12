@@ -17,9 +17,15 @@ export async function getEnv() {
 }
 
 // Firestore client authenticated as a user with the given token claims.
-export async function asUser(uid, email, verified = true) {
+// W2 R8: isSmartOSC() pins firebase.sign_in_provider, so every test token
+// carries it (default 'google.com', as a real sign-in does).
+export const GOOGLE = { sign_in_provider: 'google.com' };
+
+export async function asUser(uid, email, verified = true, provider = 'google.com') {
   const e = await getEnv();
-  return e.authenticatedContext(uid, { email, email_verified: verified }).firestore();
+  return e.authenticatedContext(uid, {
+    email, email_verified: verified, firebase: { ...GOOGLE, sign_in_provider: provider },
+  }).firestore();
 }
 
 export async function asAnonymous() {

@@ -7,6 +7,7 @@ import { buildDirectoryIndex } from '../../src/directory.js';
 import { assembleFromSnapshots } from '../../src/readV2.js';
 import { planV2Save } from '../../src/planV2Save.js';
 import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
+import { activityDocFor } from '../../src/activityDoc.js';
 
 // P2.3 Task 4: the shim's v2 write path end to end against the rules.
 // Plans come from planV2Save (fixture tree edited like App.jsx does); the executor
@@ -205,11 +206,12 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(asg.r.status).toBe('denied');
   });
 
-  it('EXEC-6 activity append (shim shape) ok; a forged authorUid denied', async () => {
+  it('EXEC-6 activity append (shim shape, W2 R3) ok; a forged authorUid denied', async () => {
     const db = await asUser(ASG.uid, ASG.email);
     const entry = { id: 'act1', timestamp: '2026-10-23T00:00:00Z', author: 'Asg', type: 'task_edit', description: 'x' };
-    await assertSucceeds(setDoc(doc(db, `${PV}/activity/act1`), { ...entry, authorUid: ASG.uid, createdAt: serverTimestamp() }));
-    await assertFails(setDoc(doc(db, `${PV}/activity/act2`), { ...entry, id: 'act2', authorUid: PM.uid, createdAt: serverTimestamp() }));
+    // The shim writes activityDocFor(entry, uid) + createdAt (no author / timestamp).
+    await assertSucceeds(setDoc(doc(db, `${PV}/activity/act1`), { ...activityDocFor(entry, ASG.uid), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db, `${PV}/activity/act2`), { ...activityDocFor({ ...entry, id: 'act2' }, PM.uid), createdAt: serverTimestamp() }));
   });
 
   it('EXEC-X Ruling X: two new updates in one save land in 2 transactions', async () => {
@@ -272,14 +274,17 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(tree.actionItems.map((a) => a.id)).toEqual(['aNew', 'aLoose']);
   });
 
-  it('EXEC-I3 PM / Sub-PM of program 1 edit RAID of program 2 (no role there) -> ok', async () => {
+  // Wave 2 R5 (supersedes I3): no role in program 2 -> no claim, denied.
+  it('EXEC-I3 PM / Sub-PM of program 1 edit RAID of program 2 (no role there) -> denied, nothing written', async () => {
+    const before = await serverDoc(`${PV}/raid/prg2`);
     const pm = await save(PM, (t) => { t.programs[1].raid[0].title = 'PM edit'; });
-    expect(pm.plan.batches[0][0]).toMatchObject({ kind: 'raid', id: 'prg2', data: { viaProgramId: 'prg1' } });
-    expect(pm.r.status).toBe('ok');
+    expect(pm.plan.batches[0][0]).toMatchObject({ kind: 'raid', id: 'prg2' });
+    expect(pm.plan.batches[0][0].data).not.toHaveProperty('viaProgramId');
+    expect(pm.r.status).toBe('denied');
     const lead = await save(LEAD, (t) => { t.programs[1].raid[0].title = 'Lead edit'; });
-    expect(lead.plan.batches[0][0].data).toMatchObject({ viaWorkstreamId: 'w1' });
-    expect(lead.r.status).toBe('ok');
-    expect(await serverDoc(`${PV}/raid/prg2`)).toMatchObject({ version: 3, updatedBy: LEAD.uid });
+    expect(lead.plan.batches[0][0].data).not.toHaveProperty('viaWorkstreamId');
+    expect(lead.r.status).toBe('denied');
+    expect(await serverDoc(`${PV}/raid/prg2`)).toEqual(before);
   });
 
   // P2.4 fix round 1: a tab loaded while v2 saves after a rollback (project

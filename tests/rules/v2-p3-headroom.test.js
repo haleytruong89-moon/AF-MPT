@@ -91,18 +91,18 @@ const seedWith = (env) => (path, data) =>
 
 const scenarioProbe = (s) => async (env) => {
   await seedScenario(seedWith(env), s);
-  const db = env.authenticatedContext(s.actor.uid, { email: s.actor.email, email_verified: true }).firestore();
+  const db = env.authenticatedContext(s.actor.uid, { email: s.actor.email, email_verified: true, firebase: { sign_in_provider: 'google.com' } }).firestore();
   await writeScenario(db, s);
 };
 
 const approvalProbe = (s) => async (env) => {
   await seedApprovalScenario(seedWith(env), s);
-  const db = env.authenticatedContext(s.actor.uid, { email: s.actor.email, email_verified: true }).firestore();
+  const db = env.authenticatedContext(s.actor.uid, { email: s.actor.email, email_verified: true, firebase: { sign_in_provider: 'google.com' } }).firestore();
   await writeApprovalScenario(db, s);
 };
 
 const usersProbe = async (env) => {
-  const db = env.authenticatedContext('u_cal', { email: 'cal@smartosc.com', email_verified: true }).firestore();
+  const db = env.authenticatedContext('u_cal', { email: 'cal@smartosc.com', email_verified: true, firebase: { sign_in_provider: 'google.com' } }).firestore();
   await setDoc(doc(db, 'users/u_cal'), { currentProjectId: 'p1' });
 };
 

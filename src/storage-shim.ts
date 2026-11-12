@@ -43,6 +43,7 @@ import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loa
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
+import { activityDocFor, activityEntryFromDoc } from './activityDoc';
 import { executeRoleChange, wsCacheAfterRoleChange } from './execRoleChange';
 import type { UserProfile } from './types';
 
@@ -238,7 +239,7 @@ export function v2SavedTree(pid: string): Record<string, unknown> | null {
 // failed load is retried on the next save, and that save plans without it
 // (people left unchanged keep their stored uids; a changed pic / contributors makes
 // the planner refuse with 'directory-unavailable' -> reported as 'error', Ruling AH).
-type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string> };
+type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string>; nameByUid: Map<string, string> };
 let dirPromise: Promise<PlanDirectory> | null = null;
 function directoryForPlan(): Promise<PlanDirectory> {
   if (!dirPromise) {
@@ -248,20 +249,22 @@ function directoryForPlan(): Promise<PlanDirectory> {
     ]).then(([mSnap, iSnap]) => {
       const entries: Array<Record<string, unknown>> = [];
       const uidByEmail = new Map<string, string>();
+      const nameByUid = new Map<string, string>();
       mSnap.forEach((d) => {
         const m = d.data() as Record<string, unknown>;
         entries.push({ email: m.email, displayName: m.displayName, aliases: m.aliases, status: m.status });
         if (m.email) uidByEmail.set(String(m.email).toLowerCase(), d.id);
+        if (m.displayName) nameByUid.set(d.id, String(m.displayName));
       });
       iSnap.forEach((d) => {
         const m = d.data() as Record<string, unknown>;
         entries.push({ email: m.email || d.id, displayName: m.displayName, aliases: m.aliases, status: m.status });
       });
-      return { dirIndex: buildDirectoryIndex(entries), uidByEmail };
+      return { dirIndex: buildDirectoryIndex(entries), uidByEmail, nameByUid };
     }).catch((e) => {
       console.warn('[storage] directory load for v2 save failed:', e);
       dirPromise = null;
-      return { dirIndex: null, uidByEmail: new Map<string, string>() };
+      return { dirIndex: null, uidByEmail: new Map<string, string>(), nameByUid: new Map<string, string>() };
     });
   }
   return dirPromise;
@@ -460,12 +463,11 @@ window.storage = {
           // P2.3: one doc per event; the newest ACTIVITY_CAP in the v1 array shape.
           const snap = await getDocs(query(V2_ACTIVITY_COL(pid), orderBy('createdAt', 'desc'), limit(ACTIVITY_CAP)));
           const entries: Array<Record<string, unknown>> = [];
+          // R3: author from the directory by authorUid, time from createdAt; stored
+          // author / timestamp only for events without authorUid (copied from v1).
+          const { nameByUid } = await directoryForPlan();
           snap.forEach((d) => {
-            const { createdAt, ...e } = d.data() as Record<string, unknown>;
-            const ts = createdAt as { toDate?: () => Date } | null | undefined;
-            if (e.timestamp == null && ts && typeof ts.toDate === 'function') e.timestamp = ts.toDate().toISOString();
-            if (e.id == null) e.id = d.id;
-            entries.push(e);
+            entries.push(activityEntryFromDoc(d.data(), d.id, (u: string) => nameByUid.get(u) ?? null));
           });
           v2ActivityKnown.set(pid, new Set(snap.docs.map((d) => d.id)));
           return { key, value: JSON.stringify(entries), shared: true };
@@ -615,10 +617,9 @@ window.storage = {
           v2ActivityKnown.set(pid, known);
           const fresh = list.filter((e) => e && typeof e.id === 'string' && e.id && !known.has(e.id)).reverse();
           for (const e of fresh) {
-            const { createdAt: _c, authorUid: _a, ...entry } = e;
-            void _c; void _a;
+            // R3: allow-listed fields only; no author / timestamp (rules refuse them).
             await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
-              ...entry, authorUid: user.uid, createdAt: serverTimestamp(),
+              ...activityDocFor(e, user.uid), createdAt: serverTimestamp(),
             });
             known.add(e.id as string);
           }

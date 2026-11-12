@@ -66,6 +66,41 @@ export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
   };
 }
 
+// PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).
+const holdsProgram = (roles, programId, uid) => {
+  if (!uid || programId == null) return false;
+  if (isPmOf(roles, programId, uid)) return true;
+  return Object.keys(roles?.workstreams || {}).some((w) => isLeadOf(roles, w, programId, uid));
+};
+
+// Any PM / Deputy / Sub-PM role in the project (a new decision's claim).
+const holdsAnyProgram = (roles, uid) => Object.keys(roles?.programs || {}).some((p) => holdsProgram(roles, p, uid));
+
+/** Wave 2 R5: edit raid/{programId}. Owner / v1: true; else a role in that program. */
+export function canEditRaid({ isOwner, isV2, roles, uid, programId }) {
+  if (isOwner || !isV2) return true;
+  return holdsProgram(roles, programId, uid);
+}
+
+/**
+ * Wave 2 R5 (Ruling W2-4): edit a decision. Owner / v1: true; else a role in the
+ * program of its stored claim (roles.decisions[id].programId; null = Owner only).
+ * A decision not in the stored roles yet (created in this tab, unsaved) behaves as
+ * a new one: anyone holding a PM / Deputy / Sub-PM role.
+ */
+export function canEditDecision({ isOwner, isV2, roles, uid, decision }) {
+  if (isOwner || !isV2) return true;
+  const id = decision?.id;
+  const stored = id != null && roles?.decisions && hasOwn(roles.decisions, id) ? roles.decisions[id] : undefined;
+  if (stored === undefined) return holdsAnyProgram(roles, uid);
+  return holdsProgram(roles, stored?.programId ?? null, uid);
+}
+
+/** Wave 2 R5 / W4: deleting a decision or a RAID item is Owner-only on v2; v1 unchanged. */
+export function canDeleteRaidOrDecision({ isOwner, isV2 }) {
+  return !!isOwner || !isV2;
+}
+
 /** Header chip data: label = highest role, detail = every role held. */
 export function myRoleSummary(roles, uid, project) {
   const detail = [];

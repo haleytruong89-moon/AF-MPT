@@ -259,6 +259,21 @@ export function wipesCloseHistory(old, data) {
 const listOf = (m) => [...(m || new Map()).entries()].map(([id, e]) => ({ id, data: e.data }));
 const versionOf = (e) => (typeof e.version === 'number' ? e.version : e.data?.version);
 
+/**
+ * PR-A final fix: the program a decision belongs to by its related tasks: the
+ * programs of relatedTaskIds that are keys of programMeta; when they span several
+ * programs, the first in program order (programMeta[k].order; ties keep the
+ * relatedTaskIds order). null when none resolves.
+ */
+export function programOfRelatedTasks(relatedTaskIds, taskProgramOf, programMeta) {
+  const pm = programMeta || {};
+  const progs = (Array.isArray(relatedTaskIds) ? relatedTaskIds : [])
+    .map((t) => taskProgramOf(t))
+    .filter((p) => typeof p === 'string' && hasOwn(pm, p));
+  if (!progs.length) return null;
+  return [...progs].sort((a, b) => (pm[a]?.order ?? 0) - (pm[b]?.order ?? 0))[0];
+}
+
 function roleClaims(loaded, uid) {
   const pm = loaded.meta.programMeta || {};
   const progOrder = (k) => pm[k]?.order ?? 0;
@@ -267,15 +282,24 @@ function roleClaims(loaded, uid) {
   const led = listOf(loaded.docs.workstreams)
     .filter((w) => uid && w.data.leadUid === uid)
     .sort((a, b) => progOrder(a.data.programId) - progOrder(b.data.programId) || (a.data.order ?? 0) - (b.data.order ?? 0));
+  const wsProgram = (wsId) => (typeof wsId === 'string' ? loaded.docs.workstreams?.get(wsId)?.data?.programId ?? null : null);
   return {
+    // Wave 2 R5 (supersedes Ruling AD / I3): a claim on THIS program only; no
+    // role here -> {} (rules refuse; the UI hides the edit).
     raid(programId) {
+      if (programId == null) return {};
       if (isPM(programId)) return { viaProgramId: programId };
       const w = led.find((x) => x.data.programId === programId);
-      // Ruling AD (I3): no role on this program -> any PM / Sub-PM claim in the
-      // project (claimWriterOk accepts it; Q1: RAID is written by any PM / Sub-PM).
-      return w ? { viaWorkstreamId: w.id } : this.decision();
+      return w ? { viaWorkstreamId: w.id } : {};
     },
-    decision() {
+    // Ruling W2-4: the program of a stored decision's claim (null = none).
+    programOf(stored) {
+      return typeof stored?.viaProgramId === 'string' ? stored.viaProgramId : wsProgram(stored?.viaWorkstreamId);
+    },
+    // stored = the stored decision doc (update): claim on the program of its
+    // stored claim (Ruling W2-4), none when it has none. New decision: as before.
+    decision(stored) {
+      if (stored) return this.raid(this.programOf(stored));
       const p = programs.find(isPM);
       if (p) return { viaProgramId: p };
       return led.length ? { viaWorkstreamId: led[0].id } : {};
@@ -312,6 +336,15 @@ function steps(kind, oldData, data) {
   return out;
 }
 
+// Wave 2: a created task's updates (newest first) as k steps, step i holding the i
+// oldest entries; missing authorUid = uid. Step 0 is the create.
+function createSteps(data, uid) {
+  const ups = data.updates.map((u) => (u && typeof u === 'object' && !u.authorUid ? { ...u, authorUid: uid } : u));
+  const out = [];
+  for (let s = 1; s <= ups.length; s++) out.push({ ...data, updates: ups.slice(ups.length - s) });
+  return out;
+}
+
 // The tree reached the App through JSON.stringify (shim read path), so compare
 // against the loaded data in the same form (Timestamps -> their toJSON shape,
 // undefined dropped). Plain-JSON input is unchanged.
@@ -332,6 +365,10 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const docs = loaded.docs || {};
   for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
   const claims = roleClaims(loaded, uid);
+  // task id -> programId (this save's tree first, then the stored docs).
+  const taskProgram = new Map();
+  for (const [id, e] of docs.tasks || new Map()) taskProgram.set(id, e.data?.programId ?? null);
+  for (const { id, data } of next.tasks || []) taskProgram.set(id, data?.programId ?? null);
 
   // Docs the read path could not attach are not in the tree: never delete them.
   const { orphans } = assembleProject(
@@ -347,9 +384,24 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   for (const kind of KINDS) {
     const stored = docs[kind] || new Map();
     const nextById = new Map(next[kind].map((d) => [d.id, d.data]));
-    const withClaim = (data) => {
-      if (isOwner || (kind !== 'raid' && kind !== 'decisions')) return data;
-      const c = kind === 'raid' ? claims.raid(data.programId) : claims.decision();
+    // storedData = the stored doc (updates only, claims not stripped).
+    const withClaim = (data, storedData) => {
+      if (kind !== 'raid' && kind !== 'decisions') return data;
+      if (isOwner) {
+        // Wave 2 R5: an Owner edit keeps a decision's stored claim, so the
+        // decision stays in its program (the claim is its program, W2-4).
+        if (kind !== 'decisions') return data;
+        const keep = {};
+        for (const k of ['viaProgramId', 'viaWorkstreamId']) if (typeof storedData?.[k] === 'string') keep[k] = storedData[k];
+        if (storedData && claims.programOf(storedData) != null) return { ...data, ...keep };
+        // PR-A final fix: an Owner create / edit of a decision whose stored claim
+        // resolves to no program files it under the program of its related tasks
+        // (first in program order), so PM / Sub-PM of that program can edit it.
+        // No related task in programMeta -> stays as is (Owner-only, W2-9).
+        const prg = programOfRelatedTasks(data.relatedTaskIds, (t) => taskProgram.get(t), loaded.meta.programMeta);
+        return prg ? { ...data, viaProgramId: prg } : { ...data, ...keep };
+      }
+      const c = kind === 'raid' ? claims.raid(data.programId) : claims.decision(storedData);
       return { ...data, ...c };
     };
 
@@ -380,7 +432,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       const stamped = stampDoc(kind, old, data, uid);
       const v = versionOf(entry);
       steps(kind, old, stamped).forEach((d, i) => {
-        push(i, { kind, op: 'update', id, data: withClaim(d), expectVersion: v + i });
+        push(i, { kind, op: 'update', id, data: withClaim(d, entry.data || {}), expectVersion: v + i });
       });
     }
     for (const { id, data } of next[kind]) {
@@ -395,8 +447,18 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       if (!dirIndex && (kind === 'tasks' || kind === 'actions') && (hasPerson(data.pic) || hasPerson(data.contributors))) {
         return none('directory-unavailable');
       }
-      // Created docs are not stamped: rules do not check creates, and copied
-      // history keeps its original authors.
+      // Created docs are not stamped (copied history keeps its original authors),
+      // except a non-Owner task create (Wave 2 R1 / W4): rules allow at most one
+      // update entry, authored by the caller. Entries without an authorUid get uid;
+      // the oldest rides in the create, the rest follow as single-entry updates.
+      if (kind === 'tasks' && !isOwner && Array.isArray(data.updates) && data.updates.length) {
+        createSteps(strip(data), uid).forEach((d, i) => {
+          push(i, i === 0
+            ? { kind, op: 'create', id, data: withClaim({ ...d, version: 1 }) }
+            : { kind, op: 'update', id, data: withClaim(d), expectVersion: i });
+        });
+        continue;
+      }
       push(0, { kind, op: 'create', id, data: withClaim({ ...strip(data), version: 1 }) });
     }
   }

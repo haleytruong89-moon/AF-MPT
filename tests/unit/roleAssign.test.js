@@ -147,12 +147,15 @@ describe('roleChangeEvent', () => {
       description: 'Role changed: PM of CASH OUT, Lybk → Trangvk',
       before: { uid: 'pm1' },
       after: { uid: 'y' },
+      programId: 'p1',
     });
   });
   it('renders null as dash and lead as Sub-PM', () => {
     const e = roleChangeEvent({ kind: 'lead', programId: 'p1', wsId: 'w2', fromUid: null, toUid: 'y' }, nameOf, 'WS');
     expect(e.description).toBe('Role changed: Sub-PM of WS, — → Trangvk');
     expect(e.before).toEqual({ uid: null });
+    expect(e.programId).toBe('p1');
+    expect(e.workstreamId).toBe('w2');
     expect(roleChangeEvent({ kind: 'deputy', programId: 'p1', fromUid: 'pm1', toUid: null }, nameOf, 'P').description)
       .toBe('Role changed: Deputy of P, Lybk → —');
   });

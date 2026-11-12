@@ -35,7 +35,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision } from './roleUi.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -3979,7 +3979,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {/* Decisions tab — linked to this milestone */}
           {panelTab === 'decisions' && (
             <>
-              {!showDecisionForm && (
+              {/* Wave 2 R5: v2 create needs a PM / Deputy / Sub-PM role somewhere (empty decision = "new"). */}
+              {!showDecisionForm && canEditDecision({ isOwner, isV2, roles: v2Roles, uid: me.uid, decision: {} }) && (
                 <Btn size="sm" variant="primary" onClick={() => { setEditingDecision(null); setShowDecisionForm(true); }}>
                   <Plus size={11} /> Add decision
                 </Btn>
@@ -4005,7 +4006,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 )}
                 {linkedDecisions.map((d) => (
                   <DecisionRowCompact key={d.id} decision={d} teamMembers={teamMembers}
-                    onEdit={editDecision} onDelete={removeDecision} />
+                    onEdit={canEditDecision({ isOwner, isV2, roles: v2Roles, uid: me.uid, decision: d }) ? editDecision : null}
+                    onDelete={canDeleteRaidOrDecision({ isOwner, isV2 }) ? removeDecision : null} />
                 ))}
               </div>
             </>
@@ -4389,12 +4391,16 @@ function DecisionRowCompact({ decision, onEdit, onDelete, teamMembers }) {
         <span>👥 {(decision.decidedBy || []).join(', ') || '—'}</span>
         {decision.meetingRef && <span style={{ background: TOK.bg, padding: '0 5px', borderRadius: 3, fontSize: 10 }}>{decision.meetingRef}</span>}
         <div style={{ flex: 1 }} />
-        <button onClick={() => onEdit(decision)} title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
-          <Edit2 size={11} />
-        </button>
-        <button onClick={() => onDelete(decision)} title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
-          <Trash2 size={11} />
-        </button>
+        {onEdit && (
+          <button onClick={() => onEdit(decision)} title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
+            <Edit2 size={11} />
+          </button>
+        )}
+        {onDelete && (
+          <button onClick={() => onDelete(decision)} title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
+            <Trash2 size={11} />
+          </button>
+        )}
       </div>
       {decision.context && (
         <div style={{ fontSize: 11.5, color: TOK.muted, lineHeight: 1.5, paddingTop: 2 }}>
@@ -4503,18 +4509,27 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
               </ul>
             </div>
           )}
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
-            <Btn size="sm" variant="ghost" onClick={() => onEdit(decision)}><Edit2 size={11} /> Edit</Btn>
-            <Btn size="sm" variant="ghost" onClick={() => onDelete(decision)}><Trash2 size={11} /> Delete</Btn>
-          </div>
+          {(onEdit || onDelete) && (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 8 }}>
+              {onEdit && <Btn size="sm" variant="ghost" onClick={() => onEdit(decision)}><Edit2 size={11} /> Edit</Btn>}
+              {onDelete && <Btn size="sm" variant="ghost" onClick={() => onDelete(decision)}><Trash2 size={11} /> Delete</Btn>}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, initialEditId }) {
+function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, initialEditId, isOwner = false, uid = null }) {
   const [showForm, setShowForm] = useState(false);
+  // Wave 2 R5: v2 edit only within one's program (stored claim); delete Owner-only. v1 unchanged.
+  const isV2 = !!project.__v2;
+  const roles = project.__v2?.roles || null;
+  const canEdit = (d) => canEditDecision({ isOwner, isV2, roles, uid, decision: d });
+  const canDelete = canDeleteRaidOrDecision({ isOwner, isV2 });
+  // An empty decision is "not saved yet": any PM / Deputy / Sub-PM role (rules create).
+  const canCreate = canEdit({});
   const [editing, setEditing] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all'); // all | Open | InProgress | Done
   const [filterTaskId, setFilterTaskId] = useState('all'); // all | <taskId>
@@ -4579,7 +4594,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
               {decisions.length} total · {filtered.length} matching filters
             </div>
           </div>
-          <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New decision</Btn>
+          {canCreate && <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New decision</Btn>}
         </div>
 
         {/* Filters */}
@@ -4597,7 +4612,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
           </select>
         </div>
 
-        {showForm && (
+        {showForm && (!editing || canEdit(editing)) && (
           <div data-decision-form style={{ marginBottom: 14 }}>
             <DecisionForm
               key={editing?.id || 'new'}
@@ -4614,7 +4629,9 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
         {filtered.length === 0 && !showForm && (
           <div style={{ padding: 40, textAlign: 'center', color: TOK.subtle, fontSize: 13, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10 }}>
             {decisions.length === 0 ? (
-              <>No decisions logged yet. <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Log your first decision</button></>
+              canCreate
+                ? <>No decisions logged yet. <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Log your first decision</button></>
+                : 'No decisions logged yet.'
             ) : (
               'No decisions match the current filters.'
             )}
@@ -4623,8 +4640,8 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
 
         {filtered.map((d) => (
           <DecisionEntry key={d.id} decision={d} project={project} teamMembers={teamMembers}
-            onEdit={startEdit}
-            onDelete={removeDecision} />
+            onEdit={canEdit(d) ? startEdit : null}
+            onDelete={canDelete ? removeDecision : null} />
         ))}
       </div>
     </div>
@@ -8657,18 +8674,18 @@ function StatusQuickPill({ status, onChange, statuses }) {
     <>
       <button
         type="button"
-        onClick={openMenu}
-        title="Change status"
+        onClick={onChange ? openMenu : (e) => e.stopPropagation()}
+        title={onChange ? 'Change status' : undefined}
         style={{
           fontFamily: FONT_STACK, fontSize: 10.5, fontWeight: 500,
           padding: '2px 7px', borderRadius: 999, border: 'none',
-          color: s.fg, background: s.bg, cursor: 'pointer',
+          color: s.fg, background: s.bg, cursor: onChange ? 'pointer' : 'default',
           display: 'inline-flex', alignItems: 'center', gap: 3,
         }}>
         {s.icon} {STATUS_LABEL[safeStatus] || safeStatus}
-        <ChevronDown size={9} style={{ opacity: 0.7, marginLeft: 1 }} />
+        {onChange && <ChevronDown size={9} style={{ opacity: 0.7, marginLeft: 1 }} />}
       </button>
-      {menu && (
+      {menu && onChange && (
         <PopoverMenu
           x={menu.x}
           y={menu.y}
@@ -9151,7 +9168,13 @@ function MitigationRowInline({
   showToast,
 }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  const me = useContext(MeContext);
   const { mitigation, parentItem, parentProgram, project } = entry;
+  // Wave 2 R5: on v2 a mitigation is part of raid/{programId}: editable only by the
+  // Owner or a PM / Deputy / Sub-PM of that program; read-only otherwise. v1 unchanged.
+  const canEdit = canEditRaid({
+    isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2?.roles || null, uid: me.uid, programId: parentProgram.id,
+  });
   const [expanded, setExpanded] = useState(false);
   const [titleDraft, setTitleDraft] = useState(mitigation.name || '');
   useEffect(() => { setTitleDraft(mitigation.name || ''); }, [mitigation.name]);
@@ -9197,7 +9220,7 @@ function MitigationRowInline({
         style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 44 }}>
         <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          {expanded ? (
+          {expanded && canEdit ? (
             <input
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
@@ -9228,9 +9251,9 @@ function MitigationRowInline({
           <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{derivedPriority}</span>
         )}
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={mitigation.status || 'Open'} onChange={(st) => writePatch({ status: st })} statuses={MITIGATION_STATUSES} />
+          <StatusQuickPill status={mitigation.status || 'Open'} onChange={canEdit ? (st) => writePatch({ status: st }) : null} statuses={MITIGATION_STATUSES} />
         </span>
-        {mitigation.status !== 'Done' && (
+        {canEdit && mitigation.status !== 'Done' && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); markDone(); }} title="Mark done">✓</Btn>
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
@@ -9241,7 +9264,8 @@ function MitigationRowInline({
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
               value={mitigation.pic || ''}
-              onChange={(e) => writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
+              disabled={!canEdit}
+              onChange={(e) => canEdit && writePatch({ pic: dirIndex ? resolvePicValue(e.target.value, teamMembers, dirIndex) : e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, minWidth: 160 }}>
               <option value="">(unassigned)</option>
@@ -9253,7 +9277,8 @@ function MitigationRowInline({
             <input
               type="date"
               value={mitigation.due || ''}
-              onChange={(e) => writePatch({ due: e.target.value || null })}
+              disabled={!canEdit}
+              onChange={(e) => canEdit && writePatch({ due: e.target.value || null })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink }}
             />
@@ -9262,7 +9287,7 @@ function MitigationRowInline({
             💬 Comments and full risk context live in the RAID detail. Use "Open RAID item" below to view or comment.
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid ' + TOK.line }}>
-            {mitigation.status !== 'Done' && (
+            {canEdit && mitigation.status !== 'Done' && (
               <Btn size="sm" variant="primary" onClick={markDone}>✓ Mark done</Btn>
             )}
             <Btn size="sm" variant="ghost" onClick={() => onNavigateRaid && onNavigateRaid(project.id, parentProgram.id)}>
@@ -9734,7 +9759,8 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
   const [commentDraft, setCommentDraft] = useState('');
   const overdue = action.due && action.status !== 'Done' && parseDate(action.due) < today();
   const comments = action.comments || [];
-  const canMarkDone = action.pic === currentUser && action.status !== 'Done';
+  // Wave 2 R5: onUpdate null = no edit rights on this RAID doc (read-only row).
+  const canMarkDone = !!onUpdate && action.pic === currentUser && action.status !== 'Done';
 
   const statusColor = {
     Open: { fg: TOK.muted, bg: TOK.bg },
@@ -9784,7 +9810,8 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
             <span>Status</span>
             <select
               value={action.status || 'Open'}
-              onChange={(e) => onUpdate({ status: e.target.value })}
+              disabled={!onUpdate}
+              onChange={(e) => onUpdate && onUpdate({ status: e.target.value })}
               onClick={(e) => e.stopPropagation()}
               style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 5, background: TOK.surface, color: TOK.ink }}>
               {['Open', 'Done', 'Blocked'].map((s) => <option key={s} value={s}>{s}</option>)}
@@ -9804,6 +9831,7 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
               <MentionedText text={c.text} teamMembers={teamMembers} />
             </div>
           ))}
+          {onUpdate && (
           <div style={{ marginTop: 8 }}>
             <MentionTextarea
               value={commentDraft}
@@ -9816,6 +9844,7 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
               <Btn size="sm" variant="primary" onClick={postComment} disabled={!commentDraft.trim()}>Post comment</Btn>
             </div>
           </div>
+          )}
         </div>
       )}
     </div>
@@ -9883,10 +9912,10 @@ function TrendHistoryBlock({ item, currentUser, teamMembers, onAddReview }) {
         </button>
       )}
 
-      {!adding && (
+      {!adding && onAddReview && (
         <Btn size="sm" onClick={() => setAdding(true)} style={{ marginTop: 8 }}><Plus size={11} /> Add review note</Btn>
       )}
-      {adding && (
+      {adding && onAddReview && (
         <div style={{ marginTop: 10, padding: 10, background: TOK.bg, borderRadius: 7, border: '1px solid ' + TOK.line }}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
             {Object.entries(RAID_TREND_CONFIG).map(([k, v]) => (
@@ -10167,7 +10196,7 @@ function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestion
 // trend history, mitigation actions, status transitions.
 // All mutations route through onUpdate(partial) which the parent translates into an
 // applyRaidUpdate call.
-function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onUpdate, onDelete }) {
+function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onUpdate, onDelete, canEdit = true }) {
   const [expanded, setExpanded] = useState(false);
   const [addingAction, setAddingAction] = useState(false);
   const [actionDraftName, setActionDraftName] = useState('');
@@ -10317,7 +10346,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
           )}
 
           {/* Trend & review history */}
-          <TrendHistoryBlock item={item} currentUser={currentUser} teamMembers={teamMembers} onAddReview={handleAddReview} />
+          <TrendHistoryBlock item={item} currentUser={currentUser} teamMembers={teamMembers} onAddReview={canEdit ? handleAddReview : null} />
 
           {/* Mitigation actions */}
           <div style={{ marginTop: 14 }}>
@@ -10330,14 +10359,14 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
                 action={a}
                 currentUser={currentUser}
                 teamMembers={teamMembers}
-                onUpdate={(diff) => handleMitigationUpdate(a.id, diff)}
-                onRemove={() => handleMitigationRemove(a.id)}
+                onUpdate={canEdit ? (diff) => handleMitigationUpdate(a.id, diff) : null}
+                onRemove={canEdit ? () => handleMitigationRemove(a.id) : null}
               />
             ))}
-            {!addingAction && (
+            {canEdit && !addingAction && (
               <Btn size="sm" onClick={() => setAddingAction(true)} style={{ marginTop: 4 }}><Plus size={11} /> Add action</Btn>
             )}
-            {addingAction && (
+            {canEdit && addingAction && (
               <div style={{ marginTop: 8, padding: 10, background: TOK.surface, borderRadius: 7, border: '1px solid ' + TOK.line }}>
                 <input
                   value={actionDraftName}
@@ -10370,10 +10399,11 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
             )}
           </div>
 
-          {/* Status transitions */}
+          {/* Status transitions (wave 2 R5: hidden without edit rights) */}
+          {(canEdit || onDelete) && (
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid ' + TOK.line, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>Change status:</span>
-            {(item.status === 'Active' || item.status === 'Mitigating') && (
+            {canEdit && <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>Change status:</span>}
+            {canEdit && (item.status === 'Active' || item.status === 'Mitigating') && (
               <>
                 {isRisk && item.status === 'Active' && <Btn size="sm" onClick={() => setStatus('Mitigating')}>→ Mitigating</Btn>}
                 {item.type === 'Issue' && <Btn size="sm" onClick={() => setStatus('Resolved')}>→ Resolved</Btn>}
@@ -10381,7 +10411,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
                 <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
               </>
             )}
-            {(item.status === 'Resolved' || item.status === 'Accepted') ? (
+            {canEdit && (item.status === 'Resolved' || item.status === 'Accepted') ? (
               <Btn size="sm" onClick={() => setStatus('Closed')}>→ Closed</Btn>
             ) : null}
             {onDelete && (item.createdBy === currentUser || isOwner) && (
@@ -10393,6 +10423,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
               </button>
             )}
           </div>
+          )}
         </div>
       )}
     </div>
@@ -10402,7 +10433,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
 // v30 RAID Phase 2 — Top-level RAID Register view. Two-panel layout: program
 // sidebar on the left, item list + filters + summary on the right. Supports
 // single-project and all-projects modes.
-function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMembers, scopeProgramId, onApplyRaidUpdate, onRaidNavigate, dialogs }) {
+function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMembers, scopeProgramId, onApplyRaidUpdate, onRaidNavigate, dialogs, uid: myUid = null }) {
   // Hooks before any early return.
   const [selectedProgramKey, setSelectedProgramKey] = useState(null);
   const [typeFilter, setTypeFilter] = useState('All');
@@ -10437,6 +10468,13 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
   }, [allProgramEntries, selectedProgramKey]);
 
   const selectedEntry = allProgramEntries.find((e) => e.key === selectedProgramKey);
+  // Wave 2 R5: on v2, RAID is edited only by the Owner or a PM / Deputy / Sub-PM
+  // of this program; item delete is Owner-only. v1 unchanged.
+  const selIsV2 = !!selectedEntry?.project?.__v2;
+  const canEditSel = !!selectedEntry && canEditRaid({
+    isOwner, isV2: selIsV2, roles: selectedEntry.project.__v2?.roles || null, uid: myUid, programId: selectedEntry.programId,
+  });
+  const canDeleteSel = canDeleteRaidOrDecision({ isOwner, isV2: selIsV2 });
   const picSuggestions = useMemo(() => {
     const names = new Set();
     // Primary source: workspace-wide team members (App-level derived roster used by every other form).
@@ -10592,7 +10630,7 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
               </h2>
               <span style={{ fontSize: 12, color: TOK.muted }}>· RAID Register</span>
               <div style={{ flex: 1 }} />
-              <Btn size="sm" variant="primary" onClick={() => setShowAddForm(true)}><Plus size={12} /> Add</Btn>
+              {canEditSel && <Btn size="sm" variant="primary" onClick={() => setShowAddForm(true)}><Plus size={12} /> Add</Btn>}
             </div>
 
             {/* Summary strip */}
@@ -10668,13 +10706,14 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
                   currentUser={author}
                   teamMembers={teamMembers}
                   picSuggestions={picSuggestions}
+                  canEdit={canEditSel}
                   onUpdate={handleUpdate}
-                  onDelete={() => handleDelete(item)}
+                  onDelete={canDeleteSel ? () => handleDelete(item) : null}
                 />
               ))
             )}
 
-            {showAddForm && (
+            {showAddForm && canEditSel && (
               <AddRAIDForm
                 onSave={handleSave}
                 onCancel={() => setShowAddForm(false)}
@@ -11960,11 +11999,14 @@ function MyWorkView({
                   {d.expectedReviewDate && <span style={{ color: reviewOverdue ? TOK.overdueFg : TOK.muted, fontWeight: reviewOverdue ? 500 : 400 }}>· review {fmtDateShort(d.expectedReviewDate)}{reviewOverdue ? ' ⚠' : ''}</span>}
                 </div>
               </div>
+              {/* Wave 2 R5 / W2-9: read-only unless the decision's stored program is mine (v2). */}
               <span onClick={(ev) => ev.stopPropagation()} style={{ display: 'inline-flex' }}>
                 <StatusQuickPill
                   status={d.followUpStatus || 'Open'}
                   statuses={FOLLOWUP_STATUSES}
-                  onChange={(st) => onDecisionUpdate && onDecisionUpdate({ ...d, followUpStatus: st }, e.project.id)}
+                  onChange={canEditDecision({ isOwner, isV2: !!e.project.__v2, roles: e.project.__v2?.roles || null, uid: me.uid, decision: d })
+                    ? (st) => onDecisionUpdate && onDecisionUpdate({ ...d, followUpStatus: st }, e.project.id)
+                    : null}
                 />
               </span>
               {onDecisionClick && <Btn size="sm" variant="ghost" onClick={() => onDecisionClick(e.project.id, d.id)} title="Open in Decisions tab">→</Btn>}
@@ -13236,13 +13278,15 @@ export default function App() {
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
   // across projects, not just currentId). Refresh in-memory feed only if it's
   // the project currently in view. P3-19: `before` / `after` are kept on the entry.
-  const logActivityForProject = useCallback(async (projectId, { type, description, before, after }) => {
+  const logActivityForProject = useCallback(async (projectId, { type, description, before, after, programId, workstreamId }) => {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!projectId || !author) return;
     const entry = {
       id: uid('act'), timestamp: new Date().toISOString(), author, type, description,
       ...(before !== undefined ? { before } : {}),
       ...(after !== undefined ? { after } : {}),
+      ...(programId !== undefined ? { programId } : {}),
+      ...(workstreamId !== undefined ? { workstreamId } : {}),
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
     const log = await appendActivity(projectId, entry, { v2 });
@@ -13987,6 +14031,7 @@ export default function App() {
 
   const handleFileImport = async (file) => {
     if (!file) return;
+    if (!isOwner) { showToast('Only the workspace Owner can import a new project.'); return; }
     try {
       const imported = await parseExcelFile(file, dirIndex);
       // Append (2) etc if duplicate name
@@ -14211,8 +14256,8 @@ export default function App() {
               const rect = e.currentTarget.getBoundingClientRect();
               setProjectMenu({ x: rect.left, y: rect.bottom + 4 });
             }} title="Project options"><MoreHorizontal size={12} /></Btn></span>
-            <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>
-            <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
+            {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>}
+            {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>}
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
             <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
@@ -14428,7 +14473,7 @@ export default function App() {
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
-              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} />}
+              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setRaidScopeProgramId(programId || null); setView('raid'); }} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
@@ -14439,6 +14484,7 @@ export default function App() {
                   currentProjectId={isAllProjectsMode ? null : currentId}
                   author={effectiveAuthor}
                   isOwner={isOwner && !impersonatingAs}
+                  uid={meValue?.uid || null}
                   teamMembers={teamMembers}
                   scopeProgramId={raidScopeProgramId || scopeProgramId}
                   onApplyRaidUpdate={(item, projectId, programId, source) =>
