@@ -274,14 +274,17 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(tree.actionItems.map((a) => a.id)).toEqual(['aNew', 'aLoose']);
   });
 
-  it('EXEC-I3 PM / Sub-PM of program 1 edit RAID of program 2 (no role there) -> ok', async () => {
+  // Wave 2 R5 (supersedes I3): no role in program 2 -> no claim, denied.
+  it('EXEC-I3 PM / Sub-PM of program 1 edit RAID of program 2 (no role there) -> denied, nothing written', async () => {
+    const before = await serverDoc(`${PV}/raid/prg2`);
     const pm = await save(PM, (t) => { t.programs[1].raid[0].title = 'PM edit'; });
-    expect(pm.plan.batches[0][0]).toMatchObject({ kind: 'raid', id: 'prg2', data: { viaProgramId: 'prg1' } });
-    expect(pm.r.status).toBe('ok');
+    expect(pm.plan.batches[0][0]).toMatchObject({ kind: 'raid', id: 'prg2' });
+    expect(pm.plan.batches[0][0].data).not.toHaveProperty('viaProgramId');
+    expect(pm.r.status).toBe('denied');
     const lead = await save(LEAD, (t) => { t.programs[1].raid[0].title = 'Lead edit'; });
-    expect(lead.plan.batches[0][0].data).toMatchObject({ viaWorkstreamId: 'w1' });
-    expect(lead.r.status).toBe('ok');
-    expect(await serverDoc(`${PV}/raid/prg2`)).toMatchObject({ version: 3, updatedBy: LEAD.uid });
+    expect(lead.plan.batches[0][0].data).not.toHaveProperty('viaWorkstreamId');
+    expect(lead.r.status).toBe('denied');
+    expect(await serverDoc(`${PV}/raid/prg2`)).toEqual(before);
   });
 
   // P2.4 fix round 1: a tab loaded while v2 saves after a rollback (project

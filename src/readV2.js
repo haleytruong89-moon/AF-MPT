@@ -79,7 +79,16 @@ export function rolesFromLoaded(loaded, ownerUids) {
       contributorUids: Array.isArray(d.contributorUids) ? [...d.contributorUids] : [],
     };
   }
-  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks };
+  // Wave 2 R5 (Ruling W2-4): a decision's program = the program of its stored
+  // claim (viaProgramId, else the program of viaWorkstreamId); null = Owner only.
+  const decisions = {};
+  for (const [id, { data: d }] of loaded.docs.decisions || new Map()) {
+    let programId = null;
+    if (typeof d?.viaProgramId === 'string') programId = d.viaProgramId;
+    else if (typeof d?.viaWorkstreamId === 'string') programId = workstreams[d.viaWorkstreamId]?.programId ?? null;
+    decisions[id] = { programId };
+  }
+  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks, decisions };
 }
 
 const isoOrNull = (ts) => ts?.toDate?.().toISOString() ?? null;

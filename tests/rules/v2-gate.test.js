@@ -152,14 +152,20 @@ describe('P2.2 pre-P2.2 gate rules', () => {
   });
 
   // ── RAID docs ──
-  it('G-6 RAID create: Owner, PM / Deputy via viaProgramId, Sub-PM via viaWorkstreamId (same project) allowed', async () => {
+  // Wave 2 R5: the claim must be on the RAID doc's own program (was: any
+  // PM / Sub-PM of the project); cross-program cases in w2-raid-decisions.
+  it('G-6 RAID create: Owner, PM / Deputy via viaProgramId, Sub-PM via viaWorkstreamId (same program) allowed', async () => {
     await assertSucceeds(put(OWNER, `${P1}/raid/prg2`, raid('prg2')));
+    await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg1`)));
+    await assertSucceeds(put(PM, `${P1}/raid/prg1`, raid('prg1', { viaProgramId: 'prg1' })));
+    await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg1`)));
+    await assertSucceeds(put(DEPUTY, `${P1}/raid/prg1`, raid('prg1', { viaProgramId: 'prg1' })));
+    await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg1`)));
+    await assertSucceeds(put(LEAD, `${P1}/raid/prg1`, raid('prg1', { viaWorkstreamId: 'w1' })));
     await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg2`)));
-    await assertSucceeds(put(PM, `${P1}/raid/prg2`, raid('prg2', { viaProgramId: 'prg1' })));
-    await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg2`)));
-    await assertSucceeds(put(DEPUTY, `${P1}/raid/prg2`, raid('prg2', { viaProgramId: 'prg1' })));
-    await assertSucceeds(deleteDoc(doc(await as(OWNER), `${P1}/raid/prg2`)));
-    await assertSucceeds(put(LEAD, `${P1}/raid/prg2`, raid('prg2', { viaWorkstreamId: 'w1' })));
+    // A role in prg1 no longer writes prg2's RAID.
+    await assertFails(put(PM, `${P1}/raid/prg2`, raid('prg2', { viaProgramId: 'prg1' })));
+    await assertFails(put(LEAD, `${P1}/raid/prg2`, raid('prg2', { viaWorkstreamId: 'w1' })));
   });
 
   it('G-7 RAID create denied: ws of another project, Assignee, false via claims, bad ids, spoofing', async () => {

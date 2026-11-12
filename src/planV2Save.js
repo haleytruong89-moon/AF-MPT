@@ -267,15 +267,23 @@ function roleClaims(loaded, uid) {
   const led = listOf(loaded.docs.workstreams)
     .filter((w) => uid && w.data.leadUid === uid)
     .sort((a, b) => progOrder(a.data.programId) - progOrder(b.data.programId) || (a.data.order ?? 0) - (b.data.order ?? 0));
+  const wsProgram = (wsId) => (typeof wsId === 'string' ? loaded.docs.workstreams?.get(wsId)?.data?.programId ?? null : null);
   return {
+    // Wave 2 R5 (supersedes Ruling AD / I3): a claim on THIS program only; no
+    // role here -> {} (rules refuse; the UI hides the edit).
     raid(programId) {
+      if (programId == null) return {};
       if (isPM(programId)) return { viaProgramId: programId };
       const w = led.find((x) => x.data.programId === programId);
-      // Ruling AD (I3): no role on this program -> any PM / Sub-PM claim in the
-      // project (claimWriterOk accepts it; Q1: RAID is written by any PM / Sub-PM).
-      return w ? { viaWorkstreamId: w.id } : this.decision();
+      return w ? { viaWorkstreamId: w.id } : {};
     },
-    decision() {
+    // stored = the stored decision doc (update): claim on the program of its
+    // stored claim (Ruling W2-4), none when it has none. New decision: as before.
+    decision(stored) {
+      if (stored) {
+        const prg = typeof stored.viaProgramId === 'string' ? stored.viaProgramId : wsProgram(stored.viaWorkstreamId);
+        return this.raid(prg);
+      }
       const p = programs.find(isPM);
       if (p) return { viaProgramId: p };
       return led.length ? { viaWorkstreamId: led[0].id } : {};
@@ -356,9 +364,18 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   for (const kind of KINDS) {
     const stored = docs[kind] || new Map();
     const nextById = new Map(next[kind].map((d) => [d.id, d.data]));
-    const withClaim = (data) => {
-      if (isOwner || (kind !== 'raid' && kind !== 'decisions')) return data;
-      const c = kind === 'raid' ? claims.raid(data.programId) : claims.decision();
+    // storedData = the stored doc (updates only, claims not stripped).
+    const withClaim = (data, storedData) => {
+      if (kind !== 'raid' && kind !== 'decisions') return data;
+      if (isOwner) {
+        // Wave 2 R5: an Owner edit keeps a decision's stored claim, so the
+        // decision stays in its program (the claim is its program, W2-4).
+        if (kind !== 'decisions' || !storedData) return data;
+        const keep = {};
+        for (const k of ['viaProgramId', 'viaWorkstreamId']) if (typeof storedData[k] === 'string') keep[k] = storedData[k];
+        return { ...data, ...keep };
+      }
+      const c = kind === 'raid' ? claims.raid(data.programId) : claims.decision(storedData);
       return { ...data, ...c };
     };
 
@@ -389,7 +406,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       const stamped = stampDoc(kind, old, data, uid);
       const v = versionOf(entry);
       steps(kind, old, stamped).forEach((d, i) => {
-        push(i, { kind, op: 'update', id, data: withClaim(d), expectVersion: v + i });
+        push(i, { kind, op: 'update', id, data: withClaim(d, entry.data || {}), expectVersion: v + i });
       });
     }
     for (const { id, data } of next[kind]) {

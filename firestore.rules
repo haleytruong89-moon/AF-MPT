@@ -1072,9 +1072,10 @@ service cloud.firestore {
     // ─────── v2: RAID (one doc per program, P2.2 Ruling K') ───────
     // raid/{programId} = { workspaceId, projectId, programId, items,
     //   viaProgramId?, viaWorkstreamId?, updatedBy, version }.
-    // Write: Owner, or PM/Deputy of viaProgramId, or Sub-PM of
-    // viaWorkstreamId (a ws doc in THIS project path whose program is in
-    // programMeta) = "any PM/Sub-PM of the project" without iterating a map.
+    // Write (Wave 2 R5, HOD Q1 12/11): Owner, or a claim ON THIS PROGRAM:
+    // PM/Deputy of programId (viaProgramId == programId), or Sub-PM of
+    // viaWorkstreamId whose ws doc (THIS project path) has programId == the
+    // doc's program. A role in another program no longer helps.
     // The claim is read from the NEW data, so each writer must set its own
     // claim (a stale claim left by someone else does not help).
     // Always: programId == doc id and a key in programMeta; programId never
@@ -1082,16 +1083,28 @@ service cloud.firestore {
     // Delete: Owner only.
     // get(): create/update = workspace, project, members/{me}, ws = 4;
     //        read = 3; delete = 1 (P2.4 projectIsV2: 2; others unchanged).
-    // Shared by RAID and decisions: Owner, or the claim in the NEW data
-    // (viaProgramId = a program I am PM/Deputy of, viaWorkstreamId = a ws
-    // in this project I lead).
-    function claimWriterOk(wid, pid, p, n) {
-      return isWsOwner(wid)
-        || (n.get('viaProgramId', null) is string
-          && n.viaProgramId in p.get('programMeta', {})
-          && isPMIn(p, n.viaProgramId)
-          && isActiveMember(wid))
-        || isLead(wid, pid, n.get('viaWorkstreamId', null));
+
+    // Wave 2 R5: the claim in n resolves to program prg: viaProgramId == prg
+    // and I am its PM/Deputy, or (no viaProgramId) viaWorkstreamId is a ws of
+    // prg in this project that I lead. Shared by RAID and decisions.
+    // get(): members/{me} + ws (the project p is passed in) = up to 2.
+    function claimInProgram(wid, pid, p, n, prg) {
+      return prg is string && (
+        (n.get('viaProgramId', null) == prg && isPMIn(p, prg) && isActiveMember(wid))
+        || (n.get('viaProgramId', null) == null
+          && isLead(wid, pid, n.get('viaWorkstreamId', null))
+          && v2WsData(wid, pid, n.viaWorkstreamId).programId == prg));
+    }
+
+    // Ruling W2-4: a decision's program = viaProgramId, else the program of
+    // the viaWorkstreamId ws doc; null when neither resolves (Owner only).
+    // get(): the ws doc when there is no viaProgramId = up to 1.
+    function decisionProgram(wid, pid, d) {
+      return d.get('viaProgramId', null) is string
+        ? d.viaProgramId
+        : (wsExists(wid, pid, d.get('viaWorkstreamId', null))
+          ? v2WsData(wid, pid, d.viaWorkstreamId).get('programId', null)
+          : null);
     }
 
     function raidWriterOk(wid, pid, prg) {
@@ -1099,7 +1112,7 @@ service cloud.firestore {
       let n = request.resource.data;
       return n.get('programId', null) == prg
         && prg in p.get('programMeta', {})
-        && claimWriterOk(wid, pid, p, n);
+        && (isWsOwner(wid) || claimInProgram(wid, pid, p, n, prg));
     }
 
     match /workspaces/{wid}/projects/{pid}/raid/{programId} {
@@ -1123,13 +1136,19 @@ service cloud.firestore {
     // ─────── v2: decisions (one doc per decision, P2.3 Ruling Q) ───────
     // decisions/{decisionId} = v1 decision object + { workspaceId, projectId,
     //   order, viaProgramId?, viaWorkstreamId?, updatedBy, version }.
-    // Write: same claims as RAID (claimWriterOk); no programId/doc-id rule.
-    // Path fields, stamping and version apply.
-    // Delete: Owner, or an active PM/Deputy of the STORED viaProgramId
-    // (no new data on delete); Sub-PMs set status instead.
-    // get(): create/update = workspace, project, members/{me}, ws = 4;
-    //        read = 3; delete = workspace, project, members/{me} = 3.
-    // P2.4 projectIsV2 reuses the project get: counts unchanged.
+    // Write (Wave 2 R5, Ruling W2-4): Owner, or a claim on the decision's
+    // program (claimInProgram). Create: the new claim must hold for the
+    // program it names (decisionProgram of the NEW data). Update: the new
+    // claim must be on the program of the STORED claim, so a decision never
+    // moves to another program and a role elsewhere never helps. A stored
+    // decision with no claim (Owner-created / migrated) is Owner-only.
+    // No programId/doc-id rule. Path fields, stamping and version apply.
+    // Delete: Owner only (Wave 2 R5; "re-claim then delete" closed).
+    // get(): create = workspace, project, members/{me}, ws = 4;
+    //        update = workspace, project, members/{me}, new ws, stored ws = 5
+    //        (4 when both name the same ws or the claims are viaProgramId);
+    //        read = 3; delete = 2.
+    // P2.4 projectIsV2 reuses the project get.
     match /workspaces/{wid}/projects/{pid}/decisions/{decisionId} {
       // get(): 3.
       allow read: if projectIsV2(wid, pid) && canReadProject(wid, pid);
@@ -1137,21 +1156,19 @@ service cloud.firestore {
       // get(): up to 4.
       allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe()
-        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+        && (isWsOwner(wid)
+          || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
+            decisionProgram(wid, pid, request.resource.data)));
 
-      // get(): up to 4.
+      // get(): up to 5.
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe()
-        && claimWriterOk(wid, pid, v2Project(wid, pid), request.resource.data);
+        && (isWsOwner(wid)
+          || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
+            decisionProgram(wid, pid, resource.data)));
 
-      // get(): up to 3.
-      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && (
-        isWsOwner(wid)
-        || (resource.data.get('viaProgramId', null) is string
-          && resource.data.viaProgramId in v2Project(wid, pid).get('programMeta', {})
-          && isPMIn(v2Project(wid, pid), resource.data.viaProgramId)
-          && isActiveMember(wid))
-      );
+      // Wave 2 R5: workspace Owner only. get(): 2.
+      allow delete: if isSmartOSC() && projectIsV2(wid, pid) && isWsOwner(wid);
     }
 
     // ─────── v2: approvals (P3 Task 4; Rulings P3-2, P3-4, P3-9, P3-20, P3-C3) ───────

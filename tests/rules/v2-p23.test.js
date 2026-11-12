@@ -173,11 +173,13 @@ describe('P2.3 rules completion', () => {
     await assertSucceeds(up(OWNER, `${P1}/decisions/d1`, { title: 'o', version: 4 }));
   });
 
-  it('P23-10 decision delete: Owner and PM of the stored claim allowed; Sub-PM, other PM, Assignee denied', async () => {
+  // Wave 2 R5: decision delete is Owner-only (PM of the stored claim no longer).
+  it('P23-10 decision delete: Owner only; PM of the stored claim, Sub-PM, other PM, Assignee denied', async () => {
     await assertFails(del(LEAD, `${P1}/decisions/d1`));
     await assertFails(del(PM2, `${P1}/decisions/d1`));
     await assertFails(del(ASG, `${P1}/decisions/d1`));
-    await assertSucceeds(del(PM, `${P1}/decisions/d1`));
+    await assertFails(del(PM, `${P1}/decisions/d1`));
+    await assertSucceeds(del(OWNER, `${P1}/decisions/d1`));
     await seedDoc(`${P1}/decisions/d2`, decision({ viaWorkstreamId: 'w1' }));
     await assertFails(del(PM, `${P1}/decisions/d2`));
     await assertSucceeds(del(OWNER, `${P1}/decisions/d2`));

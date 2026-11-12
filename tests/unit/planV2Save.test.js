@@ -209,14 +209,62 @@ describe('planV2Save', () => {
     expect(op.data.items[0].mitigations[0].comments).toEqual([{ id: 'c1', text: 'hi' }]);
   });
 
-  it('decision edit: PM anywhere -> viaProgramId, else first led ws', () => {
+  it('decision edit (W2 R5): claim on the stored claim program only', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.viaProgramId = 'pg1';
+    const tree = treeOf(loaded);
+    tree.decisions[0].title = 'Go now';
+    const pm = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM' })))[0];
+    expect(pm).toMatchObject({ kind: 'decisions', op: 'update', id: 'd1', expectVersion: 3 });
+    expect(pm.data.viaProgramId).toBe('pg1');
+    expect(pm.data).not.toHaveProperty('viaWorkstreamId');
+    const lead = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidLead' })))[0];
+    expect(lead.data.viaWorkstreamId).toBe('w3');
+    expect(lead.data).not.toHaveProperty('viaProgramId');
+    // PM / Deputy of another program: no claim (rules refuse; the UI hides the edit).
+    const other = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })))[0];
+    expect(other.data).not.toHaveProperty('viaProgramId');
+    expect(other.data).not.toHaveProperty('viaWorkstreamId');
+  });
+
+  it('decision edit (W2 R5): stored viaWorkstreamId resolves to the ws program', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.viaWorkstreamId = 'w3';
+    const tree = treeOf(loaded);
+    tree.decisions[0].title = 'Go now';
+    expect(allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM' })))[0].data.viaProgramId).toBe('pg1');
+    expect(allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })))[0].data).not.toHaveProperty('viaProgramId');
+  });
+
+  it('decision edit (W2 R5): no stored claim -> no claim for non-Owners', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
     tree.decisions[0].title = 'Go now';
-    const pm = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })))[0];
-    expect(pm).toMatchObject({ kind: 'decisions', op: 'update', id: 'd1', expectVersion: 3 });
+    for (const uid of ['uidPM', 'uidPM2', 'uidLead']) {
+      const op = allOps(planV2Save(loaded, tree, ctx({ uid })))[0];
+      expect(op.data).not.toHaveProperty('viaProgramId');
+      expect(op.data).not.toHaveProperty('viaWorkstreamId');
+    }
+  });
+
+  it('decision edit by the Owner keeps the stored claim (the decision stays in its program)', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.viaWorkstreamId = 'w3';
+    const tree = treeOf(loaded);
+    tree.decisions[0].title = 'Owner edit';
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op.data.viaWorkstreamId).toBe('w3');
+    expect(op.data).not.toHaveProperty('viaProgramId');
+  });
+
+  it('decision create: PM anywhere -> viaProgramId, else first led ws (as before)', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.decisions.unshift({ id: 'dN', title: 'New' });
+    const pm = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' }))).find((o) => o.id === 'dN');
+    expect(pm).toMatchObject({ kind: 'decisions', op: 'create' });
     expect(pm.data.viaProgramId).toBe('pg2');
-    const lead = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidLead' })))[0];
+    const lead = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidLead' }))).find((o) => o.id === 'dN');
     expect(lead.data.viaWorkstreamId).toBe('w3');
   });
 
@@ -448,15 +496,34 @@ describe('planV2Save', () => {
     expect(ops.map((o) => [o.id, o.data.order])).toEqual([['a1', 1], ['a2', 0]]);
   });
 
-  it('I3: a PM with no claim on the program falls back to any project claim for RAID', () => {
+  it('W2 R5 (replaces I3): no fallback to a claim on another program for RAID', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
     tree.programs[0].raid[0].title = 'Edited by PM of pg2';
     const op = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })))[0];
-    expect(op.data.viaProgramId).toBe('pg2');
+    expect(op.kind).toBe('raid');
+    expect(op.data).not.toHaveProperty('viaProgramId');
+    expect(op.data).not.toHaveProperty('viaWorkstreamId');
     tree.programs[1].raid = [{ id: 'rX', title: 'New' }];
     const lead = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidLead' }))).find((o) => o.id === 'pg2');
-    expect(lead.data.viaWorkstreamId).toBe('w3');
+    expect(lead.data).not.toHaveProperty('viaWorkstreamId');
+    expect(lead.data).not.toHaveProperty('viaProgramId');
+  });
+
+  it('W2 R5: PM of pg2 who leads a ws in pg1 picks the claim of each doc program', () => {
+    const loaded = makeLoaded();
+    loaded.docs.workstreams.get('w1').data.leadUid = 'uidPM2';
+    loaded.docs.decisions.get('d1').data.viaProgramId = 'pg1';
+    const tree = treeOf(loaded);
+    tree.programs[0].raid[0].title = 'pg1 edit';
+    tree.programs[1].raid = [{ id: 'rX', title: 'pg2 new' }];
+    tree.decisions[0].title = 'pg1 decision';
+    const ops = allOps(planV2Save(loaded, tree, ctx({ uid: 'uidPM2' })));
+    expect(ops.find((o) => o.kind === 'raid' && o.id === 'pg1').data).toMatchObject({ viaWorkstreamId: 'w1' });
+    expect(ops.find((o) => o.kind === 'raid' && o.id === 'pg2').data).toMatchObject({ viaProgramId: 'pg2' });
+    const d = ops.find((o) => o.kind === 'decisions');
+    expect(d.data.viaWorkstreamId).toBe('w1');
+    expect(d.data).not.toHaveProperty('viaProgramId');
   });
 
   it('I4: new mitigationActions comments get authorUid', () => {
