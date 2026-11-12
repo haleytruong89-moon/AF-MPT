@@ -5,7 +5,7 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
   FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2
+  Move, FileText, History, Grip, BarChart3, HelpCircle, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -16,7 +16,7 @@ import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
-import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
+import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
 import { planActivityAppend } from './activityLog';
@@ -29,8 +29,10 @@ import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutco
 import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
+import { taskUrl, parseDeepLink } from './deepLink';
 import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
+import { approvalBuckets } from './approvalsInbox.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -3259,7 +3261,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const me = useContext(MeContext);
   // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
@@ -3564,6 +3566,19 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {program.name} › {workstream.name}
         </div>
         <div style={{ display: 'flex', gap: 2 }}>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(taskUrl(window.location.origin, project.id, task.id));
+                showToast?.('Link copied');
+              } catch {
+                showToast?.("Couldn't copy the link");
+              }
+            }}
+            title="Copy link" aria-label="Copy link to this task"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'inline-flex', alignItems: 'center' }}>
+            <LinkIcon size={14} />
+          </button>
           <button onClick={() => setExpanded((v) => !v)} title={expanded ? 'Back to side panel' : 'Expand'} aria-label={expanded ? 'Back to side panel' : 'Expand task panel'}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, fontSize: 14, lineHeight: 1 }}>
             {expanded ? '⤡' : '⤢'}
@@ -8609,6 +8624,43 @@ function MyWorkBreadcrumb({ project, program, workstream }) {
   return <span style={{ fontSize: 11, color: TOK.muted }}>{parts.join(' › ')}</span>;
 }
 
+// U1: one close request in My Work ("needs" = I decide, "sent" = I asked).
+// The buttons are the task panel's CloseControl, writing through the same
+// onTaskUpdate -> applyTaskUpdate choke point as every other My Work edit.
+function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
+  const me = useContext(MeContext);
+  const { project, program, workstream, task, waitingDays, escalated } = item;
+  const cr = task.closeRequest || {};
+  const who = mode === 'needs'
+    ? `Requested by ${me.nameOf(cr.requestedByUid) || cr.requestedBy || '—'}`
+    : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
+  const waiting = waitingDays === 0 ? 'Sent today' : `Waiting ${waitingDays} working day${waitingDays === 1 ? '' : 's'}`;
+  return (
+    <div style={{ borderLeft: '3px solid ' + (escalated ? TOK.overdueFg : TOK.inprogFg), padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
+      <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+        <span role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+          onClick={() => onTaskClick(task.id, project.id)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(task.id, project.id); }}>
+          {task.name}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <MyWorkBreadcrumb project={project} program={program} workstream={workstream} />
+        <span>· {who}</span>
+        <span>· {cr.outcome === 'Dropped' ? 'Submitted as dropped' : 'Submitted as done'}</span>
+        {escalated ? (
+          <span style={{ color: TOK.overdueFg, background: TOK.overdueBg, fontWeight: 600, padding: '1px 7px', borderRadius: 999 }}>
+            {`Waiting ${waitingDays} working days — escalated`}
+          </span>
+        ) : <span>· {waiting}</span>}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <CloseControl task={task} roles={project.__v2.roles} onUpdate={(t) => onTaskUpdate(t, project.id)} dialogs={dialogs} />
+      </div>
+    </div>
+  );
+}
+
 function MyWorkDeadlineTypePill({ type }) {
   if (!type) return null;
   const hard = type === 'hard';
@@ -11250,7 +11302,7 @@ function MyWorkView({
   onTaskUpdate: onTaskUpdateProp, onActionUpdate: onActionUpdateProp, onDecisionUpdate, onProjectUpdate,
   onApproveDeadline, onRejectDeadline,
   onMarkSeen, showToast,
-  onNavigateRaid,
+  onNavigateRaid, dialogs = null,
 }) {
   // P3-16: the App passes null handlers while "View as" is on; a write attempt toasts.
   const readOnlyWrite = () => { if (showToast) showToast(READ_ONLY_MESSAGE); return 'read-only'; };
@@ -11260,6 +11312,10 @@ function MyWorkView({
   const lastSeenAt = userPrefs?.lastSeenMyWorkAt || null;
   const projectsLatest = useRef(projects);
   projectsLatest.current = projects;
+  // U1: close requests waiting on me / sent by me (v2 projects). Keyed on the
+  // signed-in uid, so hidden under View as. `now` is read per render.
+  const me = useContext(MeContext);
+  const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
@@ -11349,7 +11405,8 @@ function MyWorkView({
   };
   const hasAnyAssignment = (
     counts.owned + myWork.tasksContributing.length + counts.actions +
-    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length
+    myWork.decisions.length + myWork.allMentions.length + myWork.credit.perProject.length +
+    approvals.needsMine.length + approvals.sent.length
   ) > 0;
   const urgentEmpty = (
     myWork.needsAttention.length === 0 && myWork.unreadMentions.length === 0 &&
@@ -11458,6 +11515,23 @@ function MyWorkView({
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 20, background: TOK.bg, fontFamily: FONT_STACK }}>
       {Header}
+
+      {approvals.needsMine.length > 0 && (
+        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+          {approvals.needsMine.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
+      {approvals.sent.length > 0 && (
+        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+          {approvals.sent.map((it) => (
+            <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
+              onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+          ))}
+        </MyWorkSection>
+      )}
 
       {viewMode === 'project' ? (
         <ByProjectView
@@ -12753,14 +12827,21 @@ export default function App() {
       // the project and Actions tab if the user has access. Clear the params so a
       // refresh doesn't re-trigger.
       try {
-        const params = new URLSearchParams(window.location.search);
-        const dpProj = params.get('project');
-        const dpAct = params.get('action');
-        if (dpProj && dpAct && ps[dpProj]) {
-          setCurrentId(dpProj);
-          setView('actions');
-          setInitialActionEditId(dpAct);
-          // Opens the action's edit form via ActionItemsView's initialEditId prop.
+        const { project: dpProj, action: dpAct, task: dpTask } = parseDeepLink(window.location.search);
+        if (dpProj && (dpAct || dpTask)) {
+          if (ps[dpProj]) {
+            setCurrentId(dpProj);
+            rememberCurrentProject(dpProj);
+            if (dpTask) {
+              // Task panel renders beside any view; keep the current one.
+              setSelectedTaskId(dpTask);
+            } else {
+              setView('actions');
+              setInitialActionEditId(dpAct);
+              // Opens the action's edit form via ActionItemsView's initialEditId prop.
+            }
+          }
+          // Always clear, even when the project is inaccessible (nothing opens).
           window.history.replaceState({}, '', window.location.pathname);
         }
       } catch {
@@ -12947,6 +13028,9 @@ export default function App() {
   }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
+  // U1: the My Work tab count adds close requests waiting on me (not under View as:
+  // the approvals shown are keyed on the signed-in uid). `now` is read per render.
+  const myWorkTabCount = myWorkBadge + (impersonatingAs ? 0 : approvalBuckets(projects, authUser?.uid || null, new Date()).needsMine.length);
   // Role assignment: people a role picker of the current v2 project offers (memberUids
   // come from the shim cache; `project` changes after a role / member refresh).
   const rolePeople = useMemo(() => (project?.__v2
@@ -13174,8 +13258,39 @@ export default function App() {
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
       if (msg) showToastRef.current(msg);
     }
-    for (const ev of closeEventsFor(oldTask, res.task, meRef.current.nameOf)) {
+    const closeEvents = closeEventsFor(oldTask, res.task, meRef.current.nameOf);
+    for (const ev of closeEvents) {
       logActivityForProject(projectId, { ...ev, description: ev.description + tag });
+    }
+    // Google Chat card on a submit / reject (only when the project has a webhook). Fire-and-forget.
+    const webhook = projectsRef.current[projectId]?.googleChatWebhook;
+    if (webhook) {
+      const nameOf = meRef.current.nameOf;
+      const pname = projectsRef.current[projectId]?.name || 'project';
+      const url = taskUrl(window.location.origin, projectId, oldTask.id);
+      let card = null;
+      if (closeEvents.some((e) => e.type === 'close_submitted')) {
+        const cr = res.task.closeRequest || {};
+        card = buildCloseSubmittedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          requesterName: nameOf(cr.requestedByUid) || cr.requestedBy || 'Someone',
+          approverName: nameOf(cr.approverUid) || 'the approver',
+          outcome: cr.outcome, note: cr.note, taskUrl: url,
+        });
+      } else if (closeEvents.some((e) => e.type === 'close_rejected')) {
+        const h = (res.task.closeRequestHistory || [])[0] || {};
+        card = buildCloseRejectedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          deciderName: me.name || nameOf(me.uid) || 'Someone',
+          requesterName: nameOf(h.requestedByUid) || 'the requester',
+          reason: h.reason || '', taskUrl: url,
+        });
+      }
+      if (card) {
+        postToChat(webhook, card).then((r) => {
+          if (!r.ok) showToastRef.current(`Chat notify failed: ${r.status} ${r.statusText}`);
+        });
+      }
     }
   }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
   const runV2Close = useCallback((args) => {
@@ -14082,12 +14197,12 @@ export default function App() {
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkBadge > 0 && (
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
                     background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
                     lineHeight: '14px', minWidth: 16, textAlign: 'center',
-                  }}>{myWorkBadge}</span>
+                  }}>{myWorkTabCount}</span>
                 )}{v.id === 'raid' && raidPendingBadge > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
@@ -14222,6 +14337,7 @@ export default function App() {
                   onRejectDeadline={impersonatingAs ? null : myWorkRejectDeadline}
                   onMarkSeen={impersonatingAs ? null : markMyWorkSeen}
                   showToast={showToast}
+                  dialogs={dialogs}
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} />}
@@ -14296,7 +14412,7 @@ export default function App() {
             </ErrorBoundary>
           </div>
           {selectedTaskId && project && (
-            <TaskDetail project={project} taskId={selectedTaskId} author={author} teamMembers={teamMembers} dialogs={dialogs}
+            <TaskDetail project={project} taskId={selectedTaskId} showToast={showToast} author={author} teamMembers={teamMembers} dialogs={dialogs}
               onClose={() => setSelectedTaskId(null)}
               onUpdate={onTaskUpdate}
               onDelete={onTaskDelete}
