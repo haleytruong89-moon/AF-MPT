@@ -51,7 +51,7 @@ const isLeadOf = (roles, wsId, programId, uid) => {
  */
 export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
   if (isOwner || !isV2) {
-    return { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true };
+    return { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true, wsMove: true, taskMove: true };
   }
   const pm = isPmOf(roles, programId, uid);
   const lead = isLeadOf(roles, wsId, programId, uid);
@@ -63,7 +63,29 @@ export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
     wsDelete: pm,
     taskAdd: pm || lead,
     taskEdit: pm || lead,
+    wsMove: pm,
+    taskMove: pm || lead,
   };
+}
+
+/** Wave 2 O1 (Ruling W2-2): same rule as firestore.rules isOwnerIn - uid in ownerUids OR workspaceOwner email (case-insensitive). */
+export function isWorkspaceOwner(meta, uid, email) {
+  const m = meta || {};
+  if (uid && Array.isArray(m.ownerUids) && m.ownerUids.includes(uid)) return true;
+  const owner = typeof m.workspaceOwner === 'string' ? m.workspaceOwner.trim().toLowerCase() : '';
+  const me = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  return owner !== '' && me !== '' && owner.includes('@') && owner === me;
+}
+
+/**
+ * Wave 2 O2: may a drop be attempted? Owner / v1: yes. v2 non-Owner: never across
+ * programs (rules); a Sub-PM (not PM) only into a work stream they lead.
+ */
+export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId, targetWsId }) {
+  if (isOwner || !isV2) return true;
+  if (sourcePgId !== targetPgId) return false;
+  if (kind === 'ws') return isPmOf(roles, sourcePgId, uid);
+  return isPmOf(roles, sourcePgId, uid) || isLeadOf(roles, targetWsId, targetPgId, uid);
 }
 
 // PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).
