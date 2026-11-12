@@ -465,6 +465,19 @@ service cloud.firestore {
       );
     }
 
+    // Wave 2 R6: the project-membership half of canReadProject, on the project
+    // data the caller already read (no extra get(); the active-member check is
+    // done by the caller with activeMemberDoc). Used by the Assignee, contributor
+    // and action-PIC branches so a person removed from the project (not in
+    // memberUids, restricted) can no longer write there. Department visibility
+    // keeps every active member in.
+    function projectMemberIn(p) {
+      return p.get('visibility', 'restricted') == 'department'
+        || (p.get('memberUids', null) is list
+          ? request.auth.uid in p.memberUids
+          : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds));
+    }
+
     // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
     // project doc has schemaVersion 2. After a rollback (schemaVersion back to
     // 1/absent) every client read, create, update and delete on workstreams,
@@ -851,7 +864,8 @@ service cloud.firestore {
         && appendOnly(ch, 'checkIns')
         && rv != 'edit'
         && (!cl || closeTransitionOk(wid, pid, ch, s0, s1, {'mgr': false, 'pm': false, 'm': {}}))
-        && activeMemberDoc(wid);
+        && activeMemberDoc(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     // Contributor (P2.2): uid in contributorUids and not the PIC (the PIC
@@ -863,14 +877,15 @@ service cloud.firestore {
       return ['updates', 'blockerResolutions', 'updatedAt', 'updatedBy', 'version'];
     }
 
-    function taskContributorUpdate(wid, ch, rv) {
+    function taskContributorUpdate(wid, pid, ch, rv) {
       return resource.data.get('contributorUids', null) is list
         && request.auth.uid in resource.data.contributorUids
         && resource.data.get('picUid', null) != request.auth.uid
         && ch.hasOnly(contributorKeys())
         && appendOnly(ch, 'updates')
         && rv != 'edit'
-        && activeMemberDoc(wid);
+        && activeMemberDoc(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     // Active member without re-running isSmartOSC (the allow rule did).
@@ -951,7 +966,7 @@ service cloud.firestore {
         && closeStampOk(ch, s1) && (
         inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
-        || taskContributorUpdate(wid, ch, rv)
+        || taskContributorUpdate(wid, pid, ch, rv)
         || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
         || isWsOwner(wid)
       );
@@ -1030,20 +1045,21 @@ service cloud.firestore {
       return ['status', 'completedAt', 'subtasks', 'updates', 'updatedAt', 'updatedBy', 'version'];
     }
 
-    function actionPicUpdate(wid, ch) {
+    function actionPicUpdate(wid, pid, ch) {
       return resource.data.get('picUid', null) == request.auth.uid
         && ch.hasOnly(actionPicKeys())
         && resource.data.get('status', 'Pending') != 'Cancelled'
         && request.resource.data.get('status', 'Pending') != 'Cancelled'
         && appendOnly(ch, 'updates')
-        && isActiveMember(wid);
+        && isActiveMember(wid)
+        && projectMemberIn(v2Project(wid, pid));
     }
 
     function actionUpdateOk(wid, pid) {
       let ch = changedKeys();
       return newEntryOk(ch, 'updates') && (
         isWsOwner(wid)
-        || actionPicUpdate(wid, ch)
+        || actionPicUpdate(wid, pid, ch)
         || (actionManager(wid, pid, resource.data)
           && (!ch.hasAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
       );
