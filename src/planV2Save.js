@@ -20,6 +20,9 @@
 //     'close-history-wipe' (wipesCloseHistory: approval history / close stamps removed) or
 //     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
 //     value changed or was set on a new doc, so its uid cannot be resolved).
+//     'unknown-person' (Wave 2 W3: a changed / newly set pic or contributor name is not in
+//     the directory index; refusedName = that name; never saved as no one. Names left
+//     unchanged keep their stored uids and are not checked).
 //     A refused plan has no batches and no metaPatch.
 //
 // Ruling R: every new entry of task updates / checkIns, action updates, RAID
@@ -45,6 +48,8 @@
 // ...chunks of step 2, ...]; a work stream's ops stay in one chunk per step.
 import { splitProject, assembleProject } from './migrateV2.js';
 import { unfoldResolutions, newResolutionKeys } from './blockerResolutions.js';
+import { canonicalPerson } from './directory.js';
+import { foldName } from './identity.js';
 import { chunkOpsByWorkstream, wsTouched } from './saveChunks.js';
 
 export const DELETE_FIELD = Symbol('planV2Save.deleteField');
@@ -227,6 +232,18 @@ export function keepOrder(stored, next) {
 }
 
 const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
+// W3: the first name in `value` (string or list) that is not already in `before`, is not
+// a contributor group and is unknown to the directory; null when all resolve.
+function unknownName(dirIndex, groups, value, before) {
+  const prev = new Set((Array.isArray(before) ? before : [before]).filter((x) => !blank(x)).map((x) => foldName(String(x))));
+  for (const x of Array.isArray(value) ? value : [value]) {
+    if (blank(x)) continue;
+    const s = String(x);
+    if (prev.has(foldName(s)) || groups.has(foldName(s))) continue;
+    if (!canonicalPerson(dirIndex, s).known) return s;
+  }
+  return null;
+}
 const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 // Keep stored v2 fields the v1 tree cannot express (roles, stored resolutions).
@@ -364,7 +381,16 @@ function normalizeLoaded(loaded) {
 
 export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false, dirIndex = null, uidByEmail = new Map() } = {}) {
   const loaded = normalizeLoaded(rawLoaded);
-  const none = (refused) => ({ batches: [], metaPatch: null, refused });
+  const none = (refused, refusedName) => ({ batches: [], metaPatch: null, refused, ...(refusedName ? { refusedName } : {}) });
+  const groups = new Set((nextTree.contributorRegistry || []).map((g) => foldName(typeof g === 'string' ? g : g?.name || '')).filter(Boolean));
+  // Only checked with a directory: without one, 'directory-unavailable' applies.
+  const unknownIn = (kind, old, data) => {
+    if (!dirIndex) return null;
+    const pic = deepEqual(old.pic, data.pic) ? null : unknownName(dirIndex, groups, data.pic, old.pic);
+    if (pic) return pic;
+    if (kind !== 'tasks' || deepEqual(old.contributors, data.contributors)) return null;
+    return unknownName(dirIndex, groups, data.contributors, old.contributors);
+  };
   const next = splitProject({ ...nextTree, id: pid ?? nextTree.id }, { wid, dirIndex, uidByEmail });
   const docs = loaded.docs || {};
   for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
@@ -428,6 +454,10 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
           || (kind === 'tasks' && !deepEqual(old.contributors, data.contributors) && hasPerson(data.contributors)))) {
         return none('directory-unavailable');
       }
+      if (kind === 'tasks' || kind === 'actions') {
+        const who = unknownIn(kind, old, data);
+        if (who) return none('unknown-person', who);
+      }
       if ((kind === 'tasks' || kind === 'actions') && Array.isArray(old.updates) && old.updates.length
         && !(Array.isArray(data.updates) && data.updates.length)) {
         return none('history-wipe');
@@ -450,6 +480,10 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       }
       if (!dirIndex && (kind === 'tasks' || kind === 'actions') && (hasPerson(data.pic) || hasPerson(data.contributors))) {
         return none('directory-unavailable');
+      }
+      if (kind === 'tasks' || kind === 'actions') {
+        const who = unknownIn(kind, {}, data);
+        if (who) return none('unknown-person', who);
       }
       // Created docs are not stamped (copied history keeps its original authors),
       // except a non-Owner task create (Wave 2 R1 / W4): rules allow at most one

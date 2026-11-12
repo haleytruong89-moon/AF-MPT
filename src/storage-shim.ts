@@ -241,6 +241,8 @@ export function v2SavedTree(pid: string): Record<string, unknown> | null {
 // the planner refuse with 'directory-unavailable' -> reported as 'error', Ruling AH).
 type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string>; nameByUid: Map<string, string> };
 let dirPromise: Promise<PlanDirectory> | null = null;
+// W3: the People directory changed (DirectoryModal) or a save met an unknown name: reload on next use.
+export function invalidatePlanDirectory(): void { dirPromise = null; }
 function directoryForPlan(): Promise<PlanDirectory> {
   if (!dirPromise) {
     dirPromise = Promise.all([
@@ -272,7 +274,7 @@ function directoryForPlan(): Promise<PlanDirectory> {
 
 // planV2Save / applyWritten are plain JS; their inferred parameter types come from
 // defaults (e.g. dirIndex = null), so give the shim the real signatures.
-type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Record<string, unknown> | null; refused: string | null };
+type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Record<string, unknown> | null; refused: string | null; refusedName?: string };
 const planV2 = planV2Save as unknown as (loaded: V2Loaded, tree: Record<string, unknown>, opts: Record<string, unknown>) => V2Plan;
 const applyV2Written = applyWritten as unknown as (loaded: V2Loaded, written: unknown[], metaPatch: Record<string, unknown> | null) => void;
 
@@ -284,14 +286,20 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   const { [FORCE_WRITE_FLAG]: _force, ...tree } = parsed;
   void _force;
   const [isOwner, dir] = await Promise.all([isOwnerNow(user), directoryForPlan()]);
-  const plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  let plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  if (plan.refused === 'unknown-person') {
+    // W3: the cache may be stale (someone just added the person): reload it and plan once more.
+    invalidatePlanDirectory();
+    plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...(await directoryForPlan()) });
+  }
   if (plan.refused) {
     console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
     // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
     // P3.1 I2: a close-history wipe has its own banner copy ('history').
     const error = plan.refused === 'directory-unavailable' ? 'error'
       : plan.refused === 'close-history-wipe' ? 'history' : 'refused';
-    return { key, value, shared: true, error, reason: plan.refused };
+    const person = plan.refused === 'unknown-person' ? plan.refusedName : undefined;
+    return { key, value, shared: true, error: plan.refused === 'unknown-person' ? 'unknown-person' : error, reason: plan.refused, ...(person ? { person } : {}) };
   }
   if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };
   const r = await executeV2Save(

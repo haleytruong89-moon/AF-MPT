@@ -68,9 +68,12 @@ export function failedRestores(results) {
 // P2.3: 'denied' (rules refused part of a v2 save) and 'refused' (the planner refused
 // a task delete / history wipe) are per attempt: nextSaveState lets a later 'ok' clear them.
 // P3.1 I2: 'history' = the planner refused a close-history wipe (own banner copy).
+export const UNKNOWN_PERSON = 'unknown-person:';
 export function bannerGroups(saveState) {
-  const out = { conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [] };
+  const out = { conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [], 'unknown-person': [] };
   for (const v of Object.values(saveState || {})) {
+    // W3: 'unknown-person:<name>' carries the name the planner could not resolve.
+    if (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON)) { out['unknown-person'].push(v.status.slice(UNKNOWN_PERSON.length)); continue; }
     (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }
   return out;

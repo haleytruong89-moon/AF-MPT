@@ -630,6 +630,35 @@ describe('planV2Save', () => {
     expect(op.data.picUid).toBe('uid2');
   });
 
+  it('W3: a changed pic / contributor / new action pic the directory cannot resolve is refused with its name', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].pic = 'Zed Nobody';
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    const tree2 = treeOf(loaded);
+    ws1(tree2).tasks[0].contributors = ['Carol Tran', 'Zed Nobody'];
+    expect(planV2Save(loaded, tree2, ctx())).toMatchObject({ batches: [], refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    const tree3 = treeOf(loaded);
+    tree3.actionItems.unshift({ id: 'aNew', title: 'New', pic: 'Zed Nobody' });
+    expect(planV2Save(loaded, tree3, ctx())).toMatchObject({ batches: [], refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    // A known name (even without a uid yet) is fine.
+    const tree4 = treeOf(loaded);
+    ws1(tree4).tasks[0].contributors = ['Carol Tran'];
+    expect(planV2Save(loaded, tree4, ctx()).refused).toBeNull();
+  });
+
+  it('W3: an unchanged legacy unresolved name keeps its stored uids and is not refused', () => {
+    const loaded = makeLoaded();
+    const t = loaded.docs.tasks.get('t2');
+    t.data.pic = 'Legacy Ghost';
+    t.data.picUid = 'uidGhost';
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].name = 'renamed';
+    const r = planV2Save(loaded, tree, ctx());
+    expect(r.refused).toBeNull();
+    expect(allOps(r)[0].data.picUid).toBe('uidGhost');
+  });
+
   it('does not mutate its inputs', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
