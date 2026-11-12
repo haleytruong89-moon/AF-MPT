@@ -194,6 +194,19 @@ describe('canEditRaid / canEditDecision / canDeleteRaidOrDecision', () => {
     expect(dec('X', 'dNew')).toBe(false);
     expect(canEditDecision({ isOwner: false, isV2: true, roles: { ...roles }, uid: 'P', decision: { id: 'd1' } })).toBe(true);
   });
+  it('create gate: an empty decision ({}) = "holds any PM / Deputy / Sub-PM role"', () => {
+    const create = (uid, over = {}) => canEditDecision({ isOwner: false, isV2: true, roles: rd, uid, decision: {}, ...over });
+    expect(create('P')).toBe(true);
+    expect(create('D')).toBe(true);
+    expect(create('P2')).toBe(true);
+    expect(create('L2')).toBe(true);
+    expect(create('A')).toBe(false); // Assignee only
+    expect(create('V')).toBe(false); // no role
+    expect(create('X')).toBe(false); // lead of a ws whose program is not in programMeta
+    expect(create(null)).toBe(false);
+    expect(create('V', { isOwner: true })).toBe(true);
+    expect(create('V', { isV2: false })).toBe(true);
+  });
   it('delete: Owner only on v2; v1 unchanged', () => {
     expect(canDeleteRaidOrDecision({ isOwner: true, isV2: true })).toBe(true);
     expect(canDeleteRaidOrDecision({ isOwner: false, isV2: true })).toBe(false);

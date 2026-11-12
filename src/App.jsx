@@ -3979,7 +3979,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {/* Decisions tab — linked to this milestone */}
           {panelTab === 'decisions' && (
             <>
-              {!showDecisionForm && (
+              {/* Wave 2 R5: v2 create needs a PM / Deputy / Sub-PM role somewhere (empty decision = "new"). */}
+              {!showDecisionForm && canEditDecision({ isOwner, isV2, roles: v2Roles, uid: me.uid, decision: {} }) && (
                 <Btn size="sm" variant="primary" onClick={() => { setEditingDecision(null); setShowDecisionForm(true); }}>
                   <Plus size={11} /> Add decision
                 </Btn>
@@ -4527,6 +4528,8 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
   const roles = project.__v2?.roles || null;
   const canEdit = (d) => canEditDecision({ isOwner, isV2, roles, uid, decision: d });
   const canDelete = canDeleteRaidOrDecision({ isOwner, isV2 });
+  // An empty decision is "not saved yet": any PM / Deputy / Sub-PM role (rules create).
+  const canCreate = canEdit({});
   const [editing, setEditing] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all'); // all | Open | InProgress | Done
   const [filterTaskId, setFilterTaskId] = useState('all'); // all | <taskId>
@@ -4591,7 +4594,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
               {decisions.length} total · {filtered.length} matching filters
             </div>
           </div>
-          <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New decision</Btn>
+          {canCreate && <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New decision</Btn>}
         </div>
 
         {/* Filters */}
@@ -4626,7 +4629,9 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
         {filtered.length === 0 && !showForm && (
           <div style={{ padding: 40, textAlign: 'center', color: TOK.subtle, fontSize: 13, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10 }}>
             {decisions.length === 0 ? (
-              <>No decisions logged yet. <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Log your first decision</button></>
+              canCreate
+                ? <>No decisions logged yet. <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Log your first decision</button></>
+                : 'No decisions logged yet.'
             ) : (
               'No decisions match the current filters.'
             )}
