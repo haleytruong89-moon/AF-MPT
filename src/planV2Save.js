@@ -259,6 +259,21 @@ export function wipesCloseHistory(old, data) {
 const listOf = (m) => [...(m || new Map()).entries()].map(([id, e]) => ({ id, data: e.data }));
 const versionOf = (e) => (typeof e.version === 'number' ? e.version : e.data?.version);
 
+/**
+ * PR-A final fix: the program a decision belongs to by its related tasks: the
+ * programs of relatedTaskIds that are keys of programMeta; when they span several
+ * programs, the first in program order (programMeta[k].order; ties keep the
+ * relatedTaskIds order). null when none resolves.
+ */
+export function programOfRelatedTasks(relatedTaskIds, taskProgramOf, programMeta) {
+  const pm = programMeta || {};
+  const progs = (Array.isArray(relatedTaskIds) ? relatedTaskIds : [])
+    .map((t) => taskProgramOf(t))
+    .filter((p) => typeof p === 'string' && hasOwn(pm, p));
+  if (!progs.length) return null;
+  return [...progs].sort((a, b) => (pm[a]?.order ?? 0) - (pm[b]?.order ?? 0))[0];
+}
+
 function roleClaims(loaded, uid) {
   const pm = loaded.meta.programMeta || {};
   const progOrder = (k) => pm[k]?.order ?? 0;
@@ -277,13 +292,14 @@ function roleClaims(loaded, uid) {
       const w = led.find((x) => x.data.programId === programId);
       return w ? { viaWorkstreamId: w.id } : {};
     },
+    // Ruling W2-4: the program of a stored decision's claim (null = none).
+    programOf(stored) {
+      return typeof stored?.viaProgramId === 'string' ? stored.viaProgramId : wsProgram(stored?.viaWorkstreamId);
+    },
     // stored = the stored decision doc (update): claim on the program of its
     // stored claim (Ruling W2-4), none when it has none. New decision: as before.
     decision(stored) {
-      if (stored) {
-        const prg = typeof stored.viaProgramId === 'string' ? stored.viaProgramId : wsProgram(stored.viaWorkstreamId);
-        return this.raid(prg);
-      }
+      if (stored) return this.raid(this.programOf(stored));
       const p = programs.find(isPM);
       if (p) return { viaProgramId: p };
       return led.length ? { viaWorkstreamId: led[0].id } : {};
@@ -349,6 +365,10 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const docs = loaded.docs || {};
   for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
   const claims = roleClaims(loaded, uid);
+  // task id -> programId (this save's tree first, then the stored docs).
+  const taskProgram = new Map();
+  for (const [id, e] of docs.tasks || new Map()) taskProgram.set(id, e.data?.programId ?? null);
+  for (const { id, data } of next.tasks || []) taskProgram.set(id, data?.programId ?? null);
 
   // Docs the read path could not attach are not in the tree: never delete them.
   const { orphans } = assembleProject(
@@ -370,10 +390,16 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       if (isOwner) {
         // Wave 2 R5: an Owner edit keeps a decision's stored claim, so the
         // decision stays in its program (the claim is its program, W2-4).
-        if (kind !== 'decisions' || !storedData) return data;
+        if (kind !== 'decisions') return data;
         const keep = {};
-        for (const k of ['viaProgramId', 'viaWorkstreamId']) if (typeof storedData[k] === 'string') keep[k] = storedData[k];
-        return { ...data, ...keep };
+        for (const k of ['viaProgramId', 'viaWorkstreamId']) if (typeof storedData?.[k] === 'string') keep[k] = storedData[k];
+        if (storedData && claims.programOf(storedData) != null) return { ...data, ...keep };
+        // PR-A final fix: an Owner create / edit of a decision whose stored claim
+        // resolves to no program files it under the program of its related tasks
+        // (first in program order), so PM / Sub-PM of that program can edit it.
+        // No related task in programMeta -> stays as is (Owner-only, W2-9).
+        const prg = programOfRelatedTasks(data.relatedTaskIds, (t) => taskProgram.get(t), loaded.meta.programMeta);
+        return prg ? { ...data, viaProgramId: prg } : { ...data, ...keep };
       }
       const c = kind === 'raid' ? claims.raid(data.programId) : claims.decision(storedData);
       return { ...data, ...c };

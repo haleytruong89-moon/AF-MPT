@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fixture from '../fixtures/v1-project.json';
 import { splitProject, assembleProject } from '../../src/migrateV2.js';
 import { buildDirectoryIndex } from '../../src/directory.js';
-import { planV2Save, DELETE_FIELD, programMetaPatch } from '../../src/planV2Save.js';
+import { planV2Save, DELETE_FIELD, programMetaPatch, programOfRelatedTasks } from '../../src/planV2Save.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const dirIndex = buildDirectoryIndex([
@@ -255,6 +255,82 @@ describe('planV2Save', () => {
     const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
     expect(op.data.viaWorkstreamId).toBe('w3');
     expect(op.data).not.toHaveProperty('viaProgramId');
+  });
+
+  // PR-A final fix: Owner-filed decisions get the program of their related tasks.
+  it('Owner creates a decision related to a task in pg1 -> viaProgramId pg1', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.decisions.unshift({ id: 'dN', title: 'New', relatedTaskIds: ['t2'] });
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true }))).find((o) => o.id === 'dN');
+    expect(op).toMatchObject({ kind: 'decisions', op: 'create' });
+    expect(op.data.viaProgramId).toBe('pg1');
+    expect(op.data).not.toHaveProperty('viaWorkstreamId');
+  });
+
+  it('Owner creates a decision with no (or unknown) related tasks -> no claim', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.decisions.unshift({ id: 'dA', title: 'A' }, { id: 'dB', title: 'B', relatedTaskIds: ['nope'] });
+    const ops = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })));
+    for (const id of ['dA', 'dB']) {
+      const op = ops.find((o) => o.id === id);
+      expect(op.data).not.toHaveProperty('viaProgramId');
+      expect(op.data).not.toHaveProperty('viaWorkstreamId');
+    }
+  });
+
+  it('Owner edits a migrated claimless decision with a related task -> gains the claim; no edit -> no write', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.relatedTaskIds = ['t2'];
+    const tree = treeOf(loaded);
+    expect(allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))).toEqual([]);
+    tree.decisions[0].title = 'Owner edit';
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op).toMatchObject({ kind: 'decisions', op: 'update', id: 'd1' });
+    expect(op.data.viaProgramId).toBe('pg1');
+  });
+
+  it('Owner edit never overwrites a stored claim that resolves to a program', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.viaProgramId = 'pg2';
+    loaded.docs.decisions.get('d1').data.relatedTaskIds = ['t2']; // t2 is in pg1
+    const tree = treeOf(loaded);
+    tree.decisions[0].title = 'Owner edit';
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op.data.viaProgramId).toBe('pg2');
+  });
+
+  it('Owner edit of a decision whose stored ws claim no longer resolves -> related task program', () => {
+    const loaded = makeLoaded();
+    loaded.docs.decisions.get('d1').data.viaWorkstreamId = 'wGone';
+    loaded.docs.decisions.get('d1').data.relatedTaskIds = ['t2'];
+    const tree = treeOf(loaded);
+    tree.decisions[0].title = 'Owner edit';
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
+    expect(op.data.viaProgramId).toBe('pg1');
+    expect(op.data).not.toHaveProperty('viaWorkstreamId');
+  });
+
+  it('Owner: related tasks in two programs -> the first in program order; a task created in this save counts', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    tree.programs[1].workstreams.push({ id: 'wN', name: 'N', tasks: [{ id: 'tN', name: 'N', status: 'Planned', updates: [], checkIns: [] }] });
+    tree.decisions.unshift({ id: 'dX', title: 'X', relatedTaskIds: ['tN'] }, { id: 'dY', title: 'Y', relatedTaskIds: ['tN', 't2'] });
+    const ops = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })));
+    expect(ops.find((o) => o.id === 'dX').data.viaProgramId).toBe('pg2');
+    expect(ops.find((o) => o.id === 'dY').data.viaProgramId).toBe('pg1');
+  });
+
+  it('programOfRelatedTasks: programMeta keys only, program order, ties keep list order', () => {
+    const pm = { a: { order: 2 }, b: { order: 1 }, c: { order: 1 } };
+    const of = { t1: 'a', t2: 'b', t3: 'c', t4: 'zz', t5: null };
+    const f = (ids) => programOfRelatedTasks(ids, (t) => of[t], pm);
+    expect(f(['t1', 't2'])).toBe('b');
+    expect(f(['t3', 't2'])).toBe('c');
+    expect(f(['t4', 't5', 'tx'])).toBeNull();
+    expect(f(undefined)).toBeNull();
+    expect(programOfRelatedTasks(['t1'], (t) => of[t], undefined)).toBeNull();
   });
 
   it('decision create: PM anywhere -> viaProgramId, else first led ws (as before)', () => {
