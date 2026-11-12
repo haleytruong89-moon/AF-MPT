@@ -1356,9 +1356,26 @@ service cloud.firestore {
     }
 
     // ─────── v2: activity (one event per doc, append-only) ───────
+    function activityShapeOk(d) {
+      return d.keys().hasOnly(['id', 'type', 'description', 'before', 'after',
+          'programId', 'workstreamId', 'projectId', 'workspaceId', 'authorUid', 'createdAt'])
+        && (!('description' in d) || (d.description is string && d.description.size() <= 2000));
+    }
+
+    // get(): 0 extra. isWsOwner and isPM reuse the workspace, members/{me} and
+    // project documents canReadProject already fetched on this path.
+    function activityRoleChangeOk(wid, pid, d) {
+      return d.get('type', null) != 'role_changed'
+        || isWsOwner(wid) || isPM(wid, pid, d.get('programId', null));
+    }
+
     // Any reader may append an event authored by themselves, stamped with
     // the server time (P2.3: createdAt == request.time, i.e. serverTimestamp()).
     // projectId/workspaceId are optional on events but must match when set.
+    // W2 A2 (R3): only allow-listed keys (src/activityDoc.js ACTIVITY_KEYS; no author /
+    // authorName / timestamp: the name comes from the directory by authorUid), description
+    // <= 2000 chars, and a role_changed event only from an Owner or the PM / Deputy of the
+    // event's programId.
     // get(): workspace, members/{me}, project = 3.
     match /workspaces/{wid}/projects/{pid}/activity/{eid} {
       // get(): 3 (P2.4 projectIsV2 shares the project get).
@@ -1369,7 +1386,9 @@ service cloud.firestore {
         && request.resource.data.get('authorUid', null) == request.auth.uid
         && request.resource.data.get('createdAt', null) == request.time
         && request.resource.data.get('projectId', pid) == pid
-        && request.resource.data.get('workspaceId', wid) == wid;
+        && request.resource.data.get('workspaceId', wid) == wid
+        && activityShapeOk(request.resource.data)
+        && activityRoleChangeOk(wid, pid, request.resource.data);
 
       allow update, delete: if false;
     }

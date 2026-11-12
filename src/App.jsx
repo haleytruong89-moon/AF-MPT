@@ -13236,13 +13236,15 @@ export default function App() {
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
   // across projects, not just currentId). Refresh in-memory feed only if it's
   // the project currently in view. P3-19: `before` / `after` are kept on the entry.
-  const logActivityForProject = useCallback(async (projectId, { type, description, before, after }) => {
+  const logActivityForProject = useCallback(async (projectId, { type, description, before, after, programId, workstreamId }) => {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!projectId || !author) return;
     const entry = {
       id: uid('act'), timestamp: new Date().toISOString(), author, type, description,
       ...(before !== undefined ? { before } : {}),
       ...(after !== undefined ? { after } : {}),
+      ...(programId !== undefined ? { programId } : {}),
+      ...(workstreamId !== undefined ? { workstreamId } : {}),
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
     const log = await appendActivity(projectId, entry, { v2 });
