@@ -35,7 +35,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode } from './roleUi.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -3268,7 +3268,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast, onActivity }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const me = useContext(MeContext);
   // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
@@ -3573,7 +3573,16 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     }
   };
   const editAction = (a) => { setEditingAction(a); setShowActionForm(true); };
+  const actionMode = (a) => actionDeleteMode({ isOwner, isV2, roles: v2Roles, uid: me.uid, action: a });
   const removeAction = async (a) => {
+    if (actionMode(a) === 'cancel') {
+      // W4: v2 non-Owners never hard-delete (rules deny it); cancel keeps the record.
+      const okCancel = await dialogs.confirm({ title: 'Cancel action?', message: `Cancel "${a.title}"?`, danger: true, okLabel: 'Cancel action' });
+      if (!okCancel) return;
+      onProjectUpdate({ ...project, actionItems: (project.actionItems || []).map((x) => x.id === a.id ? { ...x, status: 'Cancelled' } : x) });
+      if (onActivity) onActivity({ type: 'action_status_change', description: `Action "${a.title}": ${a.status || 'Pending'} → Cancelled` });
+      return;
+    }
     const ok = await dialogs.confirm({ title: 'Delete action?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, actionItems: (project.actionItems || []).filter((x) => x.id !== a.id) });
@@ -4046,7 +4055,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 )}
                 {linkedActions.map((a) => (
                   <ActionRowCompact key={a.id} action={a} teamMembers={teamMembers}
-                    onEdit={editAction} onDelete={removeAction} />
+                    deleteMode={actionMode(a)} onEdit={editAction} onDelete={removeAction} />
                 ))}
               </div>
             </>
@@ -4416,7 +4425,7 @@ function DecisionRowCompact({ decision, onEdit, onDelete, teamMembers }) {
 }
 
 // Compact action row used inside the milestone panel
-function ActionRowCompact({ action, onEdit, onDelete, teamMembers }) {
+function ActionRowCompact({ action, onEdit, onDelete, teamMembers, deleteMode = 'delete' }) {
   const sc = actionStatusColor(action.status);
   const pc = priorityColor(action.priority);
   const overdue = action.dueDate && action.status !== 'Done' && action.status !== 'Cancelled' && parseDate(action.dueDate) < today();
@@ -4448,9 +4457,11 @@ function ActionRowCompact({ action, onEdit, onDelete, teamMembers }) {
         <button onClick={() => onEdit(action)} title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
           <Edit2 size={11} />
         </button>
-        <button onClick={() => onDelete(action)} title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
-          <Trash2 size={11} />
-        </button>
+        {deleteMode !== 'none' && (
+          <button onClick={() => onDelete(action)} title={deleteMode === 'cancel' ? 'Cancel action' : 'Delete'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
+            {deleteMode === 'cancel' ? <X size={11} /> : <Trash2 size={11} />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -5001,7 +5012,7 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
   );
 }
 
-function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, showCheckbox = false, teamMembers }) {
+function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, showCheckbox = false, teamMembers, deleteMode = 'delete' }) {
   const sc = actionStatusColor(action.status);
   const pc = priorityColor(action.priority);
   const related = action.relatedTaskId ? findTaskInProject(project, action.relatedTaskId) : null;
@@ -5036,7 +5047,11 @@ function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, 
         color: sc.fg, background: sc.bg, whiteSpace: 'nowrap',
       }}>{action.status}</span>
       <Btn size="sm" variant="ghost" onClick={() => onEdit(action)} title="Edit"><Edit2 size={11} /></Btn>
-      <Btn size="sm" variant="ghost" onClick={() => onDelete(action)} title="Delete"><Trash2 size={11} /></Btn>
+      {deleteMode !== 'none' && (
+        <Btn size="sm" variant="ghost" onClick={() => onDelete(action)} title={deleteMode === 'cancel' ? 'Cancel action' : 'Delete'}>
+          {deleteMode === 'cancel' ? <X size={11} /> : <Trash2 size={11} />}
+        </Btn>
+      )}
     </div>
   );
 }
@@ -5221,7 +5236,21 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     }
   };
 
+  const actionMode = (a) => actionDeleteMode({ isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2 ? project.__v2.roles || null : null, uid: me.uid, action: a });
   const removeAction = async (a) => {
+    if (actionMode(a) === 'cancel') {
+      // W4: v2 non-Owners never hard-delete (rules deny it); cancel keeps the record.
+      const okCancel = await dialogs.confirm({ title: 'Cancel action?', message: `Cancel "${a.title}"?`, danger: true, okLabel: 'Cancel action' });
+      if (!okCancel) return;
+      const cancelled = { ...a, status: 'Cancelled' };
+      if (editing && editing.id === a.id) setEditing(cancelled);
+      if (onApplyAction) onApplyAction(cancelled, project.id, 'Actions tab'); // logs action_status_change
+      else {
+        onProjectUpdate({ ...project, actionItems: actions.map((x) => x.id === a.id ? cancelled : x) });
+        onActivity({ type: 'action_status_change', description: `Action "${a.title}": ${a.status || 'Pending'} → Cancelled` });
+      }
+      return;
+    }
     const ok = await dialogs.confirm({ title: 'Delete action item?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, actionItems: actions.filter((x) => x.id !== a.id) });
@@ -5458,7 +5487,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
                     <Btn size="sm" variant="ghost" onClick={() => emailPic(pic, items)} disabled={!hasEmail} title={hasEmail ? `Email ${pic}` : 'No email on file'}>📧 Email</Btn>
                   </div>
                   {items.map((a) => (
-                    <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers}
+                    <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers} deleteMode={actionMode(a)}
                       onEdit={startEdit} onDelete={removeAction} />
                   ))}
                 </div>
@@ -5470,7 +5499,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         {filtered.length > 0 && mode === 'flat' && (
           <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, overflow: 'hidden' }}>
             {filtered.map((a) => (
-              <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers}
+              <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers} deleteMode={actionMode(a)}
                 onEdit={startEdit} onDelete={removeAction}
                 onSelect={toggleSelect} selected={selected.has(a.id)} showCheckbox />
             ))}
@@ -14565,6 +14594,7 @@ export default function App() {
               onDelete={onTaskDelete}
               onProjectUpdate={updateProject}
               isOwner={isOwner}
+              onActivity={logActivity}
               onNavigateRaid={(programId) => {
                 setRaidScopeProgramId(programId);
                 setView('raid');
