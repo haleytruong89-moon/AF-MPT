@@ -1328,6 +1328,7 @@ service cloud.firestore {
       return (o.get('type', null) == 'mitigation_done'
           && o.get('requestedByUid', null) != request.auth.uid
           && activeMemberDoc(wid)
+          && projectMemberIn(v2Project(wid, pid))
           && (o.get('approverUid', null) == request.auth.uid
             || pmDecides(prgMetaOf(v2Project(wid, pid), o.scope.get('programId', null)), o)))
         || isWsOwner(wid);
@@ -1348,7 +1349,7 @@ service cloud.firestore {
         && n.approverUid != o.get('requestedByUid', null)
         && reassignLogOk(o, n, o.get('reassignLog', []), n.get('reassignLog', []))
         && approverForTypeOk(wid, pid, o, n, prgMetaOf(p, o.scope.get('programId', null)))
-        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid))
+        && ((isPMIn(p, o.scope.get('programId', null)) && activeMemberDoc(wid) && projectMemberIn(p))
           || isWsOwner(wid));
     }
 

@@ -1,6 +1,7 @@
 import { describe, it, beforeEach, afterAll } from 'vitest';
 import { assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { apprReq } from './p3-scenarios.js';
 import { asUser, seedDoc, resetData, cleanup } from './helpers.js';
 
 // Wave 2 R6: a person removed from a project (not in memberUids, restricted)
@@ -133,6 +134,33 @@ describe('Wave 2 R6: removed or deactivated people stop writing', () => {
     it('W2-RV-17 no visibility set = restricted', async () => {
       await seed({ projectOver: { visibility: undefined, memberUids: [PM.uid] } });
       await assertFails(picTask());
+    });
+  });
+
+  describe('removed PM and approvals (mitigation_done)', () => {
+    const A = `${P1}/approvals/ra`;
+    const reassign = async () => setDoc(doc(await asUser(PM.uid, PM.email), A), {
+      ...apprReq('mitigation_done', CON, PM), approverUid: LEAD.uid,
+      reassignLog: [{ at: '2026-10-26T00:00:00Z', byUid: PM.uid, from: PM.uid, to: LEAD.uid, viaWorkstreamId: 'w1' }],
+      version: 2, updatedBy: PM.uid, updatedAt: serverTimestamp(),
+    });
+    const decide = async () => setDoc(doc(await asUser(PM.uid, PM.email), A), {
+      ...apprReq('mitigation_done', CON, PM),
+      status: 'Approved', decidedByUid: PM.uid, decidedAt: serverTimestamp(), reason: null,
+      version: 2, updatedBy: PM.uid, updatedAt: serverTimestamp(),
+    });
+    describe('still a member (regression)', () => {
+      beforeEach(async () => { await seed(); await seedDoc(A, apprReq('mitigation_done', CON, PM)); });
+      it('W2-RV-18 PM reassigns a pending mitigation_done', async () => { await assertSucceeds(reassign()); });
+      it('W2-RV-19 PM approves a mitigation_done', async () => { await assertSucceeds(decide()); });
+    });
+    describe('removed from memberUids', () => {
+      beforeEach(async () => {
+        await seed({ projectOver: { memberUids: [PIC.uid, CON.uid, LEAD.uid] } });
+        await seedDoc(A, apprReq('mitigation_done', CON, PM));
+      });
+      it('W2-RV-20 removed PM cannot reassign', async () => { await assertFails(reassign()); });
+      it('W2-RV-21 removed PM cannot approve', async () => { await assertFails(decide()); });
     });
   });
 });
