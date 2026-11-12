@@ -40,8 +40,12 @@
 // updates entry is restored, authorUid = uid). k > 1 new map keys are written in k
 // steps like Ruling X (one key per write, oldest resolvedAt first). A stored map is
 // always re-sent on the full-doc set; none is ever created empty or null.
+// Wave 2 W1 (saveChunks.js): for a non-Owner every batch is split into chunks of
+// at most MAX_WS_PER_CHUNK work streams, so batches = [...chunks of the main ops,
+// ...chunks of step 2, ...]; a work stream's ops stay in one chunk per step.
 import { splitProject, assembleProject } from './migrateV2.js';
 import { unfoldResolutions, newResolutionKeys } from './blockerResolutions.js';
+import { chunkOpsByWorkstream, wsTouched } from './saveChunks.js';
 
 export const DELETE_FIELD = Symbol('planV2Save.deleteField');
 
@@ -491,6 +495,14 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   }
   Object.assign(metaPatch, programMetaPatch(storedPM, nextPM));
 
-  const out = batches[0].length ? batches : [];
+  let out = batches[0].length ? batches : [];
+  // Wave 2 W1: a non-Owner save runs each batch in chunks of at most
+  // MAX_WS_PER_CHUNK work streams (rules access-call budget). Chunks of batch i
+  // all precede those of batch i + 1, so a follow-up step (Ruling X, createSteps)
+  // still runs after the chunk that wrote its previous step.
+  if (!isOwner && out.length) {
+    const wsOf = (op) => wsTouched(op, docs[op.kind]?.get(op.id)?.data);
+    out = out.flatMap((b) => chunkOpsByWorkstream(b, wsOf));
+  }
   return { batches: out, metaPatch: Object.keys(metaPatch).length ? metaPatch : null, refused: null };
 }

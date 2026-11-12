@@ -1,6 +1,12 @@
 // P2.3 v2 save executor. Runs a planV2Save plan against Firestore: one transaction
 // per batch, in order (Ruling X: batches[1..] are follow-up single-entry steps on the
-// same docs). Firestore functions are injected (fs = { runTransaction, doc,
+// same docs). Wave 2 W1: for a non-Owner the planner splits every batch into chunks
+// of at most MAX_WS_PER_CHUNK work streams (saveChunks.js), so batches = [...chunks
+// of the main ops, ...chunks of each follow-up step]; the executor runs them in
+// order like any batch, and the metaPatch still goes only with the first
+// transaction. A failing chunk leaves earlier chunks committed (W1: Retry re-plans
+// against the refreshed cache, so only what is still different is written).
+// Firestore functions are injected (fs = { runTransaction, doc,
 // serverTimestamp, deleteField }) so the emulator test can pass the client SDK of
 // @firebase/rules-unit-testing; the shim passes the app's SDK.
 //
