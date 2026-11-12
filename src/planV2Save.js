@@ -504,5 +504,12 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
     const wsOf = (op) => wsTouched(op, docs[op.kind]?.get(op.id)?.data);
     out = out.flatMap((b) => chunkOpsByWorkstream(b, wsOf));
   }
-  return { batches: out, metaPatch: Object.keys(metaPatch).length ? metaPatch : null, refused: null };
+  // W2: loaded value of every top-level key the patch writes (not the dotted
+  // programMeta.* field paths, nor the whole-map programMeta fallback: those keep
+  // the live-role overlay in the executor). The executor refuses the save when
+  // the live doc no longer matches (a stale tab must not overwrite newer edits).
+  const metaBase = {};
+  for (const k of Object.keys(metaPatch)) if (!k.includes('.') && k !== 'programMeta') metaBase[k] = lm[k];
+  const hasMeta = Object.keys(metaPatch).length > 0;
+  return { batches: out, metaPatch: hasMeta ? metaPatch : null, ...(hasMeta ? { metaBase } : {}), refused: null };
 }

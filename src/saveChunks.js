@@ -87,3 +87,19 @@ export function chunkOpsByWorkstream(ops, wsOf, max = MAX_WS_PER_CHUNK) {
   });
   return chunks.filter((c) => c.length);
 }
+
+// Wave 2 W2: deep equality for project-doc fields compared between the loaded
+// copy and the live doc inside a transaction. Firestore Timestamps (anything with
+// toMillis) compare by millis; undefined only equals undefined (absent field).
+export function stableEqual(a, b) {
+  if (a === b) return true;
+  const isTs = (v) => v && typeof v === 'object' && typeof v.toMillis === 'function';
+  if (isTs(a) || isTs(b)) return !!(isTs(a) && isTs(b)) && a.toMillis() === b.toMillis();
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((x, i) => stableEqual(x, b[i]));
+  if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(b)) {
+    const ka = Object.keys(a);
+    return ka.length === Object.keys(b).length
+      && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && stableEqual(a[k], b[k]));
+  }
+  return false;
+}

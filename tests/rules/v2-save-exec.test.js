@@ -332,6 +332,24 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(pv.programMeta.prg2.pmUid).toBe('u_pm2');
   });
 
+  // Wave 2 W2 (B2): a stale Owner tab renaming the project after another tab already
+  // renamed it gets a conflict (metaBase check in the first transaction); nothing is written.
+  it('EXEC-W2 stale Owner tab saves a project-level field changed meanwhile: conflict, nothing written; fresh load saves ok', async () => {
+    const stale = await load(await asUser(OWNER.uid, OWNER.email));
+    const e = await getEnv();
+    await e.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), PV), { name: 'Renamed in tab B' });
+    });
+    const before = await serverDoc(PV);
+    const { r, plan } = await save(OWNER, (t) => { t.name = 'Renamed in tab A'; }, { loadedState: stale });
+    expect(plan.metaBase).toEqual({ name: 'Pilot' });
+    expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, written: [], metaWritten: false });
+    expect(await serverDoc(PV)).toEqual(before);
+    const fresh = await save(OWNER, (t) => { t.name = 'Renamed in tab A'; });
+    expect(fresh.r.status).toBe('ok');
+    expect((await serverDoc(PV)).name).toBe('Renamed in tab A');
+  });
+
   // P3 Task 8 (Ruling P3-8): the App resolves a blocker in place (App.jsx
   // resolveBlocker); the planner moves it to the append-only map, one key per write.
   describe('blocker resolutions (fold / unfold)', () => {

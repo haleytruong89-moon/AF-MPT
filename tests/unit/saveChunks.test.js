@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chunkOpsByWorkstream, wsTouched, MAX_WS_PER_CHUNK } from '../../src/saveChunks.js';
+import { chunkOpsByWorkstream, wsTouched, stableEqual, MAX_WS_PER_CHUNK } from '../../src/saveChunks.js';
 import { splitProject, assembleProject } from '../../src/migrateV2.js';
 import { planV2Save } from '../../src/planV2Save.js';
 import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
@@ -226,5 +226,18 @@ describe('chunked save failing in chunk 2 of 3 (W1, Review Focus 3)', () => {
     // Every task written exactly once: version 2 everywhere, nothing left to plan.
     for (const [id] of loaded.docs.tasks) expect(store.get(`${P}/tasks/${id}`)).toMatchObject({ version: 2, name: expect.stringMatching(/\(e\)$/) });
     expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
+  });
+});
+
+describe('stableEqual (W2 B2)', () => {
+  const ts = (ms) => ({ toMillis: () => ms });
+  it('deep equal; Timestamps compare by millis', () => {
+    expect(stableEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] })).toBe(true);
+    expect(stableEqual({ a: 1 }, { a: 2 })).toBe(false);
+    expect(stableEqual([1, 2], [1])).toBe(false);
+    expect(stableEqual(undefined, undefined)).toBe(true);
+    expect(stableEqual(undefined, null)).toBe(false);
+    expect(stableEqual(ts(5), ts(5))).toBe(true);
+    expect(stableEqual({ t: ts(5) }, { t: ts(6) })).toBe(false);
   });
 });

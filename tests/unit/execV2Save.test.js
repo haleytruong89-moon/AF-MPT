@@ -244,3 +244,38 @@ describe('applyWritten (shim cache refresh)', () => {
     expect(r.metaPatch['programMeta.X']).toBe(DELETE_FIELD);
   });
 });
+
+describe('executeV2Save metaBase (W2 B2)', () => {
+  it('live top-level field changed after load -> conflict, nothing written (not even the ops)', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, teamMembers: ['new'] }, [`${P}/tasks/t1`]: { version: 1 } });
+    const plan = {
+      batches: [[{ kind: 'tasks', op: 'update', id: 't1', data: { x: 1 }, expectVersion: 1 }]],
+      metaPatch: { teamMembers: ['a', 'b'] }, metaBase: { teamMembers: ['a'] },
+    };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, metaWritten: false });
+    expect(store.get(P).teamMembers).toEqual(['new']);
+    expect(store.get(`${P}/tasks/t1`)).toEqual({ version: 1 });
+  });
+
+  it('unchanged live field (Timestamps by millis, absent = absent) -> ok and written', async () => {
+    const ts = (ms) => ({ toMillis: () => ms });
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, teamMembers: ['a'], stamp: ts(7) } });
+    const plan = {
+      batches: [],
+      metaPatch: { teamMembers: ['a', 'b'], stamp: 'x', fresh: 1 },
+      metaBase: { teamMembers: ['a'], stamp: ts(7), fresh: undefined },
+    };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    expect(store.get(P).teamMembers).toEqual(['a', 'b']);
+  });
+
+  it('dotted programMeta keys are not checked: a live change to programMeta still writes', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, programMeta: { p1: { name: 'old', pmUid: 'u9' } } } });
+    const plan = { batches: [], metaPatch: { 'programMeta.p1.name': 'new' }, metaBase: {} };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    expect(store.get(P)['programMeta.p1.name']).toBe('new');
+  });
+});

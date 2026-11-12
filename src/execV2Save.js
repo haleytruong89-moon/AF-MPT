@@ -29,6 +29,7 @@
 //    null for deletes; data excludes the updatedAt sentinel). A later batch failing
 //    leaves earlier batches committed (partial append accepted per Ruling X).
 import { DELETE_FIELD } from './planV2Save.js';
+import { stableEqual } from './saveChunks.js';
 
 const versionOf = (snap) => {
   const v = snap.exists() ? snap.data()?.version : undefined;
@@ -76,6 +77,12 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
       res = await runTransaction(db, async (tx) => {
         const projectSnap = await tx.get(projectRef);
         if (!projectSnap.exists() || projectSnap.data()?.schemaVersion !== 2) return { conflict: true };
+        // W2: first transaction only, before any write: a top-level project field the
+        // plan changes must still hold the value this tab loaded, else a newer edit wins.
+        if (i === 0 && meta && plan.metaBase) {
+          const live = projectSnap.data() || {};
+          for (const [k, v] of Object.entries(plan.metaBase)) if (!stableEqual(live[k], v)) return { conflict: true };
+        }
         const snaps = [];
         for (const op of ops) snaps.push(await tx.get(refOf(op)));
         for (let k = 0; k < ops.length; k++) {

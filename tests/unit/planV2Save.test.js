@@ -889,3 +889,23 @@ describe('planV2Save created task updates (Wave 2 A1)', () => {
     expect(ops[0].data.updates).toEqual([{ id: 'u2', text: 'b' }, { id: 'u1', text: 'a' }]);
   });
 });
+
+describe('planV2Save metaBase (W2 B2)', () => {
+  it('metaBase holds the loaded value of every non-dotted metaPatch key; dotted / whole programMeta excluded', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    const oldName = loaded.meta.name;
+    tree.name = 'Renamed by tab A';
+    tree.programs[0].name = 'Program renamed';
+    const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
+    expect(r.metaPatch.name).toBe('Renamed by tab A');
+    expect(r.metaBase).toEqual({ name: oldName });
+    expect(Object.keys(r.metaBase).some((k) => k.includes('.') || k === 'programMeta')).toBe(false);
+    expect(Object.keys(r.metaPatch).some((k) => k.startsWith('programMeta.'))).toBe(true);
+  });
+
+  it('no metaPatch -> no metaBase', () => {
+    const loaded = makeLoaded();
+    expect(planV2Save(loaded, treeOf(loaded), ctx()).metaBase).toBeUndefined();
+  });
+});
