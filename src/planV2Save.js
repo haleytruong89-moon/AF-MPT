@@ -247,17 +247,21 @@ function unknownName(dirIndex, groups, value, before) {
 const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 // Keep stored v2 fields the v1 tree cannot express (roles, stored resolutions).
+// I1/M4: same person ignoring case / spacing (arrays element-wise).
+const foldAll = (v) => (Array.isArray(v) ? v : [v]).filter((x) => !blank(x)).map((x) => foldName(String(x)));
+const samePeople = (a, b) => deepEqual(foldAll(a), foldAll(b));
+
 export function overlay(kind, stored, data) {
   const out = { ...data };
   if (kind === 'workstreams') {
     for (const k of KEEP_WS) if (hasOwn(stored, k)) out[k] = stored[k];
   }
   if (kind === 'tasks' || kind === 'actions') {
-    if (deepEqual(stored.pic, data.pic)) {
+    if (samePeople(stored.pic, data.pic)) {
       for (const k of ['picUid', 'picEmail']) if (hasOwn(stored, k)) out[k] = stored[k];
     }
   }
-  if (kind === 'tasks' && deepEqual(stored.contributors, data.contributors) && hasOwn(stored, 'contributorUids')) {
+  if (kind === 'tasks' && samePeople(stored.contributors, data.contributors) && hasOwn(stored, 'contributorUids')) {
     out.contributorUids = stored.contributorUids;
   }
   return out;
@@ -312,6 +316,11 @@ function roleClaims(loaded, uid) {
       if (isPM(programId)) return { viaProgramId: programId };
       const w = led.find((x) => x.data.programId === programId);
       return w ? { viaWorkstreamId: w.id } : {};
+    },
+    // W3 I1: may this caller change the credit uids of a stored task? (rules: Owner, or a
+    // PM / Deputy of its program or the lead of its work stream; others never.)
+    manages(programId, workstreamId) {
+      return isPM(programId) || (workstreamId != null && led.some((x) => x.id === workstreamId));
     },
     // Ruling W2-4: the program of a stored decision's claim (null = none).
     programOf(stored) {
@@ -412,6 +421,22 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const push = (i, op) => { while (batches.length <= i) batches.push([]); batches[i].push(op); };
 
   for (const kind of KINDS) {
+    const backfillUids = (k, old, data, fresh) => {
+      // I1: an unchanged name that was invite-only (stored uid null) now resolves to a uid
+      // (the person signed in): write it. credit keys are locked for non-Owners on closed
+      // tasks, and only managers may change them, so skip rather than get denied.
+      const closed = ['Submitted', 'Completed', 'Dropped', 'Done', 'Cancelled'].includes(old.status);
+      const may = isOwner || (k === 'tasks' && !closed && claims.manages(old.programId, old.workstreamId));
+      if (!may) return data;
+      const out = { ...data };
+      if (samePeople(old.pic, fresh.pic) && !old.picUid && fresh.picUid) { out.picUid = fresh.picUid; if (fresh.picEmail) out.picEmail = fresh.picEmail; }
+      if (k === 'tasks' && samePeople(old.contributors, fresh.contributors) && Array.isArray(fresh.contributorUids)) {
+        const have = Array.isArray(old.contributorUids) ? old.contributorUids : [];
+        const add = fresh.contributorUids.filter((u) => u && !have.includes(u));
+        if (add.length) out.contributorUids = [...have, ...add];
+      }
+      return out;
+    };
     const stored = docs[kind] || new Map();
     const nextById = new Map(next[kind].map((d) => [d.id, d.data]));
     // storedData = the stored doc (updates only, claims not stripped).
@@ -444,6 +469,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         continue;
       }
       let data = overlay(kind, old, strip(nextById.get(id)));
+      if (kind === 'tasks' || kind === 'actions') data = backfillUids(kind, old, data, strip(nextById.get(id)));
       if (kind === 'tasks') data = unfoldResolutions(old, data, uid);
       data = carryDoc(kind, old, data);
       if (deepEqual(data, old)) continue;

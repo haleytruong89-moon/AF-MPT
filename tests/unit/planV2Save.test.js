@@ -659,6 +659,40 @@ describe('planV2Save', () => {
     expect(allOps(r)[0].data.picUid).toBe('uidGhost');
   });
 
+  describe('W3 I1: invite-only uid backfill', () => {
+    const withUid = { ...Object.fromEntries([...uidByEmail]), 'carol@smartosc.com': 'uid3' };
+    const fresh = () => ctx({ uid: 'uidPM', uidByEmail: new Map(Object.entries(withUid)) });
+    const setup = (status, uidKey = 'picUid') => {
+      const loaded = makeLoaded();
+      const d = loaded.docs.tasks.get('t2').data;
+      d.pic = 'Carol Tran'; d[uidKey] = null; d.status = status;
+      return loaded;
+    };
+    const run = (loaded, c) => { const tree = treeOf(loaded); ws1(tree).tasks[1].name = 'x'; return planV2Save(loaded, tree, c); };
+    it('PM backfills an open task', () => {
+      const op = allOps(run(setup('In Progress'), fresh())).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('PM does not backfill a Completed task (credit keys locked)', () => {
+      const r = run(setup('Completed'), fresh());
+      expect(allOps(r).every((o) => o.data.picUid !== 'uid3')).toBe(true);
+    });
+    it('Owner backfills a Completed task', () => {
+      const op = allOps(run(setup('Completed'), { ...fresh(), uid: 'uidOwner', isOwner: true })).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('a pic changed only in case keeps the stored uid', () => {
+      const loaded = makeLoaded();
+      const d = loaded.docs.tasks.get('t2').data;
+      d.pic = 'Legacy Ghost'; d.picUid = 'uidGhost';
+      const tree = treeOf(loaded);
+      ws1(tree).tasks[1].pic = 'legacy ghost ';
+      const r = planV2Save(loaded, tree, ctx());
+      expect(r.refused).toBeNull();
+      expect(allOps(r)[0].data.picUid).toBe('uidGhost');
+    });
+  });
+
   it('does not mutate its inputs', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);

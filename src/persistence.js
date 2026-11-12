@@ -73,7 +73,7 @@ export function bannerGroups(saveState) {
   const out = { conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [], 'unknown-person': [] };
   for (const v of Object.values(saveState || {})) {
     // W3: 'unknown-person:<name>' carries the name the planner could not resolve.
-    if (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON)) { out['unknown-person'].push(v.status.slice(UNKNOWN_PERSON.length)); continue; }
+    if (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON)) { out['unknown-person'].push({ person: v.status.slice(UNKNOWN_PERSON.length), project: v.name }); continue; }
     (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }
   return out;
@@ -131,6 +131,11 @@ export function saveChip({ pending, saveState, lastSavedAt }) {
 
 // C2: projects whose save may be re-run (Retry / online). Only 'error'; the others would
 // fail again or overwrite someone else's change.
+// W3: the Retry button (manual only, never the online loop) also re-runs an unknown-person
+// state: the shim reloads the directory first, so a person just added now resolves.
+export function manualRetryPids(saveState) {
+  return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error' || (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON))).map(([pid]) => pid);
+}
 export function retryablePids(saveState) {
   return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error').map(([pid]) => pid);
 }

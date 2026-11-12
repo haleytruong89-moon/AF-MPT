@@ -19,7 +19,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -2054,10 +2054,10 @@ function SaveBanner({ saveState, onRetry }) {
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
         {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (use Submit as done to close a task). Reload to continue — edits made after this are not saved either. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
-        {unknownPeople.length > 0 && <>{unknownPeople.map((n) => `${n} isn’t in the People directory — add them first`).join('; ')}. The change was <b>not saved</b>. </>}
+        {unknownPeople.length > 0 && <>{unknownPeople.map((u) => `“${u.project}”: ${u.person} isn't in the People directory — add them first`).join('. ')}. Later changes to this project are held until then. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
-      {errorNames.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
+      {errorNames.length + unknownPeople.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
@@ -13226,6 +13226,13 @@ export default function App() {
       else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
   }, [persistProject]);
+  // Banner Retry: also re-runs an unknown-person state (manual only, not on 'online').
+  const retryManually = useCallback(() => {
+    for (const pid of manualRetryPids(saveStateRef.current)) {
+      if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+    }
+  }, [persistProject]);
   useEffect(() => {
     window.addEventListener('online', retryFailedSaves);
     return () => window.removeEventListener('online', retryFailedSaves);
@@ -14577,7 +14584,7 @@ export default function App() {
             onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
-        <SaveBanner saveState={saveState} onRetry={retryFailedSaves} />
+        <SaveBanner saveState={saveState} onRetry={retryManually} />
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids, UNKNOWN_PERSON } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids, UNKNOWN_PERSON, manualRetryPids } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -318,8 +318,9 @@ describe('conflict-meta (W2 B2)', () => {
 describe('W3 unknown-person banner state', () => {
   it('carries the person name, is per attempt and not retryable', () => {
     let s = nextSaveState({}, 'p1', UNKNOWN_PERSON + 'Zed Nobody', 'CRP');
-    expect(bannerGroups(s)['unknown-person']).toEqual(['Zed Nobody']);
+    expect(bannerGroups(s)['unknown-person']).toEqual([{ person: 'Zed Nobody', project: 'CRP' }]);
     expect(retryablePids(s)).toEqual([]);
+    expect(manualRetryPids(s)).toEqual(['p1']);
     s = nextSaveState(s, 'p1', 'ok', 'CRP');
     expect(bannerGroups(s)['unknown-person']).toEqual([]);
   });
