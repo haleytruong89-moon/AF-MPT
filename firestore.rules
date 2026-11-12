@@ -342,7 +342,8 @@ service cloud.firestore {
     }
 
     function isPM(wid, pid, prg) {
-      return isActiveMember(wid) && isPMIn(v2Project(wid, pid), prg);
+      // Wave 2 R6: also a project member (project doc already read, no extra get()).
+      return isActiveMember(wid) && projectMemberIn(v2Project(wid, pid)) && isPMIn(v2Project(wid, pid), prg);
     }
 
     function wsExists(wid, pid, wsId) {
@@ -354,6 +355,7 @@ service cloud.firestore {
     // Sub-PM rights, same as no PM rights).
     function isLead(wid, pid, wsId) {
       return isActiveMember(wid)
+        && projectMemberIn(v2Project(wid, pid))
         && wsExists(wid, pid, wsId)
         && v2WsData(wid, pid, wsId).get('leadUid', null) == request.auth.uid
         && v2WsData(wid, pid, wsId).get('programId', null) is string
@@ -457,11 +459,7 @@ service cloud.firestore {
       let p = v2Project(wid, pid);
       return isSmartOSC() && (
         isWsOwner(wid)
-        || (isActiveMember(wid) && (
-          p.get('visibility', 'restricted') == 'department'
-          || (p.get('memberUids', null) is list
-            ? request.auth.uid in p.memberUids
-            : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds))))
+        || (isActiveMember(wid) && projectMemberIn(p))
       );
     }
 
@@ -967,7 +965,7 @@ service cloud.firestore {
         inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
         || taskContributorUpdate(wid, pid, ch, rv)
-        || (activeMemberDoc(wid) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
+        || (activeMemberDoc(wid) && projectMemberIn(v2Project(wid, pid)) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
         || isWsOwner(wid)
       );
     }
@@ -1106,7 +1104,7 @@ service cloud.firestore {
     // get(): members/{me} + ws (the project p is passed in) = up to 2.
     function claimInProgram(wid, pid, p, n, prg) {
       return prg is string && (
-        (n.get('viaProgramId', null) == prg && isPMIn(p, prg) && isActiveMember(wid))
+        (n.get('viaProgramId', null) == prg && isPMIn(p, prg) && isActiveMember(wid) && projectMemberIn(p))
         || (n.get('viaProgramId', null) == null
           && isLead(wid, pid, n.get('viaWorkstreamId', null))
           && v2WsData(wid, pid, n.viaWorkstreamId).programId == prg));

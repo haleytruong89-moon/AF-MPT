@@ -12,6 +12,7 @@ const OWNER = { uid: 'u_owner', email: 'hattt4@smartosc.com' };
 const PIC = { uid: 'u_pic', email: 'pic@smartosc.com' }; // task + action PIC
 const CON = { uid: 'u_con', email: 'con@smartosc.com' }; // task contributor
 const PM = { uid: 'u_pm', email: 'pm@smartosc.com' };
+const LEAD = { uid: 'u_lead', email: 'lead@smartosc.com' }; // Sub-PM of w1
 
 const WS = 'workspaces/main';
 const P1 = `${WS}/projects/p1`;
@@ -21,7 +22,7 @@ const programMeta = {
 
 const project = (over = {}) => ({
   name: 'P', memberIds: [], roles: {}, programs: [], programMeta,
-  memberUids: [PIC.uid, CON.uid, PM.uid], visibility: 'restricted', schemaVersion: 2, ...over,
+  memberUids: [PIC.uid, CON.uid, PM.uid, LEAD.uid], visibility: 'restricted', schemaVersion: 2, ...over,
 });
 const member = (email, status = 'active') => ({
   email, displayName: email, aliases: [], department: 'AF', status,
@@ -48,12 +49,16 @@ const picAction = (u = PIC) => up(u, `${P1}/actions/a1`, { status: 'Done', updat
 async function seed({ projectOver = {}, status = {} } = {}) {
   await resetData();
   await seedDoc(WS, { seeded: true, ownerUids: [OWNER.uid], workspaceOwner: OWNER.email });
-  for (const u of [PIC, CON, PM]) await seedDoc(`${WS}/members/${u.uid}`, member(u.email, status[u.uid] || 'active'));
-  await seedDoc(P1, project(projectOver));
+  for (const u of [PIC, CON, PM, LEAD]) await seedDoc(`${WS}/members/${u.uid}`, member(u.email, status[u.uid] || 'active'));
+  const pr = project(projectOver);
+  for (const k of Object.keys(pr)) if (pr[k] === undefined) delete pr[k];
+  await seedDoc(P1, pr);
   await seedDoc(`${P1}/workstreams/w1`, {
     workspaceId: 'main', projectId: 'p1', programId: 'prg1', name: 'WS', order: 0,
-    leadUid: null, start: null, end: null, version: 1,
+    leadUid: LEAD.uid, start: null, end: null, version: 1,
+    updatedBy: OWNER.uid,
   });
+  await seedDoc(`${P1}/raid/prg1`, { workspaceId: 'main', projectId: 'p1', programId: 'prg1', items: [], version: 1, updatedBy: OWNER.uid });
   await seedDoc(`${P1}/tasks/t1`, task());
   await seedDoc(`${P1}/actions/a1`, action());
 }
@@ -91,6 +96,43 @@ describe('Wave 2 R6: removed or deactivated people stop writing', () => {
     it('W2-RV-11 PIC not listed in memberUids still writes on a department project', async () => {
       await assertSucceeds(picTask());
       await assertSucceeds(picAction());
+    });
+  });
+  describe('removed managers (PM / Sub-PM) lose write rights', () => {
+    const edits = {
+      task: (u) => up(u, `${P1}/tasks/t1`, { health: 'Red' }),
+      ws: (u) => up(u, `${P1}/workstreams/w1`, { name: 'WS2' }),
+      raid: (u) => up(u, `${P1}/raid/prg1`, { items: [{ id: 'r1' }], viaProgramId: 'prg1' }),
+    };
+    describe('still members (regression)', () => {
+      beforeEach(() => seed());
+      it('W2-RV-12 PM edits task, workstream and RAID', async () => {
+        await assertSucceeds(edits.task(PM));
+        await assertSucceeds(edits.ws(PM));
+        await assertSucceeds(edits.raid(PM));
+      });
+      it('W2-RV-13 Sub-PM edits a task of their workstream', async () => { await assertSucceeds(edits.task(LEAD)); });
+    });
+    describe('removed from memberUids', () => {
+      beforeEach(() => seed({ projectOver: { memberUids: [PIC.uid, CON.uid] } }));
+      it('W2-RV-14 removed PM denied on task, workstream, RAID', async () => {
+        await assertFails(edits.task(PM));
+        await assertFails(edits.ws(PM));
+        await assertFails(edits.raid(PM));
+      });
+      it('W2-RV-15 removed Sub-PM denied on task edit', async () => { await assertFails(edits.task(LEAD)); });
+    });
+  });
+
+  describe('membership fallbacks', () => {
+    it('W2-RV-16 no memberUids: memberIds decides (member in, non-member out)', async () => {
+      await seed({ projectOver: { memberUids: undefined, memberIds: [PIC.uid] } });
+      await assertSucceeds(picTask());
+      await assertFails(conTask());
+    });
+    it('W2-RV-17 no visibility set = restricted', async () => {
+      await seed({ projectOver: { visibility: undefined, memberUids: [PM.uid] } });
+      await assertFails(picTask());
     });
   });
 });
