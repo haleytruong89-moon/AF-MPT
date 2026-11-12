@@ -487,6 +487,8 @@ window.storage = {
       return null;
     } catch (e) {
       console.warn('[storage] shared get failed:', key, e);
+      // A failed meta read must not look like "no workspace yet" (boot would seed).
+      if (key === 'workspace:meta') throw e;
       return null;
     }
   },

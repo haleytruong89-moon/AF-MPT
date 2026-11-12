@@ -18,7 +18,8 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue } from './persistence';
+import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
@@ -29,6 +30,8 @@ import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storag
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
+import { loadMetaStrict } from './bootLoad.js';
+import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
@@ -1538,7 +1541,6 @@ async function ssetLocal(k, v) { try { await window.storage.set(k, v, false); re
 async function sdeleteShared(k) { try { await window.storage.delete(k, true); return true; } catch { return false; } }
 async function sdeleteLocal(k) { try { await window.storage.delete(k, false); return true; } catch { return false; } }
 
-async function loadMeta() { const r = await sgetShared(K.meta); if (!r) return null; try { return JSON.parse(r); } catch { return null; } }
 async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
 // Only for owner-field changes (transfer, workspace default view); see metaForWrite().
 async function saveMetaOwnerFields(m) { return ssetShared(K.meta, JSON.stringify({ ...m, [OWNER_WRITE_FLAG]: true })); }
@@ -1554,12 +1556,23 @@ async function saveProject(p) {
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
 async function loadActivity(id) { const r = await sgetShared(K.activity(id)); if (!r) return []; try { return JSON.parse(r); } catch { return []; } }
-async function appendActivity(id, e) {
-  const log = await loadActivity(id);
-  log.unshift(e);
-  if (log.length > 500) log.length = 500;
-  await ssetShared(K.activity(id), JSON.stringify(log));
-  return log;
+// null = the shim read failed (a missing log reads as '[]').
+async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id)); if (r == null) return null; try { const a = JSON.parse(r); return Array.isArray(a) ? a : null; } catch { return null; } }
+const activityQueue = createKeyedQueue();
+const activityPending = new Map(); // v1 entries whose read failed; merged into the next successful append
+// Returns the full list to display (v1, read ok) or null (caller prepends the entry itself / leaves the list).
+function appendActivity(id, e, { v2 = false } = {}) {
+  return activityQueue.run(id, async () => {
+    const pending = activityPending.get(id) || [];
+    const read = v2 ? null : await loadActivityStrict(id);
+    const plan = planActivityAppend({ v2, read, pending, entry: e });
+    if (plan.write) {
+      const ok = await ssetShared(K.activity(id), JSON.stringify(plan.write));
+      if (!ok && !v2) { activityPending.set(id, [e, ...pending]); return null; }
+    }
+    if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
+    return plan.display;
+  });
 }
 
 /* ═════════ EXCEL I/O ═════════ */
@@ -6703,13 +6716,15 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   };
   const actDelete = async (kind, pg, ws) => {
     if (kind === 'program') {
+      if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const r = rollup(pg);
-      const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
+      const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
-      const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${(ws.tasks || []).length} task${(ws.tasks || []).length === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
+      if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       onProjectUpdate({
         ...project, programs: project.programs.map((p) =>
@@ -6944,8 +6959,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
   };
   const deleteProgram = async (pg) => {
+    if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const r = rollup(pg);
-    const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}" and all ${r.total} task${r.total === 1 ? '' : 's'}? This cannot be undone.`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
     onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
@@ -6970,8 +6986,9 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     onActivity({ type: 'ws_rename', description: `Renamed work stream "${old}" → "${name}"` });
   };
   const deleteWorkstream = async (pg, ws) => {
+    if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
     const n = (ws.tasks || []).length;
-    const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}" and all ${n} task${n === 1 ? '' : 's'}?`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({
       ...project, programs: project.programs.map((p) =>
@@ -12619,6 +12636,7 @@ function TransferOwnerDialog({ teamMembers, currentOwner, projects, onClose, onT
 /* ═════════ MAIN APP ═════════ */
 export default function App() {
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState(false);
   const [author, setAuthor] = useState(null);
   const [authorEmail, setAuthorEmail] = useState(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -12673,10 +12691,17 @@ export default function App() {
   // Load on mount
   useEffect(() => {
     (async () => {
-      let m = await loadMeta();
+      const boot = await loadMetaStrict(window.storage);
+      if (boot.status === 'error') {
+        // Failed read: never seed or write; show Retry.
+        setBootError(true);
+        setLoading(false);
+        return;
+      }
+      let m = boot.meta;
       const localUser = await sgetLocal(K.userLocal);
 
-      if (!m) {
+      if (boot.status === 'missing') {
         // First-time: seed with CRP project
         const seeded = cloneDeep(SEED_CRP);
         seeded.createdAt = new Date().toISOString();
@@ -13022,8 +13047,10 @@ export default function App() {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
-    const log = await appendActivity(currentId, entry);
-    setActivity(log);
+    const v2 = !!projectsRef.current[currentId]?.__v2;
+    const log = await appendActivity(currentId, entry, { v2 });
+    if (log) setActivity(log);
+    else if (v2) setActivity((prev) => [entry, ...prev]);
   }, [currentId, author]);
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
@@ -13037,10 +13064,11 @@ export default function App() {
       ...(before !== undefined ? { before } : {}),
       ...(after !== undefined ? { after } : {}),
     };
-    await appendActivity(projectId, entry);
+    const v2 = !!projectsRef.current[projectId]?.__v2;
+    const log = await appendActivity(projectId, entry, { v2 });
     if (projectId === currentId) {
-      const log = await loadActivity(projectId);
-      setActivity(log);
+      if (log) setActivity(log);
+      else if (v2) setActivity((prev) => [entry, ...prev]);
     }
   }, [author, currentId]);
 
@@ -13808,33 +13836,42 @@ export default function App() {
   };
   const backupJson = async () => {
     const everything = { meta, projects, activity: {} };
+    const unreadable = [];
     for (const pid of meta.projectIds) {
-      everything.activity[pid] = await loadActivity(pid);
+      const list = await loadActivityStrict(pid);
+      if (list === null) unreadable.push((projects[pid] && projects[pid].name) || pid);
+      else everything.activity[pid] = list;
     }
+    if (unreadable.length) { await dialogs.alert({ title: "Backup not created", message: `Couldn't read the activity of: ${unreadable.join(', ')}. Check your connection and try again.` }); return; }
     const blob = new Blob([JSON.stringify(everything, null, 2)], { type: 'application/json' });
     downloadBlob(blob, 'workspace_backup_' + toISODate(new Date()) + '.json');
     showToast('Backup downloaded');
   };
   const restoreJson = async (file) => {
-    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: 'This will REPLACE all shared workspace data (projects, check-ins, activity) for everyone using this artifact. Continue?', danger: true, okLabel: 'Restore' });
+    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: 'This will REPLACE the shared data (tasks, check-ins, activity) of the projects in this backup. Projects that use the new storage are skipped. Continue?', danger: true, okLabel: 'Restore' });
     if (!ok) return;
     try {
       const text = await file.text();
       const data = JSON.parse(text);
       if (!data.meta || !data.projects) throw new Error('Invalid backup file.');
+      const { v1Ids, v2Ids } = splitRestoreByV2(data, projects);
+      if (v1Ids.length === 0 && v2Ids.length > 0) { await dialogs.alert({ title: "Can't restore", message: V2_RESTORE_MESSAGE }); return; }
       await saveMeta(data.meta);
       const results = [];
-      for (const pid of data.meta.projectIds) {
-        if (data.projects[pid]) {
-          // Explicit restore overrides the stale-write guard (B3) for this write only.
-          const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
-          results.push({ name: data.projects[pid].name || pid, status });
-        }
-        if (data.activity && data.activity[pid]) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
+      for (const pid of v1Ids) {
+        if (!data.projects[pid]) continue;
+        // Explicit restore overrides the stale-write guard (B3) for this write only.
+        const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
+        results.push({ name: data.projects[pid].name || pid, status });
+        if (activityToRestore(status, data.activity && data.activity[pid])) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
       }
       const failed = failedRestores(results);
       if (failed.length) {
         await dialogs.alert({ title: 'Restore incomplete', message: `These projects were NOT restored: ${failed.join(', ')}. Check your permissions or connection and try again. Other projects were restored.` });
+      }
+      if (v2Ids.length) {
+        const names = v2Ids.map((pid) => data.projects[pid].name || pid).join(', ');
+        await dialogs.alert({ title: 'Some projects skipped', message: `${V2_RESTORE_MESSAGE} Skipped: ${names}.` });
       }
       window.location.reload();
     } catch (err) { await dialogs.alert({ title: 'Restore failed', message: err.message }); }
@@ -13854,6 +13891,15 @@ export default function App() {
     const a = await loadActivity(next); setActivity(a);
     showToast(`Deleted project "${project.name}"`);
   };
+
+  if (bootError) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: FONT_STACK, background: TOK.bg, color: TOK.muted, fontSize: 13 }}>
+        <div>Couldn't load AF-MPT — check your connection.</div>
+        <Btn variant="primary" onClick={() => window.location.reload()}>Retry</Btn>
+      </div>
+    );
+  }
 
   if (loading || (author && view === null)) {
     return (
