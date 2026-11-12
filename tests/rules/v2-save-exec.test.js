@@ -7,6 +7,7 @@ import { buildDirectoryIndex } from '../../src/directory.js';
 import { assembleFromSnapshots } from '../../src/readV2.js';
 import { planV2Save } from '../../src/planV2Save.js';
 import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
+import { activityDocFor } from '../../src/activityDoc.js';
 
 // P2.3 Task 4: the shim's v2 write path end to end against the rules.
 // Plans come from planV2Save (fixture tree edited like App.jsx does); the executor
@@ -205,11 +206,12 @@ describe('P2.3 v2 save executor against the rules', () => {
     expect(asg.r.status).toBe('denied');
   });
 
-  it('EXEC-6 activity append (shim shape) ok; a forged authorUid denied', async () => {
+  it('EXEC-6 activity append (shim shape, W2 R3) ok; a forged authorUid denied', async () => {
     const db = await asUser(ASG.uid, ASG.email);
     const entry = { id: 'act1', timestamp: '2026-10-23T00:00:00Z', author: 'Asg', type: 'task_edit', description: 'x' };
-    await assertSucceeds(setDoc(doc(db, `${PV}/activity/act1`), { ...entry, authorUid: ASG.uid, createdAt: serverTimestamp() }));
-    await assertFails(setDoc(doc(db, `${PV}/activity/act2`), { ...entry, id: 'act2', authorUid: PM.uid, createdAt: serverTimestamp() }));
+    // The shim writes activityDocFor(entry, uid) + createdAt (no author / timestamp).
+    await assertSucceeds(setDoc(doc(db, `${PV}/activity/act1`), { ...activityDocFor(entry, ASG.uid), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db, `${PV}/activity/act2`), { ...activityDocFor({ ...entry, id: 'act2' }, PM.uid), createdAt: serverTimestamp() }));
   });
 
   it('EXEC-X Ruling X: two new updates in one save land in 2 transactions', async () => {
