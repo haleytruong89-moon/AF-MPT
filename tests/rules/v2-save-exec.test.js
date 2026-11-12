@@ -427,7 +427,11 @@ describe('P2.3 v2 save executor against the rules', () => {
     });
 
     it('EXEC-BF2 PM direct-closes such a task: ok (no credit keys in the close)', async () => {
-      const { r, plan } = await save(PM, (t) => { taskIn(t, 't1').status = 'Completed'; });
+      // The app's real direct close (closeFlow stampClosed): status + approvedByUid / approvedAt /
+      // closedByUid = caller. Without the stamp closeStampOk denies it (root cause of the first CI failure).
+      const { r, plan } = await save(PM, (t) => {
+        Object.assign(taskIn(t, 't1'), { status: 'Completed', approvedByUid: PM.uid, approvedAt: '2026-11-12T00:00:00.000Z', closedByUid: PM.uid });
+      });
       expect(plan.batches.flat().find((o) => o.id === 't1').data.picUid).toBeNull();
       expect(r.status).toBe('ok');
       expect(await serverDoc(`${PV}/tasks/t1`)).toMatchObject({ status: 'Completed', picUid: null });

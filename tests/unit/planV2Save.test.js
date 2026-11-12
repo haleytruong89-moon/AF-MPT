@@ -693,9 +693,10 @@ describe('planV2Save', () => {
     it('W2-17: a manager direct close (Planned -> Completed) carries no picUid change', () => {
       const loaded = setup('Planned');
       const tree = treeOf(loaded);
-      ws1(tree).tasks[1].status = 'Completed';
+      Object.assign(ws1(tree).tasks[1], { status: 'Completed', approvedByUid: 'uidPM', approvedAt: '2026-11-12T00:00:00.000Z', closedByUid: 'uidPM' });
       const op = allOps(planV2Save(loaded, tree, fresh())).find((o) => o.id === 't2');
       expect(op.data.picUid).toBeNull();
+      expect(op.data).toMatchObject({ approvedByUid: 'uidPM', closedByUid: 'uidPM' });
     });
     it('W2-17: a task with a missing status edited by a PM is backfilled', () => {
       const loaded = setup('InProgress');
