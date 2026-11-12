@@ -83,7 +83,7 @@ export function useUserDirectory(): UserDirEntry[] {
       USERDIR_COL(),
       (snap) => {
         const list: UserDirEntry[] = [];
-        snap.forEach((d) => list.push(d.data() as UserDirEntry));
+        snap.forEach((d) => list.push({ ...(d.data() as UserDirEntry), uid: d.id }));
         list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         setUsers(list);
       },

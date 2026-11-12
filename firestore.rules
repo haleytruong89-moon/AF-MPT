@@ -657,11 +657,13 @@ service cloud.firestore {
 
     // A manager listed in d's (stored) contributorUids is not eligible: they
     // could not decide it anyway (canDecide, Ruling P3-C4), so a submit or
-    // reassign naming them fails fast. An Owner stays eligible (the Owner
-    // branch decides without canDecide).
+    // reassign naming them fails fast. Neither is d's PIC (wave 1 H4, Ruling
+    // W1-1: canDecide refuses a non-Owner PIC). An Owner stays eligible (the
+    // Owner branch decides without canDecide).
     function eligibleWith(wid, pid, d, a, requester, m) {
       return inList(v2Workspace(wid).get('ownerUids', []), a)
         || (!isPMOrDeputyUid(m, requester)
+          && a != d.get('picUid', null)
           && !inList(d.get('contributorUids', null), a)
           && (isPMOrDeputyUid(m, a)
             || (wsExists(wid, pid, d.get('workstreamId', null))
@@ -675,8 +677,11 @@ service cloud.firestore {
     // Ruling P3-C4 (no self-credit): a manager in the task's contributorUids
     // never decides its close request. The stored (old) list is checked, so
     // dropping oneself from it in the deciding write does not help.
+    // Wave 1 H4 (Ruling W1-1): nor does the task's (stored) PIC - no
+    // self-approval by a PM / Deputy / Sub-PM. The Owner branch is unchanged.
     function canDecide(cr, pm, m) {
       return cr.get('requestedByUid', null) != request.auth.uid
+        && resource.data.get('picUid', null) != request.auth.uid
         && !inList(resource.data.get('contributorUids', null), request.auth.uid)
         && (cr.get('approverUid', null) == request.auth.uid
           || (pm && !isPMOrDeputyUid(m, cr.get('requestedByUid', null))));
@@ -1355,7 +1360,18 @@ service cloud.firestore {
     // can read it to populate the member-picker.
     match /workspaces/main/users/{uid} {
       allow read: if isSmartOSC();
-      allow write: if isSmartOSC() && request.auth.uid == uid;
+      // Entry must be pinned to the signed-in account (uid field = doc id, email = token email).
+      function userDirOk(d) {
+        return d.get('uid', null) == uid && d.get('email', null) == request.auth.token.email;
+      }
+      // Create: every key checked. Update: only changed keys checked, so legacy docs with
+      // extra keys still accept the sign-in upsert.
+      allow create: if isSmartOSC() && request.auth.uid == uid
+        && userDirOk(request.resource.data)
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'name', 'photo', 'lastSeen']);
+      allow update: if isSmartOSC() && request.auth.uid == uid
+        && userDirOk(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'email', 'name', 'photo', 'lastSeen']);
     }
 
     // ─────── Per-user private prefs (currentProjectId, etc.) ───────

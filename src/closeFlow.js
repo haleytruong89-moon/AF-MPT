@@ -56,7 +56,8 @@ export function managerLevel(roles, taskId, uid) {
 /**
  * Mirror of rules eligibleApprover / eligibleWith. Order [lead, pm, deputy, ...ownerUids],
  * unique, never the requester. A manager in the task's stored contributorUids is
- * excluded (P3-C4); an Owner stays eligible.
+ * excluded (P3-C4), and so is the task's PIC (wave 1 H4, Ruling W1-1); an Owner
+ * stays eligible.
  */
 export function eligibleApprovers(roles, taskId, requesterUid) {
   if (!roles) return [];
@@ -70,7 +71,7 @@ export function eligibleApprovers(roles, taskId, requesterUid) {
     // A lead whose WS program is not in programMeta never passes leadOfWs, so
     // could never decide: left out (rules eligibleWith alone would accept them).
     const lead = ws && ws.programId != null && hasOwn(roles.programs || {}, ws.programId) ? ws.leadUid : null;
-    for (const u of [lead, m.pmUid, m.deputyUid]) if (u && !contrib.includes(u)) add(u);
+    for (const u of [lead, m.pmUid, m.deputyUid]) if (u && u !== info.picUid && !contrib.includes(u)) add(u);
   }
   for (const u of roles.ownerUids || []) add(u);
   return out;
@@ -96,7 +97,8 @@ export function canCloseDirectly(roles, taskId, uid) {
 
 /**
  * Rules canDecide (P3-4, P3-C4) reached through the manager branch, or the Owner
- * branch (P3-C3: an Owner decides anything, incl. their own request).
+ * branch (P3-C3: an Owner decides anything, incl. their own request). A non-Owner
+ * never decides on a task they are PIC of (wave 1 H4, Ruling W1-1).
  */
 export function canDecideClose(roles, task, uid) {
   if (!roles || !task || statusOf(task) !== 'Submitted' || !isObj(task.closeRequest)) return false;
@@ -106,6 +108,7 @@ export function canDecideClose(roles, task, uid) {
   const cr = task.closeRequest;
   const info = taskInfo(roles, task.id);
   if (cr.requestedByUid === uid) return false;
+  if (info.picUid === uid) return false;
   if (contributorUidsOf(info).includes(uid)) return false;
   const m = programOf(roles, info.programId);
   return cr.approverUid === uid || (lvl === 'pm' && !isPMOrDeputy(m, cr.requestedByUid));
@@ -210,7 +213,8 @@ export function applyCloseIntent({ roles, oldTask, nextTask, me, now, reason }) 
     if (canCloseDirectly(roles, taskId, me.uid)) return creditThen(stampClosed(s1), 'direct');
     if (!canSubmit(roles, taskId, me.uid)) return no(oldTask);
     const approverUid = directApprover(roles, taskId, me.uid);
-    if (!approverUid) return no(oldTask);
+    // H4: no eligible approver (requester / PIC excluded, no Owner): tell the user.
+    if (!approverUid) return no(oldTask, 'no-approver');
     const closeRequest = {
       id: newId('cr', now), outcome: s1, requestedByUid: me.uid, requestedBy: me.name ?? null,
       approverUid, submittedAt: now, prevStatus: s0, note: null,
