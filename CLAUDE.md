@@ -113,8 +113,8 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 ## Current Status
 
 - Phase (vibe-code): **4 — Iterate & Debug**, có loop-back về Phase 1–2 (spec phân quyền v2 đã viết và đã đối chiếu code)
-- Last updated: 11/11/2026
-- Commit production: `2006675` (24/10/2026, P2.2 + plan P2.3 #19), Vercel tự deploy từ `main`
+- Last updated: 12/11/2026
+- Commit production: `e460ca0` (12/11/2026, wave 1 #28–#34), Vercel tự deploy từ `main`
 - Firestore rules production: **bản P2.2** (gồm P2.1), HOD publish qua Console 23/10/2026. Hoàn tác = chọn lại bản trước trong lịch sử Rules trên Console
 - `workspaces/main.ownerUids` = [uid HOD], ghi 23/10 05:01 (manifest `p2-owner-uids-manifest-2026-10-23T05-01-27-009Z.json`, gitignored). Pilot copy Treasury 2026 (P2.2) đã tạo, so khớp, HOD xem, rồi rollback
 - Workspace Owner trên production: HOD (đã xác nhận 14/10, "1 change logged")
@@ -146,8 +146,9 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong (05/11): #26 gán vai trò merged; Mind map hiện PM / Sub-PM trên node + mục Roles… trong menu ⋯ (PR feat/mindmap-roles)
 - Đã xong (05/11): #27 Mind map roles merged. Review bảo mật/toàn vẹn 05/11 + review UX 11/11 → `docs/reviews/2026-11-05-security-integrity-review.md`, `docs/reviews/2026-11-11-ux-review.md`
 - **Wave 1** (11/11; spec `docs/superpowers/specs/2026-11-11-wave1-hardening-ux-design.md`, plan `docs/superpowers/plans/2026-11-11-wave1-hardening-ux.md`; HOD quyết 11/11: PM/Sub-PM sửa ngày task trong hạn WS, Chat cho Submitted/Rejected, ẩn tab Activity + dòng Top credit với non-Owner, đẩy lên cấp trên sau 3 ngày làm việc). PR xếp chồng, merge theo thứ tự: #28 spec/plan → #29 A an toàn dữ liệu → #30 B rules (cấm PM/Sub-PM tự duyệt task mình là PIC; khóa `users/{uid}`) → #31 C tốc độ + chip lưu → #32 D duyệt trong My Work + leo thang + Chat + link task → #33 E UI theo vai trò → #34 F walkthrough + glossary. Chỉ #30 đổi rules (HOD publish sau merge, cùng ngày)
-- **Chặn:** GitHub Actions không chạy từ 11/11 (billing) → CI chưa xanh, test rules #30 chưa chạy. Không merge trước khi CI xanh
+- Đã xong (12/11): repo chuyển public → CI chạy lại, cả 7 PR xanh (rules 313/313). Wave 1 merged vào `main` (#28, #29 trực tiếp; #30–#33 merge vào nhánh xếp chồng, nội dung lên `main` qua #34). Bài học: PR xếp chồng phải đổi base sang `main` trước khi merge; không xóa nhánh base khi PR con chưa đổi base (GitHub tự đóng PR con). Rules #30 (H4, H5): HOD publish trên Console nếu chưa
 - Chờ HOD: xác nhận Ruling W1-1 (cấm tự duyệt chỉ áp cho PM/Sub-PM, Owner vẫn tự đóng task mình — lệch spec §8 call 3); proofread glossary (EN+VI); quyết bỏ tab Aggregation / gom nút header (chưa trả lời)
 - Theo dõi sau wave 1: Owner trong app = email `workspaceOwner`, rules = `ownerUids` → sửa trước khi thêm Owner thứ 2; kéo-thả Outline chưa ẩn theo vai trò → sửa trước khi onboard cả phòng; `markMyWorkSeen` còn ghi meta chung
-- Tiếp theo: billing GitHub → CI xanh → HOD merge #28→#34, publish rules #30 → smoke test spec §7 → hardening đợt 2 (khóa weight task đã đóng, kiểm khi tạo task, chống giả activity, giới hạn tạo project, RAID theo program, giới hạn transaction cho CRP) → chuyển đợt 2 (MA, CRP, UBO, AF Lean) → PR 2 Replace person → onboard. P3.2 / P3.3 hoãn
+- **Wave 2** (spec `docs/superpowers/specs/2026-11-12-wave2-hardening-design.md`, draft; chờ HOD trả lời Q1 RAID/Decisions theo program, Q2 weight program/WS chỉ Owner, Q3 Blaze trước onboard): rules (weight, tạo task, activity, tạo project, RAID theo program, người bị gỡ), ghi theo lô cho CRP, chống ghi đè trường project, không lưu PIC rỗng, không xóa cứng action/decision/RAID, Owner theo `ownerUids`, kéo-thả theo vai trò, error boundary, CI build + lint + branch protection; sau đó chuyển MA → UBO → AF Lean → CRP
+- Tiếp theo: HOD publish rules #30 + smoke test wave 1 (spec wave 1 §7) → HOD duyệt spec wave 2 → plan → code → chuyển 4 project v1 → PR 2 Replace person → onboard. P3.2 / P3.3 hoãn
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2
