@@ -737,3 +737,11 @@ window.storage = {
 };
 
 console.log('[storage shim] Firestore-backed shim initialized');
+
+/** U7: remember the selected project in this browser only (no shared-doc write). */
+export function rememberCurrentProject(pid: string): void {
+  try {
+    if (!currentUser) return;
+    localStorage.setItem(LS_PREFIX + currentProjectKey(currentUser.uid), pid);
+  } catch {}
+}

@@ -18,15 +18,15 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue } from './persistence';
+import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
-import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2 } from './storage-shim';
+import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { RolePicker } from './components/RolePicker';
@@ -2032,7 +2032,9 @@ function FieldLabel({ children }) {
 // B2/B3: persistent banner for failed or refused project saves.
 // Set right before a deliberate reload so the unload guard does not prompt.
 let bypassUnloadGuard = false;
-function SaveBanner({ saveState }) {
+const nowHHMM = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+function SaveBanner({ saveState, onRetry }) {
   const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
   if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
@@ -2046,6 +2048,7 @@ function SaveBanner({ saveState }) {
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
+      {errorNames.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
@@ -12646,10 +12649,16 @@ export default function App() {
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
   const [currentId, setCurrentId] = useState(null);
+  // Current project at the time an await resolves (activity logs must not land in another project's view).
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
   const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
+  // C1: activity loads lazily; remembers which project's log is in `activity`. Failed project loads are retried from a banner.
+  const [activityLoadedId, setActivityLoadedId] = useState(null);
+  const [loadFailed, setLoadFailed] = useState([]);
   const [showImport, setShowImport] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
   const [scopeProgramId, setScopeProgramId] = useState(null);
@@ -12680,6 +12689,11 @@ export default function App() {
   // B2/B3: per-project save failures shown in a persistent banner.
   const [saveState, setSaveState] = useState({});
   const pendingSaves = useRef(0);
+  const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
+  const bumpPending = useCallback((d) => { pendingSaves.current = Math.max(0, pendingSaves.current + d); setPendingN(pendingSaves.current); }, []);
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const saveStateRef = useRef({});
+  saveStateRef.current = saveState;
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
 
   // Roster of @mention-able teammates: derived from PICs + check-in/update authors + project teamMembers list + RBAC members (from user directory)
@@ -12714,16 +12728,10 @@ export default function App() {
       setCurrentId(m.currentProjectId);
 
       const ps = {};
-      for (const pid of m.projectIds) {
-        const p = await loadProject(pid);
-        if (p) ps[pid] = ensureProjectRaid(p);
-      }
+      const results = await Promise.all(m.projectIds.map((pid) => loadProject(pid)));
+      m.projectIds.forEach((pid, i) => { if (results[i]) ps[pid] = ensureProjectRaid(results[i]); });
+      setLoadFailed(loadFailures(m.projectIds, results));
       setProjects(ps);
-
-      if (m.currentProjectId) {
-        const a = await loadActivity(m.currentProjectId);
-        setActivity(a);
-      }
 
       if (localUser) {
         // Back-compat: localUser was previously a plain string; now it's JSON {name, email}
@@ -12986,7 +12994,7 @@ export default function App() {
   const closeBusy = useRef({});
   const persistProject = useCallback((p) => {
     if (!p) return;
-    if (!saveTimers.current[p.id]) pendingSaves.current += 1;
+    if (!saveTimers.current[p.id]) bumpPending(1);
     clearTimeout(saveTimers.current[p.id]);
     pendingTree.current[p.id] = p;
     const fire = async () => {
@@ -13000,12 +13008,27 @@ export default function App() {
       inflightSaves.current[p.id] = pr;
       const status = await pr;
       if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
       refreshV2Roles(p.id);
     };
     saveTimers.current[p.id] = setTimeout(fire, 400);
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
+
+  // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
+  // refused and history are never retried: that would fail again or overwrite.
+  const retryFailedSaves = useCallback(() => {
+    for (const pid of retryablePids(saveStateRef.current)) {
+      if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
+      // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
+      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+    }
+  }, [persistProject]);
+  useEffect(() => {
+    window.addEventListener('online', retryFailedSaves);
+    return () => window.removeEventListener('online', retryFailedSaves);
+  }, [retryFailedSaves]);
 
   // P3 (carry 2, 3): save a pending debounced edit of this project now (before a
   // close step), or wait for one in flight. -> that save's status, or null when nothing was pending.
@@ -13015,16 +13038,17 @@ export default function App() {
       delete saveTimers.current[pid];
       const tree = pendingTree.current[pid];
       delete pendingTree.current[pid];
-      if (!tree) { pendingSaves.current = Math.max(0, pendingSaves.current - 1); return null; }
+      if (!tree) { bumpPending(-1); return null; }
       const status = await saveProject(tree);
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
+      if (status === 'ok') setLastSavedAt(nowHHMM());
       setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
       refreshV2Roles(pid);
       return status;
     }
     if (inflightSaves.current[pid]) return await inflightSaves.current[pid];
     return null;
-  }, [refreshV2Roles]);
+  }, [refreshV2Roles, bumpPending]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
@@ -13048,7 +13072,9 @@ export default function App() {
     if (!currentId || !author) return;
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
-    const log = await appendActivity(currentId, entry, { v2 });
+    const pid = currentId;
+    const log = await appendActivity(pid, entry, { v2 });
+    if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
     if (log) setActivity(log);
     else if (v2) setActivity((prev) => [entry, ...prev]);
   }, [currentId, author]);
@@ -13066,11 +13092,11 @@ export default function App() {
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
     const log = await appendActivity(projectId, entry, { v2 });
-    if (projectId === currentId) {
+    if (projectId === currentIdRef.current) {
       if (log) setActivity(log);
       else if (v2) setActivity((prev) => [entry, ...prev]);
     }
-  }, [author, currentId]);
+  }, [author]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen
@@ -13137,7 +13163,12 @@ export default function App() {
       showToastRef.current(chokeMessage(res.status));
       return;
     }
-    if (res.status !== 'ok') return; // the save banner reports it
+    if (res.status !== 'ok') {
+      // The save banner reports it. Drop the optimistic close (back to the last saved task) so
+      // Retry / online cannot later save an unlogged close through the general save path.
+      setTask(closeRollbackTask(v2SavedTree(projectId), oldTask.id, res.task));
+      return;
+    }
     if (res.task !== intent.task) {
       setTask(res.task);
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
@@ -13150,11 +13181,11 @@ export default function App() {
   const runV2Close = useCallback((args) => {
     const pid = args.projectId;
     closeBusy.current[pid] = (closeBusy.current[pid] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const done = () => {
       closeBusy.current[pid] -= 1;
       if (!closeBusy.current[pid]) delete closeBusy.current[pid];
-      pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+      bumpPending(-1);
     };
     const run = (closeChain.current[pid] || Promise.resolve())
       .then(() => runV2CloseNow(args))
@@ -13162,7 +13193,7 @@ export default function App() {
       .finally(done);
     closeChain.current[pid] = run;
     return run;
-  }, [runV2CloseNow]);
+  }, [runV2CloseNow, bumpPending]);
 
   // Role assignment (spec §7): the role write never carries tree edits. Pending edits
   // are flushed first, the role goes through changeRoleV2, then pending close requests
@@ -13248,7 +13279,7 @@ export default function App() {
     if (!ok) return;
     // Same per-project chain as closes; debounced saves of the project wait meanwhile.
     closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
-    pendingSaves.current += 1;
+    bumpPending(1);
     const state = { roleSaved: false };
     const run = (closeChain.current[projectId] || Promise.resolve())
       .then(() => changeRoleNow({ projectId, change, before, preMoves, addMemberUid, state }))
@@ -13261,11 +13292,11 @@ export default function App() {
       .finally(() => {
         closeBusy.current[projectId] -= 1;
         if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
-        pendingSaves.current = Math.max(0, pendingSaves.current - 1);
+        bumpPending(-1);
       });
     closeChain.current[projectId] = run;
     return run;
-  }, [rolesNowFor, changeRoleNow, dialogs]);
+  }, [rolesNowFor, changeRoleNow, dialogs, bumpPending]);
 
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
@@ -13675,15 +13706,34 @@ export default function App() {
     setCurrentId(id);
     setSelectedTaskId(null);
     setScopeProgramId(null);
-    if (id === '__all__') {
-      setActivity([]);
-    } else {
-      const a = await loadActivity(id);
-      setActivity(a);
-    }
-    const m2 = { ...meta, currentProjectId: id };
-    setMeta(m2);
-    await saveMeta(m2);
+    setActivity([]);
+    setActivityLoadedId(null);
+    rememberCurrentProject(id);
+    setMeta({ ...meta, currentProjectId: id });
+  };
+
+  // C1: load the activity log only when a view that shows it is open.
+  useEffect(() => {
+    if (view !== 'dashboard' && view !== 'activity') return;
+    if (!currentId || currentId === '__all__' || activityLoadedId === currentId) return;
+    let cancelled = false;
+    const id = currentId;
+    (async () => {
+      const list = await loadActivityStrict(id);
+      if (cancelled || !list) return; // failed read: keep the list, stay unloaded so it retries
+      setActivity(list);
+      setActivityLoadedId(id);
+    })();
+    return () => { cancelled = true; };
+  }, [view, currentId, activityLoadedId]);
+
+  const retryFailedLoads = async () => {
+    const ids = loadFailed;
+    const results = await Promise.all(ids.map((pid) => loadProject(pid)));
+    const got = {};
+    ids.forEach((pid, i) => { if (results[i]) got[pid] = ensureProjectRaid(results[i]); });
+    if (Object.keys(got).length) setProjects((prev) => ({ ...prev, ...got }));
+    setLoadFailed(loadFailures(ids, results));
   };
 
   const changeOwnership = async (action, newOwner) => {
@@ -13888,7 +13938,7 @@ export default function App() {
     setMeta(m2); await saveMeta(m2);
     const np = { ...projects }; delete np[project.id]; setProjects(np);
     setCurrentId(next);
-    const a = await loadActivity(next); setActivity(a);
+    setActivity([]); setActivityLoadedId(null);
     showToast(`Deleted project "${project.name}"`);
   };
 
@@ -13993,6 +14043,16 @@ export default function App() {
 
           <div style={{ flex: 1 }} />
 
+          {(() => {
+            const chip = saveChip({ pending: pendingN, saveState, lastSavedAt });
+            if (!chip.label) return null;
+            const col = chip.tone === 'error' ? TOK.overdueFg : chip.tone === 'ok' ? TOK.doneFg : TOK.muted;
+            const st = { fontSize: 11, color: col, whiteSpace: 'nowrap', fontFamily: FONT_STACK };
+            return chip.retry
+              ? <button onClick={retryFailedSaves} title="Retry saving" style={{ ...st, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>{chip.label}</button>
+              : <span role="status" style={st}>{chip.label}</span>;
+          })()}
+
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
             {(() => {
               const allTabs = [
@@ -14066,8 +14126,19 @@ export default function App() {
           </button>
         </div>
 
+        {loadFailed.length > 0 && (
+          <div role="alert" style={{ background: TOK.blockerBg, color: TOK.blocker, borderBottom: '1px solid currentColor', padding: '6px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {loadFailed.map((pid) => (
+              <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span>Couldn't load {meta?.names?.[pid] || pid} —</span>
+                <Btn size="sm" onClick={retryFailedLoads}>Retry</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Monday banner */}
-        {!bannerDismissed && isMonday() && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
+        {!bannerDismissed && isMonday() && !isBriefingDismissed(todayISODate()) && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
           <div style={{
             padding: '10px 16px',
             background: isOwner ? '#e8f0fe' : '#fff8e1',
@@ -14089,10 +14160,8 @@ export default function App() {
             }}>
               {isOwner ? 'Generate digest' : 'Generate briefing'}
             </Btn>
-            <Btn size="sm" variant="ghost" onClick={async () => {
-              const dismissed = [...(meta?.dismissedBriefingDates || []), todayISODate()];
-              const m2 = { ...meta, dismissedBriefingDates: dismissed };
-              setMeta(m2); await saveMeta(m2);
+            <Btn size="sm" variant="ghost" onClick={() => {
+              dismissBriefing(todayISODate());
               setBannerDismissed(true);
             }} title="Dismiss for today">
               <X size={14} />
@@ -14252,7 +14321,7 @@ export default function App() {
             onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
-        <SaveBanner saveState={saveState} />
+        <SaveBanner saveState={saveState} onRetry={retryFailedSaves} />
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough

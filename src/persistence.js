@@ -107,3 +107,26 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
   if (writeId) doc.writeId = writeId;
   return { conflict: false, newRev, doc };
 }
+
+// C1: ids whose parallel project load came back empty (null/undefined).
+export function loadFailures(ids, results) {
+  return ids.filter((_, i) => !results[i]);
+}
+
+// C2: header save chip. Only 'error' (network/unknown) is retryable and shown here.
+// Ruling W1-5: any other entry (conflict / denied / refused / history / readonly) hides the
+// chip: its sticky banner is the single source, so the chip never says Saved next to it.
+export function saveChip({ pending, saveState, lastSavedAt }) {
+  const entries = Object.values(saveState || {});
+  if (entries.some((v) => v.status !== 'error')) return { label: '', tone: 'muted', retry: false };
+  if (entries.length > 0) return { label: 'Not saved — Retry', tone: 'error', retry: true };
+  if (pending > 0) return { label: 'Saving…', tone: 'muted', retry: false };
+  if (lastSavedAt) return { label: `Saved ${lastSavedAt}`, tone: 'ok', retry: false };
+  return { label: '', tone: 'muted', retry: false };
+}
+
+// C2: projects whose save may be re-run (Retry / online). Only 'error'; the others would
+// fail again or overwrite someone else's change.
+export function retryablePids(saveState) {
+  return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error').map(([pid]) => pid);
+}

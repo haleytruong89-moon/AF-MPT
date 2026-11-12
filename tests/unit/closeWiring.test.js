@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeControlModel,
+  chokeMessage, replanMessage, isCloseOutcome, directoryByUid, closeIntentFor, runCloseFlow, replaceTask, closeRollbackTask, closeControlModel,
   DENIED_MESSAGE, NEEDS_REASON_MESSAGE, NO_APPROVER_MESSAGE,
 } from '../../src/closeWiring.js';
 import { applyCloseIntent, reassignClose } from '../../src/closeFlow.js';
@@ -201,6 +201,19 @@ describe('replaceTask', () => {
     expect(p.programs[0].workstreams[0].tasks[0].closeRequest).toBe('keep?');
   });
   it('unknown task: same project', () => expect(replaceTask(p, 'nope', task('nope', 'Planned'))).toBe(p));
+});
+
+describe('closeRollbackTask (a failed close goes back to the last saved task)', () => {
+  const savedT1 = task('t1', 'InProgress');
+  const saved = { id: 'x', programs: [{ id: 'p1', workstreams: [{ id: 'w1', tasks: [savedT1] }] }] };
+  const fallback = task('t1', 'Planned');
+  it('takes the task from the last saved tree', () => {
+    expect(closeRollbackTask(saved, 't1', fallback)).toBe(savedT1);
+  });
+  it('falls back when there is no saved tree or the task is not in it', () => {
+    expect(closeRollbackTask(null, 't1', fallback)).toBe(fallback);
+    expect(closeRollbackTask(saved, 'nope', fallback)).toBe(fallback);
+  });
 });
 
 describe('closeControlModel', () => {
