@@ -255,7 +255,8 @@ describe('P3 task close transitions', () => {
   });
 
   it('P3-15 LEAD creates a task with status Completed: denied; with InProgress: allowed', async () => {
-    const t = (status) => task({ id: 'n', status, version: 1 });
+    // Wave 2 A1: a non-Owner create may carry no update by another author.
+    const t = (status) => task({ id: 'n', status, version: 1, updates: [] });
     await assertFails(put(LEAD, `${P1}/tasks/n1`, t('Completed')));
     await assertFails(put(LEAD, `${P1}/tasks/n1`, t('Submitted')));
     await assertSucceeds(put(LEAD, `${P1}/tasks/n1`, t('InProgress')));

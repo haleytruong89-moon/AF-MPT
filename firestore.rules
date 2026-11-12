@@ -620,8 +620,8 @@ service cloud.firestore {
     // key lists never had creditShares / creditSharesMode.
     function creditKeys() {
       // Wave 2 R1: weight feeds credit (App.jsx creditOf), so it is a credit key:
-    // non-Owner managers change it only on an open task.
-    return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode', 'weight'];
+      // non-Owner managers change it only on an open task.
+      return ['picUid', 'picEmail', 'pic', 'contributors', 'contributorUids', 'creditShares', 'creditSharesMode', 'weight'];
     }
 
     function isClosedSt(s) {

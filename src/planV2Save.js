@@ -312,6 +312,15 @@ function steps(kind, oldData, data) {
   return out;
 }
 
+// Wave 2: a created task's updates (newest first) as k steps, step i holding the i
+// oldest entries; missing authorUid = uid. Step 0 is the create.
+function createSteps(data, uid) {
+  const ups = data.updates.map((u) => (u && typeof u === 'object' && !u.authorUid ? { ...u, authorUid: uid } : u));
+  const out = [];
+  for (let s = 1; s <= ups.length; s++) out.push({ ...data, updates: ups.slice(ups.length - s) });
+  return out;
+}
+
 // The tree reached the App through JSON.stringify (shim read path), so compare
 // against the loaded data in the same form (Timestamps -> their toJSON shape,
 // undefined dropped). Plain-JSON input is unchanged.
@@ -395,8 +404,18 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       if (!dirIndex && (kind === 'tasks' || kind === 'actions') && (hasPerson(data.pic) || hasPerson(data.contributors))) {
         return none('directory-unavailable');
       }
-      // Created docs are not stamped: rules do not check creates, and copied
-      // history keeps its original authors.
+      // Created docs are not stamped (copied history keeps its original authors),
+      // except a non-Owner task create (Wave 2 R1 / W4): rules allow at most one
+      // update entry, authored by the caller. Entries without an authorUid get uid;
+      // the oldest rides in the create, the rest follow as single-entry updates.
+      if (kind === 'tasks' && !isOwner && Array.isArray(data.updates) && data.updates.length) {
+        createSteps(strip(data), uid).forEach((d, i) => {
+          push(i, i === 0
+            ? { kind, op: 'create', id, data: withClaim({ ...d, version: 1 }) }
+            : { kind, op: 'update', id, data: withClaim(d), expectVersion: i });
+        });
+        continue;
+      }
       push(0, { kind, op: 'create', id, data: withClaim({ ...strip(data), version: 1 }) });
     }
   }

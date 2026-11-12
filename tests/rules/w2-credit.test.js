@@ -24,15 +24,17 @@ const clean = (u, over = {}) => ({
 });
 const create = async (u, data) =>
   setDoc(doc(await asUser(u.uid, u.email), NEW), { version: 1, updatedBy: u.uid, ...data });
+const createAt = async (id, u, data) =>
+  setDoc(doc(await asUser(u.uid, u.email), `${P1}/tasks/${id}`), { version: 1, updatedBy: u.uid, ...data });
 const ownUpdate = (u, over = {}) => ({
-  id: 'u1', text: 'first', date: '2026-11-01', author: u.email, authorUid: u.uid, isBlocker: false, ...over,
+  id: 'u1', text: 'first', date: '2026-11-01', timestamp: '2026-11-01T00:00:00Z', author: u.email, authorUid: u.uid, isBlocker: false, ...over,
 });
 
 describe('W2 A1: weight is a credit field (R1)', () => {
   beforeEach(resetData);
   afterAll(cleanup);
 
-  it('W2-A1-01 PM / Sub-PM change weight on a Completed task: denied', async () => {
+  it('W2-A1-01 PM / Sub-PM change ONLY weight on a Completed task: denied (weight itself is guarded)', async () => {
     await seedTask(realTask({ status: 'Completed', approvedByUid: OWNER.uid, weight: 10 }));
     await assertFails(upTask(PM, { weight: 50 }));
     await assertFails(upTask(LEAD, { weight: 50 }));
@@ -93,7 +95,7 @@ describe('W2 A1: non-Owner task create is clean (W4)', () => {
 
   it('W2-A1-07 clean create (open, auto split, one own update): allowed for PM and Sub-PM', async () => {
     await assertSucceeds(create(PM, clean(PM, { updates: [ownUpdate(PM)] })));
-    await assertSucceeds(create(LEAD, clean(LEAD, { updates: [ownUpdate(LEAD)], creditSharesMode: 'auto' })));
+    await assertSucceeds(createAt('new2', LEAD, clean(LEAD, { id: 'new2', updates: [ownUpdate(LEAD)], creditSharesMode: 'auto' })));
   });
 
   it('W2-A1-08 creditSharesMode manual: denied', async () => {

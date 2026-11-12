@@ -322,11 +322,11 @@ describe('planV2Save', () => {
     expect(planV2Save(loaded2, tree2, ctx())).toEqual({ batches: [], metaPatch: null, refused: null });
   });
 
-  it('created docs keep their entries as-is (no authorUid stamping)', () => {
+  it('Owner-created docs keep their entries as-is (no authorUid stamping)', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
     ws1(tree).tasks.push({ id: 'tCopy', name: 'Copy', updates: [{ id: 'u9', text: 'by X', authorUid: 'uidX' }, { text: 'no author' }] });
-    const op = allOps(planV2Save(loaded, tree, ctx()))[0];
+    const op = allOps(planV2Save(loaded, tree, ctx({ isOwner: true })))[0];
     expect(op.op).toBe('create');
     expect(op.data.updates).toEqual([{ id: 'u9', text: 'by X', authorUid: 'uidX' }, { text: 'no author' }]);
   });
@@ -699,5 +699,50 @@ describe('planV2Save close history protection (P3.1 final review I2)', () => {
     const r = planV2Save(edit.loaded, edit.tree, ctx({ isOwner: true }));
     expect(r.refused).toBe(null);
     expect(allOps(r)).toHaveLength(1);
+  });
+});
+
+describe('planV2Save created task updates (Wave 2 A1)', () => {
+  const mk = (updates, c = ctx()) => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    ws1(tree).tasks.push({ id: 'tNew', name: 'New', pic: 'Bob', status: 'Not Started', updates });
+    return planV2Save(loaded, tree, c);
+  };
+  const tasksOps = (r) => r.batches.map((b) => b.filter((o) => o.id === 'tNew'));
+
+  it('0 updates: plain create', () => {
+    const r = mk([]);
+    const ops = allOps(r).filter((o) => o.id === 'tNew');
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ op: 'create', data: { version: 1, updates: [] } });
+  });
+
+  it('1 unstamped update: create carries it stamped with uid', () => {
+    const r = mk([{ id: 'u1', text: 'hi', timestamp: 't' }]);
+    const ops = allOps(r).filter((o) => o.id === 'tNew');
+    expect(ops).toHaveLength(1);
+    expect(ops[0].op).toBe('create');
+    expect(ops[0].data.updates).toEqual([{ id: 'u1', text: 'hi', timestamp: 't', authorUid: 'uid1' }]);
+  });
+
+  it('2 updates: create carries the oldest, a follow-up update step carries both', () => {
+    const r = mk([{ id: 'u2', text: 'newer' }, { id: 'u1', text: 'older' }]);
+    const steps = tasksOps(r);
+    expect(steps[0]).toHaveLength(1);
+    expect(steps[0][0].op).toBe('create');
+    expect(steps[0][0].data.updates.map((u) => u.id)).toEqual(['u1']);
+    expect(steps[1]).toHaveLength(1);
+    expect(steps[1][0]).toMatchObject({ op: 'update', expectVersion: 1 });
+    expect(steps[1][0].data).not.toHaveProperty('version');
+    expect(steps[1][0].data.updates.map((u) => u.id)).toEqual(['u2', 'u1']);
+    expect(steps[1][0].data.updates.every((u) => u.authorUid === 'uid1')).toBe(true);
+  });
+
+  it('Owner plan is unchanged (no stamping, one create)', () => {
+    const r = mk([{ id: 'u2', text: 'b' }, { id: 'u1', text: 'a' }], ctx({ isOwner: true }));
+    const ops = allOps(r).filter((o) => o.id === 'tNew');
+    expect(ops).toHaveLength(1);
+    expect(ops[0].data.updates).toEqual([{ id: 'u2', text: 'b' }, { id: 'u1', text: 'a' }]);
   });
 });
