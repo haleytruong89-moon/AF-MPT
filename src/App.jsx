@@ -19,7 +19,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -1568,19 +1568,29 @@ async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id
 const activityQueue = createKeyedQueue();
 const activityPending = new Map(); // v1 entries whose read failed; merged into the next successful append
 // Returns the full list to display (v1, read ok) or null (caller prepends the entry itself / leaves the list).
-function appendActivity(id, e, { v2 = false } = {}) {
+// W5: `track` = { start(), done(id, ok) } counts the write as unsaved work while in flight and
+// reports a failed write (v2 write error, or v1 read/write error) so the banner can show it.
+// A failed entry stays in activityPending (v1 and v2) and is re-sent by the next append or flushActivity.
+function appendActivity(id, e, { v2 = false, track } = {}) {
+  track?.start();
   return activityQueue.run(id, async () => {
-    const pending = activityPending.get(id) || [];
-    const read = v2 ? null : await loadActivityStrict(id);
-    const plan = planActivityAppend({ v2, read, pending, entry: e });
-    if (plan.write) {
-      const ok = await ssetShared(K.activity(id), JSON.stringify(plan.write));
-      if (!ok && !v2) { activityPending.set(id, [e, ...pending]); return null; }
-    }
-    if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
-    return plan.display;
+    let ok = true;
+    try {
+      const pending = activityPending.get(id) || [];
+      if (!e && !pending.length) return null;
+      const read = v2 ? null : await loadActivityStrict(id);
+      const plan = planActivityAppend({ v2, read, pending, entry: e });
+      if (plan.write) {
+        const wrote = await ssetShared(K.activity(id), JSON.stringify(plan.write));
+        if (!wrote) { ok = false; activityPending.set(id, [...(e ? [e] : []), ...pending]); return null; }
+      } else if (!v2 && read === null) ok = false; // v1 read failed: entry kept pending
+      if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
+      return plan.display;
+    } finally { track?.done(id, ok); }
   });
 }
+// Re-send activity entries whose write failed (banner Retry / back online).
+const flushActivity = (id, opts) => appendActivity(id, null, opts);
 
 /* ═════════ EXCEL I/O ═════════ */
 const COL = {
@@ -13222,6 +13232,15 @@ export default function App() {
   const pendingTree = useRef({});
   const inflightSaves = useRef({});
   const closeBusy = useRef({});
+  // W5: activity writes bump the same pending counter and report failures under their own saveState key.
+  const activityTrack = useMemo(() => ({
+    start: () => bumpPending(1),
+    done: (pid, ok) => {
+      bumpPending(-1);
+      const name = projectsRef.current[pid]?.name || 'project';
+      setSaveState((prev) => nextSaveState(prev, activityStateKey(pid), ok ? 'ok' : 'error', name + ' (activity log)'));
+    },
+  }), [bumpPending]);
   const persistProject = useCallback((p) => {
     if (!p) return;
     if (!saveTimers.current[p.id]) bumpPending(1);
@@ -13249,19 +13268,23 @@ export default function App() {
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
   const retryFailedSaves = useCallback(() => {
-    for (const pid of retryablePids(saveStateRef.current)) {
+    for (const key of retryablePids(saveStateRef.current)) {
+      const pid = projectIdOfKey(key);
+      if (isActivityKey(key)) { flushActivity(pid, { v2: !!projectsRef.current[pid]?.__v2, track: activityTrack }); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
       else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
-  }, [persistProject]);
+  }, [persistProject, activityTrack]);
   // Banner Retry: also re-runs an unknown-person state (manual only, not on 'online').
   const retryManually = useCallback(() => {
-    for (const pid of manualRetryPids(saveStateRef.current)) {
+    for (const key of manualRetryPids(saveStateRef.current)) {
+      const pid = projectIdOfKey(key);
+      if (isActivityKey(key)) { flushActivity(pid, { v2: !!projectsRef.current[pid]?.__v2, track: activityTrack }); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
-      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+      else setSaveState((prev) => nextSaveState(prev, key, 'ok'));
     }
-  }, [persistProject]);
+  }, [persistProject, activityTrack]);
   useEffect(() => {
     window.addEventListener('online', retryFailedSaves);
     return () => window.removeEventListener('online', retryFailedSaves);
@@ -13310,11 +13333,11 @@ export default function App() {
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
     const pid = currentId;
-    const log = await appendActivity(pid, entry, { v2 });
+    const log = await appendActivity(pid, entry, { v2, track: activityTrack });
     if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
     if (log) setActivity(log);
     else if (v2) setActivity((prev) => [entry, ...prev]);
-  }, [currentId, author]);
+  }, [currentId, author, activityTrack]);
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
   // across projects, not just currentId). Refresh in-memory feed only if it's
@@ -13330,12 +13353,12 @@ export default function App() {
       ...(workstreamId !== undefined ? { workstreamId } : {}),
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
-    const log = await appendActivity(projectId, entry, { v2 });
+    const log = await appendActivity(projectId, entry, { v2, track: activityTrack });
     if (projectId === currentIdRef.current) {
       if (log) setActivity(log);
       else if (v2) setActivity((prev) => [entry, ...prev]);
     }
-  }, [author]);
+  }, [author, activityTrack]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen

@@ -139,3 +139,10 @@ export function manualRetryPids(saveState) {
 export function retryablePids(saveState) {
   return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error').map(([pid]) => pid);
 }
+
+// W5: a failed activity write is its own saveState entry (key 'activity:<pid>', status 'error'),
+// so a later successful project save cannot clear it and Retry knows to re-send the log.
+export const ACTIVITY_KEY = 'activity:';
+export const activityStateKey = (pid) => ACTIVITY_KEY + pid;
+export const isActivityKey = (key) => typeof key === 'string' && key.startsWith(ACTIVITY_KEY);
+export const projectIdOfKey = (key) => (isActivityKey(key) ? key.slice(ACTIVITY_KEY.length) : key);
