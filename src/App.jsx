@@ -13989,6 +13989,7 @@ export default function App() {
 
   const handleFileImport = async (file) => {
     if (!file) return;
+    if (!isOwner) { showToast('Only the workspace Owner can import a new project.'); return; }
     try {
       const imported = await parseExcelFile(file, dirIndex);
       // Append (2) etc if duplicate name
@@ -14214,7 +14215,7 @@ export default function App() {
               setProjectMenu({ x: rect.left, y: rect.bottom + 4 });
             }} title="Project options"><MoreHorizontal size={12} /></Btn></span>
             {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>}
-            <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>
+            {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>}
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
             <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
             <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>

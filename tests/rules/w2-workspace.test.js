@@ -39,6 +39,11 @@ describe('W2 R4/R8: workspace writes, project create, provider pin', () => {
     await assertFails(setDoc(doc(await asUser(STRANGER.uid, STRANGER.email), `${META}/projects/n3`), newProject(STRANGER)));
   });
 
+  it('W2-R4-1b project create: legacy-email Owner (ownerUids empty) allowed', async () => {
+    await seedDoc(META, { seeded: true, workspaceOwner: OWNER.email, ownerUids: [] });
+    await assertSucceeds(setDoc(doc(await asUser(OWNER.uid, OWNER.email), `${META}/projects/n9`), newProject(OWNER)));
+  });
+
   it('W2-R4-2 meta update (workspaceName): stranger and deactivated member denied; active member allowed', async () => {
     await assertFails(updateDoc(doc(await asUser(STRANGER.uid, STRANGER.email), META), { workspaceName: 'X' }));
     await assertFails(updateDoc(doc(await asUser(DEACT.uid, DEACT.email), META), { workspaceName: 'X' }));
