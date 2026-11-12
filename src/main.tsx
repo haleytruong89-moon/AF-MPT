@@ -6,6 +6,7 @@ import ReactDOM from 'react-dom/client';
 // so they'll suspend until <ShimUserSync /> publishes the auth user.
 import './storage-shim';
 import { setStorageUser } from './storage-shim';
+import RootErrorBoundary from './components/RootErrorBoundary';
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 
@@ -31,6 +32,7 @@ const root = ReactDOM.createRoot(document.getElementById('root')!);
 
     root.render(
       <React.StrictMode>
+        <RootErrorBoundary>
         <AuthProvider>
           <ShimUserSync>
             <AuthGate>
@@ -38,6 +40,7 @@ const root = ReactDOM.createRoot(document.getElementById('root')!);
             </AuthGate>
           </ShimUserSync>
         </AuthProvider>
+        </RootErrorBoundary>
       </React.StrictMode>
     );
   } catch (e) {

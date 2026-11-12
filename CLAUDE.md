@@ -39,7 +39,7 @@ Việc phát sinh qua email **không** thuộc app này (đã có PMO Tracker).
 | `src/data.ts` | Lớp Firestore có type, phần lớn không dùng (có `canEdit`, `roleOf`, onSnapshot hooks chưa được import) |
 | `src/components/MembersModal.tsx` | RBAC members; **ghi qua đường riêng** (`data.ts saveProject`) → có thể ghi đè chéo |
 | `firestore.rules` | Luật phân quyền, hiện **dán tay** vào Firebase console |
-| `scripts/` | Admin SDK (`migrate.js`, `setup-rbac.js`), cần `service-account.json` (gitignored) |
+| `scripts/` | Admin SDK (`p1-*`, `p2-*` — mặc định xem trước, `--apply` mới ghi), cần `service-account.json` (gitignored) |
 | Bỏ qua | `*.backup`, `App.secured-backup.jsx`, `CRP_Project_Tracker_v29_reference.jsx` (gitignored, code chết), `src/CRPRaid.jsx`, `src/MyWorkViews.jsx` (prototype) |
 
 ## Lệnh
@@ -99,7 +99,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 |---|---|---|
 | Code hỏng sau deploy | Vercel → Deployments → *Promote* bản trước; rồi `git revert` commit lỗi trên `main` | HOD |
 | Rules mới chặn sai | Deploy lại bản rules trước (lưu trong git) | HOD |
-| Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
+| Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app (project v2: `npm run p2:restore`, xem dòng "Project v2 cần restore"). Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
 | Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
 | Chuyển một project sang v2 lỗi | Báo mọi người trước. `npm run p2:migrate -- --rollback <pid>` (xem trước, in mã hash) → HOD duyệt → thêm `--apply --expect <hash>`. Nếu từ chối (exit 3) vì đã có sửa trên v2: đọc danh sách, chạy lại **xem trước kèm** `--force-with-report --delete-v2-docs` (mã hash tính cả cờ) rồi `--apply --expect <hash mới>` (ghi file dữ liệu mất trước). Sau đó mọi người hard-refresh. Document v1 giữ nguyên tới P2.5 | HOD |
@@ -153,5 +153,6 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - **Wave 2** (spec `docs/superpowers/specs/2026-11-12-wave2-hardening-design.md`, draft; HOD quyết 12/11: Q1 RAID/Decisions chỉ trong program của mình (xóa: Owner), Q2 weight program/WS chỉ Owner, Q3 chưa lên Blaze): rules (weight, tạo task, activity, tạo project, RAID theo program, người bị gỡ), ghi theo lô cho CRP, chống ghi đè trường project, không lưu PIC rỗng, không xóa cứng action/decision/RAID, Owner theo `ownerUids`, kéo-thả theo vai trò, error boundary, CI build + lint + branch protection; sau đó chuyển MA → UBO → AF Lean → CRP
 - Đã xong (12/11): branch protection `main` (bắt buộc PR + CI `checks` xanh, áp cả admin, cấm force-push/xóa)
 - Định hướng (HOD 12/11): sau này chuyển repo sang GitLab công ty và lưu dữ liệu theo quy trình chuẩn của công ty → CI (GitHub Actions), Vercel, Firebase phải xem lại khi chuyển
+- Wave 2 PR-D (12/11, `feat/w2-d-app-ops`): root error boundary (`src/components/RootErrorBoundary.tsx`), xóa `scripts/migrate.js` + `setup-rbac.js` + npm `migrate`; CI nay cũng chạy `npm run build` và `npm run lint:gate` (tối đa 6 errors / 63 warnings)
 - Tiếp theo: smoke test wave 1 (spec wave 1 §7) → HOD duyệt spec wave 2 → plan → code → chuyển 4 project v1 → PR 2 Replace person → onboard. P3.2 / P3.3 hoãn
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2

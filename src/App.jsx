@@ -19,7 +19,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -12981,6 +12981,7 @@ export default function App() {
   const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
   const bumpPending = useCallback((d) => { pendingSaves.current = Math.max(0, pendingSaves.current + d); setPendingN(pendingSaves.current); }, []);
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  useEffect(() => { setUnsavedWorkSignal(hasUnsavedWork(pendingN, saveState)); }, [pendingN, saveState]); // O4: feeds RootErrorBoundary
   const saveStateRef = useRef({});
   saveStateRef.current = saveState;
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
