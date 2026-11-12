@@ -2,8 +2,8 @@
 // Same scope as `npm run lint` (src, .js/.jsx/.ts/.tsx). Lower the limits as debt is paid.
 import { ESLint } from 'eslint';
 
-const MAX_ERRORS = 6;
-const MAX_WARNINGS = 63;
+const MAX_ERRORS = 2;
+const MAX_WARNINGS = 32;
 
 const eslint = new ESLint({ extensions: ['.js', '.jsx', '.ts', '.tsx'] });
 const results = await eslint.lintFiles(['src']);

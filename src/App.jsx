@@ -7311,9 +7311,9 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
   }, [project, dirIndex]);
 
   // Wave 2 O2: a drop the rules would refuse is not attempted (never across programs for a non-Owner).
-  const dropOk = (kind, targetPgId, targetWsId) => canDropMove({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, kind, sourcePgId: dragInfo?.sourcePgId, targetPgId, targetWsId });
+  const dropOk = (kind, targetPgId, targetWsId) => canDropMove({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, kind, sourcePgId: dragInfo?.sourcePgId, targetPgId, targetWsId, taskStart: dragInfo?.start, taskEnd: dragInfo?.end });
   const onDragStartTask = (e, task, pg, ws) => {
-    setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id });
+    setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id, start: task.start ?? null, end: task.end ?? null });
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', task.id);
   };
@@ -13086,6 +13086,10 @@ export default function App() {
   // claims are no longer accepted; Firestore rules enforce the same.
   const verifiedEmail = authUser?.email || authorEmail || null;
   const isOwner = isWorkspaceOwner(meta, authUser?.uid, verifiedEmail);
+  // Label only: "You" when the viewer is the workspaceOwner email, or the only ownerUids entry; otherwise show the stored email.
+  const ownerIsMe = isOwner && (!meta?.workspaceOwner
+    || (verifiedEmail && String(meta.workspaceOwner).trim().toLowerCase() === String(verifiedEmail).trim().toLowerCase())
+    || (Array.isArray(meta?.ownerUids) && meta.ownerUids.length === 1 && meta.ownerUids[0] === authUser?.uid));
 
   const [localSeenAt, setLocalSeenAt] = useState(null); // { uid, at } from this tab; null = read from storage
   // v30 — per-user preferences (lastSeenMyWorkAt, defaultViewOverride, etc.)
@@ -14831,7 +14835,7 @@ export default function App() {
                 {(meta?.workspaceOwner || isOwner) ? (
                   <>
                     <div style={{ color: TOK.ink, marginBottom: 6 }}>
-                      {isOwner ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : meta.workspaceOwner}
+                      {ownerIsMe ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : (meta?.workspaceOwner || 'Owner (by uid)')}
                     </div>
                     {isOwner ? (
                       <div style={{ display: 'flex', gap: 6 }}>

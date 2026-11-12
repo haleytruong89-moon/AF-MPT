@@ -265,6 +265,13 @@ describe('move caps and canDropMove (O2)', () => {
     expect(canDropMove({ ...base, targetPgId: 'p2', targetWsId: 'w2' })).toBe(false);
     expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p2' })).toBe(false);
   });
+  it('PM: task dates must fit the target work stream (taskDatesOk)', () => {
+    const inside = { ...base, targetWsId: 'w1', taskStart: '2026-02-01', taskEnd: '2026-03-01' };
+    expect(canDropMove(inside)).toBe(true);
+    expect(canDropMove({ ...inside, taskEnd: '2027-03-01' })).toBe(false);
+    expect(canDropMove({ ...inside, taskStart: '2025-01-01' })).toBe(false);
+    expect(canDropMove({ ...inside, isOwner: true, taskEnd: '2027-03-01' })).toBe(true);
+  });
   it('Sub-PM never drops a task or ws; PM never moves a ws', () => {
     expect(canDropMove({ ...base, uid: 'L' })).toBe(false);
     expect(canDropMove({ ...base, uid: 'L', kind: 'ws' })).toBe(false);

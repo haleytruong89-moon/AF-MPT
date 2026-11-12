@@ -48,7 +48,7 @@ Việc phát sinh qua email **không** thuộc app này (đã có PMO Tracker).
 npm run dev         # localhost:5173
 npm run build       # tsc --noEmit && vite build
 npm run typecheck
-npm run lint        # hiện 6 errors / 63 warnings — không làm tăng thêm
+npm run lint        # hiện 2 errors / 32 warnings (CI gate: `lint:gate`) — không làm tăng thêm
 npm run test:rules  # Firestore rules trên Emulator (cần Java 21 — máy dev không có, chạy trên CI)
 ```
 CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (nếu có) + rules test cho mọi PR và push vào `main`. **CI xanh là cổng bắt buộc trước khi merge và trước khi deploy rules.** Test rules ở `tests/rules/`, project emulator `demo-afmpt`.
@@ -150,9 +150,10 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong (12/11): repo chuyển public → CI chạy lại, cả 7 PR xanh (rules 313/313). Wave 1 merged vào `main` (#28, #29 trực tiếp; #30–#33 merge vào nhánh xếp chồng, nội dung lên `main` qua #34). Bài học: PR xếp chồng phải đổi base sang `main` trước khi merge; không xóa nhánh base khi PR con chưa đổi base (GitHub tự đóng PR con). Rules #30 (H4, H5): HOD publish trên Console nếu chưa
 - Chờ HOD: xác nhận Ruling W1-1 (cấm tự duyệt chỉ áp cho PM/Sub-PM, Owner vẫn tự đóng task mình — lệch spec §8 call 3); proofread glossary (EN+VI); quyết bỏ tab Aggregation / gom nút header (chưa trả lời)
 - Theo dõi sau wave 1: Owner trong app = email `workspaceOwner`, rules = `ownerUids` → sửa trước khi thêm Owner thứ 2; kéo-thả Outline chưa ẩn theo vai trò → sửa trước khi onboard cả phòng; `markMyWorkSeen` còn ghi meta chung
+- Trước khi thêm Owner thứ 2 (wave 2 PR-D): app liệt kê project bằng `memberIds array-contains uid` → Owner 2 phải được thêm vào `memberIds`/`memberUids` của mọi project (và project mới); project v1 cần Owner 2 là owner của project hoặc phải chuyển lên v2 trước
 - **Wave 2** (spec `docs/superpowers/specs/2026-11-12-wave2-hardening-design.md`, draft; HOD quyết 12/11: Q1 RAID/Decisions chỉ trong program của mình (xóa: Owner), Q2 weight program/WS chỉ Owner, Q3 chưa lên Blaze): rules (weight, tạo task, activity, tạo project, RAID theo program, người bị gỡ), ghi theo lô cho CRP, chống ghi đè trường project, không lưu PIC rỗng, không xóa cứng action/decision/RAID, Owner theo `ownerUids`, kéo-thả theo vai trò, error boundary, CI build + lint + branch protection; sau đó chuyển MA → UBO → AF Lean → CRP
 - Đã xong (12/11): branch protection `main` (bắt buộc PR + CI `checks` xanh, áp cả admin, cấm force-push/xóa)
 - Định hướng (HOD 12/11): sau này chuyển repo sang GitLab công ty và lưu dữ liệu theo quy trình chuẩn của công ty → CI (GitHub Actions), Vercel, Firebase phải xem lại khi chuyển
-- Wave 2 PR-D (12/11, `feat/w2-d-app-ops`): root error boundary (`src/components/RootErrorBoundary.tsx`), xóa `scripts/migrate.js` + `setup-rbac.js` + npm `migrate`; CI nay cũng chạy `npm run build` và `npm run lint:gate` (tối đa 6 errors / 63 warnings)
+- Wave 2 PR-D (12/11, `feat/w2-d-app-ops`): root error boundary (`src/components/RootErrorBoundary.tsx`), xóa `scripts/migrate.js` + `setup-rbac.js` + npm `migrate`; CI nay cũng chạy `npm run build` và `npm run lint:gate` (tối đa 2 errors / 32 warnings, đã loại file gitignored/untracked khỏi ESLint)
 - Tiếp theo: smoke test wave 1 (spec wave 1 §7) → HOD duyệt spec wave 2 → plan → code → chuyển 4 project v1 → PR 2 Replace person → onboard. P3.2 / P3.3 hoãn
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2

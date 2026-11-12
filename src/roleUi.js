@@ -81,11 +81,12 @@ export function isWorkspaceOwner(meta, uid, email) {
  * Wave 2 O2: may a drop be attempted? Owner / v1: yes. v2 non-Owner: work stream
  * moves never (W2-20); a task only by the PM / Deputy, within their own program.
  */
-export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId }) {
+export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId, targetWsId, taskStart, taskEnd }) {
   if (isOwner || !isV2) return true;
   if (sourcePgId !== targetPgId) return false;
   if (kind === 'ws') return false;
-  return isPmOf(roles, sourcePgId, uid);
+  // rules taskManagerPm: the task's dates must fit the target work stream (taskDatesOk).
+  return isPmOf(roles, sourcePgId, uid) && datesWithinWs(taskStart, taskEnd, roles?.workstreams?.[targetWsId]);
 }
 
 // PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).
