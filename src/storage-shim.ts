@@ -278,9 +278,10 @@ type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Recor
 const planV2 = planV2Save as unknown as (loaded: V2Loaded, tree: Record<string, unknown>, opts: Record<string, unknown>) => V2Plan;
 const applyV2Written = applyWritten as unknown as (loaded: V2Loaded, written: unknown[], metaPatch: Record<string, unknown> | null) => void;
 
-// P2.3 v2 save: plan against the loaded docs, then one transaction per batch.
-// The cache is refreshed from whatever committed (a later Ruling X step may fail
-// after batch 1 landed); on conflict / denied the rest stays stale until reload.
+// P2.3 v2 save: plan against the loaded docs, then one transaction per batch (a non-Owner
+// plan is split into chunks, W1). The cache is refreshed from whatever committed (a later
+// batch / chunk may fail after earlier ones landed); on conflict / denied the rest stays
+// stale until reload.
 async function saveV2Project(key: string, value: string, pid: string, loaded: V2Loaded, user: UserProfile) {
   const parsed = JSON.parse(value) as Record<string, unknown>;
   const { [FORCE_WRITE_FLAG]: _force, ...tree } = parsed;

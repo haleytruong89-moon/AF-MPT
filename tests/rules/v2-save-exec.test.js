@@ -8,6 +8,7 @@ import { assembleFromSnapshots } from '../../src/readV2.js';
 import { planV2Save } from '../../src/planV2Save.js';
 import { executeV2Save, applyWritten } from '../../src/execV2Save.js';
 import { activityDocFor } from '../../src/activityDoc.js';
+import { canEditDecision } from '../../src/roleUi.js';
 
 // P2.3 Task 4: the shim's v2 write path end to end against the rules.
 // Plans come from planV2Save (fixture tree edited like App.jsx does); the executor
@@ -409,6 +410,71 @@ describe('P2.3 v2 save executor against the rules', () => {
       const { r } = await save(ASG2, (t) => { resolveIn(taskIn(t, 't1'), 'b1', '2026-10-26T01:00:00.000Z', 'x'); });
       expect(r.status).toBe('denied');
       expect(await serverDoc(`${PV}/tasks/t1`)).toEqual(before);
+    });
+  });
+  // Wave 2 W3 I1 / W2-17: invite-only uid backfill against the rules. t1 is stored with
+  // picUid null (the PIC was an invite when assigned); the directory now resolves ASG.
+  describe('W2-17 uid backfill (PM / Sub-PM, open and closing tasks)', () => {
+    beforeEach(async () => {
+      const t1 = await serverDoc(`${PV}/tasks/t1`);
+      await seedDoc(`${PV}/tasks/t1`, { ...t1, picUid: null });
+    });
+
+    it('EXEC-BF1 PM edits an open task whose picUid is null: ok and picUid written', async () => {
+      const { r } = await save(PM, (t) => { taskIn(t, 't1').name = 'PM edit'; });
+      expect(r.status).toBe('ok');
+      expect(await serverDoc(`${PV}/tasks/t1`)).toMatchObject({ name: 'PM edit', picUid: ASG.uid });
+    });
+
+    it('EXEC-BF2 PM direct-closes such a task: ok (no credit keys in the close)', async () => {
+      const { r, plan } = await save(PM, (t) => { taskIn(t, 't1').status = 'Completed'; });
+      expect(plan.batches.flat().find((o) => o.id === 't1').data.picUid).toBeNull();
+      expect(r.status).toBe('ok');
+      expect(await serverDoc(`${PV}/tasks/t1`)).toMatchObject({ status: 'Completed', picUid: null });
+    });
+
+    it('EXEC-BF3 Sub-PM of the work stream: same as BF1 within the own WS', async () => {
+      const { r } = await save(LEAD, (t) => { taskIn(t, 't1').name = 'Lead edit'; });
+      expect(r.status).toBe('ok');
+      expect(await serverDoc(`${PV}/tasks/t1`)).toMatchObject({ name: 'Lead edit', picUid: ASG.uid });
+    });
+  });
+
+  // PR-A carry A4 #4: a decision filed under prg1's PM claim.
+  describe('A4 decisions by program claim', () => {
+    const PM2 = { uid: 'u_pm2', email: 'pm2@smartosc.com' };
+    beforeEach(async () => {
+      const e = await getEnv();
+      await e.withSecurityRulesDisabled(async (ctx) => {
+        await updateDoc(doc(ctx.firestore(), PV), { 'programMeta.prg2.pmUid': PM2.uid, memberUids: [...ALL.map((u) => u.uid), PM2.uid] });
+      });
+      await seedDoc(`${WS}/members/${PM2.uid}`, { email: PM2.email, displayName: 'pm2', aliases: [], department: 'AF', status: 'active', updatedAt: '2026-10-22T00:00:00Z', updatedBy: OWNER.email });
+      await seedDoc(`${PV}/decisions/d1`, {
+        workspaceId: WID, projectId: PID, order: 0, id: 'd1', title: 'Decision 1', status: 'Open',
+        viaProgramId: 'prg1', version: 1, updatedBy: PM.uid,
+      });
+    });
+
+    it('EXEC-DEC1 Sub-PM of prg1 updates the decision through their claim: ok', async () => {
+      const { r, plan } = await save(LEAD, (t) => { t.decisions[0].title = 'Lead edit'; });
+      expect(plan.batches.flat().find((o) => o.kind === 'decisions').data).toMatchObject({ viaWorkstreamId: 'w1' });
+      expect(r.status).toBe('ok');
+      expect((await serverDoc(`${PV}/decisions/d1`)).title).toBe('Lead edit');
+    });
+
+    it('EXEC-DEC2 PM of another program: no claim in the plan, UI cap false, forced write denied', async () => {
+      const db = await asUser(PM2.uid, PM2.email);
+      const { loaded, tree } = await load(db);
+      tree.decisions[0].title = 'PM2 edit';
+      const plan = planV2Save(loaded, tree, { uid: PM2.uid, wid: WID, pid: PID, isOwner: false, dirIndex, uidByEmail });
+      const op = plan.batches.flat().find((o) => o.kind === 'decisions');
+      expect(op.data).not.toHaveProperty('viaProgramId');
+      expect(op.data).not.toHaveProperty('viaWorkstreamId');
+      const roles = { programs: { prg1: { pmUid: PM.uid }, prg2: { pmUid: PM2.uid } }, workstreams: { w1: { programId: 'prg1', leadUid: LEAD.uid } }, decisions: { d1: { programId: 'prg1' } } };
+      expect(canEditDecision({ isOwner: false, isV2: true, roles, uid: PM2.uid, decision: { id: 'd1' } })).toBe(false);
+      const r = await executeV2Save(fs, { db, wid: WID, pid: PID, uid: PM2.uid, plan });
+      expect(r.status).toBe('denied');
+      expect((await serverDoc(`${PV}/decisions/d1`)).title).toBe('Decision 1');
     });
   });
 });

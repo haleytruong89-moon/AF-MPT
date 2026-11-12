@@ -48,7 +48,8 @@ export function chunkOpsByWorkstream(ops, wsOf, max = MAX_WS_PER_CHUNK) {
     const w = wsOf(op);
     return [...new Set((Array.isArray(w) ? w : [w]).filter((x) => typeof x === 'string' && x))];
   });
-  // Union-find over work-stream ids.
+  // Union-find over work-stream ids. Limit: ops touching several WS chain them into one
+  // chunk (transitively), so a chain of such ops can exceed the cap; the CRP test covers it.
   const parent = new Map();
   const find = (x) => {
     while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }

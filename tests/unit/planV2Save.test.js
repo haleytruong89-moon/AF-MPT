@@ -663,6 +663,7 @@ describe('planV2Save', () => {
     const withUid = { ...Object.fromEntries([...uidByEmail]), 'carol@smartosc.com': 'uid3' };
     const fresh = () => ctx({ uid: 'uidPM', uidByEmail: new Map(Object.entries(withUid)) });
     const setup = (status, uidKey = 'picUid') => {
+      if (status === 'In Progress') status = 'InProgress';
       const loaded = makeLoaded();
       const d = loaded.docs.tasks.get('t2').data;
       d.pic = 'Carol Tran'; d[uidKey] = null; d.status = status;
@@ -679,6 +680,30 @@ describe('planV2Save', () => {
     });
     it('Owner backfills a Completed task', () => {
       const op = allOps(run(setup('Completed'), { ...fresh(), uid: 'uidOwner', isOwner: true })).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('W2-17: an untouched task with a resolvable null picUid is not in the plan', () => {
+      const loaded = setup('InProgress');
+      const tree = treeOf(loaded);
+      ws1(tree).tasks[0].name = 'edited elsewhere';
+      const ids = allOps(planV2Save(loaded, tree, fresh())).map((o) => o.id);
+      expect(ids).not.toContain('t2');
+      expect(planV2Save(loaded, treeOf(loaded), fresh())).toEqual({ batches: [], metaPatch: null, refused: null });
+    });
+    it('W2-17: a manager direct close (Planned -> Completed) carries no picUid change', () => {
+      const loaded = setup('Planned');
+      const tree = treeOf(loaded);
+      ws1(tree).tasks[1].status = 'Completed';
+      const op = allOps(planV2Save(loaded, tree, fresh())).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBeNull();
+    });
+    it('W2-17: a task with a missing status edited by a PM is backfilled', () => {
+      const loaded = setup('InProgress');
+      delete loaded.docs.tasks.get('t2').data.status;
+      const tree = treeOf(loaded);
+      delete ws1(tree).tasks[1].status;
+      ws1(tree).tasks[1].name = 'x';
+      const op = allOps(planV2Save(loaded, tree, fresh())).find((o) => o.id === 't2');
       expect(op.data.picUid).toBe('uid3');
     });
     it('a pic changed only in case keeps the stored uid', () => {

@@ -425,8 +425,11 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       // I1: an unchanged name that was invite-only (stored uid null) now resolves to a uid
       // (the person signed in): write it. credit keys are locked for non-Owners on closed
       // tasks, and only managers may change them, so skip rather than get denied.
-      const closed = ['Submitted', 'Completed', 'Dropped', 'Done', 'Cancelled'].includes(old.status);
-      const may = isOwner || (k === 'tasks' && !closed && claims.manages(old.programId, old.workstreamId));
+      // Ruling W2-17: called only for a doc this save already writes; a non-Owner needs the
+      // stored AND the new status open by the rules' isOpenSt (missing = Planned) so a direct
+      // close never carries credit keys.
+      const openSt = (d) => { const s = hasOwn(d, 'status') ? d.status : 'Planned'; return s === 'Planned' || s === 'InProgress'; };
+      const may = isOwner || (k === 'tasks' && openSt(old) && openSt(data) && claims.manages(old.programId, old.workstreamId));
       if (!may) return data;
       const out = { ...data };
       if (samePeople(old.pic, fresh.pic) && !old.picUid && fresh.picUid) { out.picUid = fresh.picUid; if (fresh.picEmail) out.picEmail = fresh.picEmail; }
@@ -469,10 +472,11 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
         continue;
       }
       let data = overlay(kind, old, strip(nextById.get(id)));
-      if (kind === 'tasks' || kind === 'actions') data = backfillUids(kind, old, data, strip(nextById.get(id)));
       if (kind === 'tasks') data = unfoldResolutions(old, data, uid);
       data = carryDoc(kind, old, data);
       if (deepEqual(data, old)) continue;
+      // W2-17: backfill only a doc the save already writes for another reason.
+      if (kind === 'tasks' || kind === 'actions') data = backfillUids(kind, old, data, strip(nextById.get(id)));
       // Ruling AH: without the directory a changed person cannot be resolved; never
       // write null uids for it.
       if (!dirIndex && (kind === 'tasks' || kind === 'actions')
