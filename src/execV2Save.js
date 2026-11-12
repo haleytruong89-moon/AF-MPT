@@ -81,7 +81,11 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
         // plan changes must still hold the value this tab loaded, else a newer edit wins.
         if (i === 0 && meta && plan.metaBase) {
           const live = projectSnap.data() || {};
-          for (const [k, v] of Object.entries(plan.metaBase)) if (!stableEqual(live[k], v)) return { conflict: true };
+          for (const [k, v] of Object.entries(plan.metaBase)) {
+            const want = plan.metaPatch[k] === DELETE_FIELD ? undefined : plan.metaPatch[k];
+            // Already holds what this tab writes (idempotent): not a conflict.
+            if (!stableEqual(live[k], v) && !stableEqual(live[k], want)) return { conflict: true, reason: 'meta' };
+          }
         }
         const snaps = [];
         for (const op of ops) snaps.push(await tx.get(refOf(op)));
@@ -119,7 +123,7 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
       const status = e && e.code === 'permission-denied' ? 'denied' : 'error';
       return { status, written, failedBatch: i, metaWritten, metaPatch: metaApplied, error: e };
     }
-    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten, metaPatch: metaApplied };
+    if (res.conflict) return { status: 'conflict', ...(res.reason ? { reason: res.reason } : {}), written, failedBatch: i, metaWritten, metaPatch: metaApplied };
     written.push(...res.out);
     if (i === 0 && meta) { metaWritten = true; metaApplied = res.metaOut; }
   }

@@ -20,6 +20,7 @@ export function nextRev(serverRev) {
 }
 
 // One banner entry per project. 'ok' clears it; 'conflict' is sticky until reload.
+// 'conflict-meta' (W2) = a v2 project-level field changed in another tab; same stickiness, own banner copy.
 // 'readonly' (a v2 doc reaching the v1 write path; unreachable since P2.3) is stickier:
 // even 'ok' keeps it. 'denied' / 'refused' (P2.3) are per attempt, like 'error'.
 export function nextSaveState(prev, pid, status, name) {
@@ -30,7 +31,7 @@ export function nextSaveState(prev, pid, status, name) {
     const { [pid]: _drop, ...rest } = prev;
     return rest;
   }
-  if (cur && cur.status === 'conflict') return prev;
+  if (cur && (cur.status === 'conflict' || cur.status === 'conflict-meta')) return prev;
   if (cur && cur.status === status && cur.name === name) return prev;
   return { ...prev, [pid]: { status, name } };
 }
@@ -68,7 +69,7 @@ export function failedRestores(results) {
 // a task delete / history wipe) are per attempt: nextSaveState lets a later 'ok' clear them.
 // P3.1 I2: 'history' = the planner refused a close-history wipe (own banner copy).
 export function bannerGroups(saveState) {
-  const out = { conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] };
+  const out = { conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [] };
   for (const v of Object.values(saveState || {})) {
     (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }

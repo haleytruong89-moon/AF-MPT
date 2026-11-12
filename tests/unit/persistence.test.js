@@ -128,23 +128,23 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [], history: [] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] });
+    })).toEqual({ conflict: ['CRP'], 'conflict-meta': [], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [], history: [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [] });
   });
   it('lists readonly (v2 pilot) projects separately', () => {
     expect(bannerGroups({
       a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [], history: [] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [], history: [] });
   });
   it('lists denied and refused (P2.3 v2 saves) separately', () => {
     expect(bannerGroups({
       a: { status: 'denied', name: 'Pilot' }, b: { status: 'refused', name: 'KR' }, c: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'], history: [] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'], history: [] });
   });
   it('lists history (close-history-wipe refusals, P3.1 I2) separately from other refusals', () => {
     expect(bannerGroups({
       a: { status: 'history', name: 'KR' }, b: { status: 'refused', name: 'Ops' },
-    })).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: ['Ops'], history: ['KR'] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: ['Ops'], history: ['KR'] });
   });
   it('history is per attempt: a later ok clears it', () => {
     let s = nextSaveState({}, 'p1', 'history', 'KR');
@@ -302,5 +302,15 @@ describe('retryablePids', () => {
   it('empty / missing state -> []', () => {
     expect(retryablePids({})).toEqual([]);
     expect(retryablePids(undefined)).toEqual([]);
+  });
+});
+
+describe('conflict-meta (W2 B2)', () => {
+  it('own banner group; sticky like conflict', () => {
+    let s = nextSaveState({}, 'p1', 'conflict-meta', 'MA');
+    expect(bannerGroups(s)['conflict-meta']).toEqual(['MA']);
+    expect(bannerGroups(s).conflict).toEqual([]);
+    expect(bannerGroups(s).error).toEqual([]);
+    expect(nextSaveState(s, 'p1', 'error', 'MA')).toBe(s);
   });
 });

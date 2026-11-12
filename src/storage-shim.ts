@@ -301,7 +301,9 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? (r.metaPatch ?? plan.metaPatch) : null);
   if (r.status === 'ok') return { key, value, shared: true };
   console.warn('[storage] v2 save not completed:', pid, r.status, 'batch', r.failedBatch, r.error || '');
-  return { key, value, shared: true, error: r.status };
+  // W2: a project-level field changed meanwhile gets its own banner copy.
+  const error = r.status === 'conflict' && (r as { reason?: string }).reason === 'meta' ? 'conflict-meta' : r.status;
+  return { key, value, shared: true, error };
 }
 
 /** Per-user localStorage key for the "currently selected project". */
