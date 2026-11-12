@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import { ACTIVITY_KEYS, activityDocFor, activityEntryFromDoc } from '../../src/activityDoc.js';
+import { ACTIVITY_KEYS, ACTIVITY_DESCRIPTION_MAX, activityDocFor, activityEntryFromDoc } from '../../src/activityDoc.js';
 
 describe('activityDocFor', () => {
   it('keeps allow-listed keys, drops author / authorName / timestamp, stamps the uid', () => {
@@ -36,5 +37,54 @@ describe('activityEntryFromDoc', () => {
   it('a pending serverTimestamp (null createdAt) keeps stored timestamp; id from doc id', () => {
     const e = activityEntryFromDoc({ type: 'x', createdAt: null, timestamp: 'T' }, 'docid', null);
     expect(e).toMatchObject({ id: 'docid', timestamp: 'T' });
+  });
+});
+
+describe('activityDocFor description cap', () => {
+  const len = (n) => activityDocFor({ id: 'a', type: 't', description: 'x'.repeat(n) }, 'u').description;
+  it('keeps 1999 and 2000 chars unchanged', () => {
+    expect(len(1999)).toHaveLength(1999);
+    expect(len(2000)).toHaveLength(2000);
+  });
+  it('truncates 2001 and very long text to 2000 chars ending with an ellipsis', () => {
+    for (const n of [2001, 50000]) {
+      const d = len(n);
+      expect(d).toHaveLength(ACTIVITY_DESCRIPTION_MAX);
+      expect(d.endsWith('…')).toBe(true);
+    }
+  });
+});
+
+describe('activityEntryFromDoc author is never blank', () => {
+  it('no directory name and no stored author: email, else Unknown', () => {
+    expect(activityEntryFromDoc({ authorUid: 'u', authorEmail: 'a@smartosc.com' }, 'i', () => null).author).toBe('a@smartosc.com');
+    expect(activityEntryFromDoc({ authorUid: 'u' }, 'i', () => null).author).toBe('Unknown');
+    expect(activityEntryFromDoc({ authorUid: 'u', author: '  ' }, 'i', null).author).toBe('Unknown');
+  });
+});
+
+describe('migrated v2 activity doc (shape written by p2-migrate)', () => {
+  const doc = {
+    id: 'e1', type: 'status_change', description: 'd', author: 'Lybk', authorEmail: 'lybk@smartosc.com',
+    authorUid: 'uidL', createdAt: { toDate: () => new Date('2026-03-04T05:06:07Z') },
+    timestamp: '2026-03-04T05:06:07.000Z', copiedBy: 'p2-migrate',
+  };
+  it('directory has no name: stored author and createdAt time show', () => {
+    const e = activityEntryFromDoc(doc, 'e1', () => null);
+    expect(e.author).toBe('Lybk');
+    expect(e.timestamp).toBe('2026-03-04T05:06:07.000Z');
+  });
+  it('directory name wins when present', () => {
+    expect(activityEntryFromDoc(doc, 'e1', () => 'Lybk (dir)').author).toBe('Lybk (dir)');
+  });
+});
+
+describe('ACTIVITY_KEYS matches firestore.rules', () => {
+  it('equals the hasOnly list in activityShapeOk', () => {
+    const rules = readFileSync('firestore.rules', 'utf8');
+    const m = rules.match(/function activityShapeOk[\s\S]*?hasOnly\(\[([\s\S]*?)\]\)/);
+    expect(m).toBeTruthy();
+    const keys = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+    expect([...keys].sort()).toEqual([...ACTIVITY_KEYS].sort());
   });
 });

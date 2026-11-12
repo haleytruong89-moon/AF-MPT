@@ -7,12 +7,18 @@ export const ACTIVITY_KEYS = [
   'programId', 'workstreamId', 'projectId', 'workspaceId', 'authorUid', 'createdAt',
 ];
 
+// Mirrors the rule's description <= 2000 (user text such as reject reasons and renamed titles is unbounded).
+export const ACTIVITY_DESCRIPTION_MAX = 2000;
+
 /** Document body for a new event (caller adds createdAt: serverTimestamp()). */
 export function activityDocFor(entry, uid) {
   const out = {};
   for (const k of ACTIVITY_KEYS) {
     if (k === 'authorUid' || k === 'createdAt') continue;
     if (entry && entry[k] !== undefined) out[k] = entry[k];
+  }
+  if (typeof out.description === 'string' && out.description.length > ACTIVITY_DESCRIPTION_MAX) {
+    out.description = out.description.slice(0, ACTIVITY_DESCRIPTION_MAX - 1) + '…';
   }
   out.authorUid = uid;
   return out;
@@ -30,6 +36,8 @@ export function activityEntryFromDoc(data, id, nameOfUid) {
     const name = nameOfUid(e.authorUid);
     if (name) e.author = name;
   }
+  // Never blank: directory name, else stored author, else stored email, else a label.
+  if (typeof e.author !== 'string' || !e.author.trim()) e.author = e.authorEmail || 'Unknown';
   if (e.id == null) e.id = id;
   return e;
 }
