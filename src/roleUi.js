@@ -158,8 +158,87 @@ export function myRoleSummary(roles, uid, project) {
 export function actionDeleteMode({ isOwner, isV2, roles, uid, action }) {
   if (isOwner || !isV2) return 'delete';
   if (action?.status === 'Cancelled') return 'none'; // rules: no touching a Cancelled action
-  const wsId = action?.workstreamId ?? null;
-  const ws = wsId != null ? roles?.workstreams?.[wsId] : null;
-  if (!ws || ws.programId == null) return 'none';
-  return isPmOf(roles, ws.programId, uid) || isLeadOf(roles, wsId, ws.programId, uid) ? 'cancel' : 'none';
+  return managesWs(roles, uid, actionWsId(roles, action)) ? 'cancel' : 'none';
+}
+
+// ── W3-A2: one capability per surface, mirroring firestore.rules ──
+
+/**
+ * The work stream an action belongs to. The tree drops the v2 doc field
+ * `workstreamId` (assembleProject), so it is derived the way the split does it
+ * (migrateV2): the related task's work stream. null = none (Owner only).
+ */
+export function actionWsId(roles, action) {
+  if (action?.workstreamId != null) return action.workstreamId;
+  const t = action?.relatedTaskId;
+  if (t == null || !roles?.tasks || !hasOwn(roles.tasks, t)) return null;
+  return roles.tasks[t]?.workstreamId ?? null;
+}
+
+/** Rules actionManager: PM / Deputy of the ws's program, or Sub-PM of the ws (program in programMeta). */
+export function managesWs(roles, uid, wsId) {
+  if (!uid || wsId == null) return false;
+  const ws = roles?.workstreams?.[wsId];
+  if (!ws || ws.programId == null || !roles.programs || !hasOwn(roles.programs, ws.programId)) return false;
+  return isPmOf(roles, ws.programId, uid) || isLeadOf(roles, wsId, ws.programId, uid);
+}
+
+/**
+ * Tasks a person may attach a new action to (rules action create: Owner, or a
+ * manager of the task's work stream). Owner / v1: every task.
+ * Returns [{ task, program, workstream }] in tree order.
+ */
+export function actionTaskOptions(project, { isOwner, isV2, roles, uid }) {
+  const out = [];
+  for (const program of project?.programs || []) {
+    for (const workstream of program.workstreams || []) {
+      if (!(isOwner || !isV2 || managesWs(roles, uid, workstream.id))) continue;
+      for (const task of workstream.tasks || []) out.push({ task, program, workstream });
+    }
+  }
+  return out;
+}
+
+/** May the person create any action in this project? Owner / v1: yes (an Owner may leave the task empty). */
+export function canCreateAction(project, ctx) {
+  if (ctx.isOwner || !ctx.isV2) return true;
+  return actionTaskOptions(project, ctx).length > 0;
+}
+
+/**
+ * What the person may change on an existing action (rules actionUpdateOk):
+ *  - 'full': Owner, v1, or manager of the action's work stream.
+ *  - 'pic': the PIC (isPic, resolved by the caller from the directory): status
+ *    except Cancelled, steps, comments.
+ *  - 'comment': anyone else, and everyone but the Owner on a Cancelled action
+ *    (D1: comments for every reader, rules in W3-B).
+ */
+export function actionEditMode({ isOwner, isV2, roles, uid, action, isPic }) {
+  if (isOwner || !isV2) return 'full';
+  if (action?.status === 'Cancelled') return 'comment';
+  if (managesWs(roles, uid, actionWsId(roles, action))) return 'full';
+  return isPic ? 'pic' : 'comment';
+}
+
+/** D3: a step is ticked by the action's PIC, a manager of its work stream, or the Owner. */
+export function canTickStep(ctx) {
+  const mode = actionEditMode(ctx);
+  return mode === 'full' || mode === 'pic';
+}
+
+/**
+ * Task panel controls (rules taskUpdateWith): Owner / v1 / PM / Deputy / Sub-PM
+ * of the task: all. PIC while Planned / InProgress / Submitted: health,
+ * references, resolve a blocker. Contributor: resolve a blocker only.
+ * addAction = a manager of the task (or Owner).
+ */
+export function taskPanelCaps({ isOwner, isV2, roles, uid, taskId, status }) {
+  const all = { health: true, refs: true, resolveBlocker: true, addAction: true };
+  if (isOwner || !isV2) return all;
+  if (managerLevel(roles, taskId, uid)) return all;
+  const info = roles?.tasks && hasOwn(roles.tasks, taskId) ? roles.tasks[taskId] : null;
+  const open = ['Planned', 'InProgress', 'Submitted'].includes(status || 'Planned');
+  if (uid && info?.picUid === uid && open) return { health: true, refs: true, resolveBlocker: true, addAction: false };
+  const contrib = !!uid && Array.isArray(info?.contributorUids) && info.contributorUids.includes(uid);
+  return { health: false, refs: false, resolveBlocker: contrib, addAction: false };
 }
