@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
 import {
   Plus, Edit2, Trash2, X, Upload, Download, ChevronRight, ChevronDown,
-  Save, Map as MapIcon, List as ListIcon, Calendar, FileSpreadsheet,
+  Save, Map as MapIcon, Calendar, FileSpreadsheet,
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
-  FileUp, Activity, Home, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, BarChart3, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
+  FileUp, Activity, ArrowRightLeft, Info, RefreshCw, UserCircle,
+  Move, FileText, History, Grip, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -21,7 +21,8 @@ import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildAct
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
+import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
@@ -119,7 +120,7 @@ const DEFAULT_VIEW_OPTIONS = [
   { id: 'outline', label: 'Outline' },
   { id: 'gantt', label: 'Gantt' },
   { id: 'dashboard', label: 'Dashboard' },
-  { id: 'aggregation', label: 'Aggregation' },
+  { id: 'portfolio', label: 'Portfolio' },
   { id: 'activity', label: 'Activity Dashboard' },
 ];
 
@@ -13086,6 +13087,8 @@ export default function App() {
   // claims are no longer accepted; Firestore rules enforce the same.
   const verifiedEmail = authUser?.email || authorEmail || null;
   const isOwner = isWorkspaceOwner(meta, authUser?.uid, verifiedEmail);
+  // P4: UI tier decides visible tabs and landing view (rules stay the authority).
+  const tier = useMemo(() => uiTier({ isOwner, projects, uid: authUser?.uid || null }), [isOwner, projects, authUser?.uid]);
   // Label only: "You" when the viewer is the workspaceOwner email, or the only ownerUids entry; otherwise show the stored email.
   const ownerIsMe = isOwner && (!meta?.workspaceOwner
     || (verifiedEmail && String(meta.workspaceOwner).trim().toLowerCase() === String(verifiedEmail).trim().toLowerCase())
@@ -13133,12 +13136,13 @@ export default function App() {
 
   // Resolve landing view once meta + author are ready. Fallback chain:
   // personal override → workspace default → 'my-work' (the new v30 default).
+  // P4: personal override (if the tier can see it) → by tier. Wait for projects so roles are known.
   useEffect(() => {
-    if (view !== null || !meta || !author) return;
-    const v = userPrefs?.defaultViewOverride || meta?.defaultView || 'my-work';
-    // Activity is workspace-owner only (PR-E U5): never land a non-Owner there.
-    setView(v === 'activity' && !isOwner ? 'my-work' : v);
-  }, [meta, author, view, userPrefs, isOwner]);
+    if (view !== null || !meta || !author || loading) return;
+    const land = landingFor({ tier, override: userPrefs?.defaultViewOverride || null, planView: readPlanView(), project: projects?.[currentId] || null, uid: authUser?.uid || null });
+    if (land.scopeProgramId) setScopeProgramId(land.scopeProgramId);
+    setView(land.view);
+  }, [meta, author, view, userPrefs, tier, loading, projects, currentId, authUser?.uid]);
 
   // v30.A.1 — modal state for creating an action from My Work + state
   // for routing "→ Open" from My Work to a specific action's Edit form.
@@ -13165,20 +13169,6 @@ export default function App() {
     markMyWorkSeenLocal(authUser.uid, iso);
     setLocalSeenAt({ uid: authUser.uid, at: iso });
   }, [author, authUser?.uid]);
-
-  // v30 Phase 4 — Owner picks the workspace-wide default landing view.
-  // Writes meta.defaultView. Defense-in-depth: also guard at handler.
-  const setWorkspaceDefaultView = useCallback(async (viewId) => {
-    if (!isOwner) return;
-    setMeta((m) => {
-      if (!m) return m;
-      const m2 = { ...m, defaultView: viewId };
-      saveMetaOwnerFields(m2);
-      return m2;
-    });
-    const label = DEFAULT_VIEW_OPTIONS.find((o) => o.id === viewId)?.label || viewId;
-    showToast(`Workspace default set to "${label}"`);
-  }, [isOwner]);
 
   // v30 Phase 4 — Per-user override. Pass null to clear and fall back to
   // workspace default on next app load.
@@ -14437,35 +14427,30 @@ export default function App() {
 
           <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
             {(() => {
-              const allTabs = [
-                { id: 'my-work', label: 'My Work', icon: <UserCircle size={12} /> },
-                { id: 'mindmap', label: 'Mind map', icon: <MapIcon size={12} /> },
-                { id: 'outline', label: 'Outline', icon: <ListIcon size={12} /> },
-                { id: 'gantt', label: 'Gantt', icon: <BarChart3 size={12} /> },
-                { id: 'dashboard', label: 'Dashboard', icon: <Home size={12} /> },
-                { id: 'decisions', label: 'Decisions', icon: <CheckCircle2 size={12} />, count: (project?.decisions?.length || 0) },
-                { id: 'actions', label: 'Actions', icon: <Activity size={12} />, count: (project?.actionItems?.length || 0) },
-                { id: 'aggregation', label: 'Aggregation', icon: <Activity size={12} /> },
-                { id: 'raid', label: 'RAID', icon: <AlertTriangle size={12} /> },
-                // Wave 1 U5: Activity is Owner-only for now (Q3).
-                ...(isOwner ? [{ id: 'activity', label: 'Activity', icon: <Activity size={12} />, ownerOnly: true }] : []),
-                ...(isOwner ? [{ id: 'portfolio', label: 'Portfolio', icon: <Home size={12} />, ownerOnly: true }] : []),
-                ...(isOwner ? [{ id: 'credit-report', label: 'Credits', icon: <Activity size={12} />, ownerOnly: true }] : []),
-                ...(isOwner ? [{ id: 'team-overview', label: 'Team', icon: <Users size={12} />, ownerOnly: true }] : []),
-              ];
+              // P4: tabs by UI tier; Plan covers Mind map / Outline / Gantt.
+              const allTabs = tabsFor(tier).map((t) => ({
+                ...t,
+                count: t.id === 'decisions' ? (project?.decisions?.length || 0) : t.id === 'actions' ? (project?.actionItems?.length || 0) : 0,
+                ownerOnly: ['portfolio', 'team-overview', 'credit-report', 'activity'].includes(t.id),
+              }));
               // v30 Phase 3 — during impersonation, only My Work tab is visible.
               const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
-              return visibleTabs.map((v) => (
-                <button key={v.id} data-tour={'tab-' + v.id} onClick={() => {
+              return visibleTabs.map((v, i) => {
+                const active = v.id === 'plan' ? isPlanView(view) : view === v.id;
+                return (<React.Fragment key={v.id}>
+                {i > 0 && visibleTabs[i - 1].group !== v.group && <span aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', margin: '4px 4px', background: TOK.lineStrong }} />}
+                <button data-tour={'tab-' + v.id} aria-current={active ? 'page' : undefined} onClick={() => {
+                  if (v.id === 'briefing') { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); return; }
+                  if (v.id === 'plan') { setView(readPlanView()); return; }
                   if (v.id === 'raid') setRaidScopeProgramId(null);
                   setView(v.id);
                 }} style={{
                   fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
-                  border: 'none', background: view === v.id ? TOK.surface : 'transparent',
+                  border: 'none', background: active ? TOK.surface : 'transparent',
                   color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 5,
-                  boxShadow: view === v.id ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.icon}{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
+                  boxShadow: active ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
                   <span style={{
                     marginLeft: 2, padding: '0 6px', borderRadius: 999,
                     background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
@@ -14478,12 +14463,12 @@ export default function App() {
                     lineHeight: '14px', minWidth: 16, textAlign: 'center',
                   }} title={`${raidPendingBadge} pending approval${raidPendingBadge === 1 ? '' : 's'}`}>{raidPendingBadge}</span>
                 )}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
-              ));
+                </React.Fragment>);
+              });
             })()}
           </div>
 
           <Btn size="sm" variant="primary" onClick={() => setMeetingMode(true)} title="Enter meeting mode (presentation view)">▶ Meeting</Btn>
-          <Btn size="sm" onClick={() => { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); }} title="Generate weekly briefing pack">📋 Briefing</Btn>
           <Btn size="sm" onClick={() => setShowMeetingExport(true)} title="Generate meeting minutes"><FileText size={12} /> Minutes</Btn>
           <Btn size="sm" onClick={exportExcel} title="Export to Excel"><FileSpreadsheet size={12} /> Excel</Btn>
           <Btn size="sm" onClick={backupJson} title="Backup all workspace data to JSON"><Download size={12} /></Btn>
@@ -14555,6 +14540,19 @@ export default function App() {
         {/* Main area: view + optional task detail */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {isPlanView(view) && (
+              <div role="group" aria-label="Plan view" style={{ display: 'flex', padding: '8px 16px 0', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 2, padding: 2, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8 }}>
+                  {PLAN_VIEWS.map((pv) => (
+                    <button key={pv} aria-pressed={view === pv} onClick={() => { setView(pv); writePlanView(pv); }} style={{
+                      fontFamily: FONT_STACK, fontSize: 12, fontWeight: view === pv ? 600 : 400, padding: '4px 12px', borderRadius: 6,
+                      border: 'none', cursor: 'pointer', color: TOK.ink,
+                      background: view === pv ? TOK.bg : 'transparent',
+                    }}>{DEFAULT_VIEW_OPTIONS.find((o) => o.id === pv)?.label || pv}</button>
+                  ))}
+                </div>
+              </div>
+            )}
             <ErrorBoundary>
               {view === 'my-work' && (
                 <MyWorkView
@@ -14675,7 +14673,6 @@ export default function App() {
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13, gap: 10 }}>
                   <div>🌐 This view is project-specific.</div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <Btn size="sm" onClick={() => setView('aggregation')}>Open Aggregation</Btn>
                     {isOwner && <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn>}
                   </div>
                 </div>
@@ -14858,28 +14855,6 @@ export default function App() {
                   <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 6 }}>{(meta?.ownershipLog || []).length} change{(meta?.ownershipLog || []).length === 1 ? '' : 's'} logged</div>
                 )}
               </div>
-              {/* v30 Phase 4 — Default landing view (workspace-wide, owner-set) */}
-              <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
-                <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-                  Default landing view
-                </div>
-                {isOwner ? (
-                  <>
-                    <select
-                      value={meta?.defaultView || 'my-work'}
-                      onChange={(e) => setWorkspaceDefaultView(e.target.value)}
-                      style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
-                      {DEFAULT_VIEW_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                    </select>
-                    <div style={{ fontSize: 10.5, color: TOK.muted }}>Workspace-wide. Members can override their own below.</div>
-                  </>
-                ) : (
-                  <div style={{ fontSize: 12, color: TOK.ink }}>
-                    {DEFAULT_VIEW_OPTIONS.find((o) => o.id === meta?.defaultView)?.label || 'My Work'}
-                    <span style={{ color: TOK.muted, fontWeight: 400, marginLeft: 6 }}>(set by owner)</span>
-                  </div>
-                )}
-              </div>
               {/* v30 Phase 4 — Personal override (per-user) */}
               <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
                 <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
@@ -14889,8 +14864,8 @@ export default function App() {
                   value={userPrefs?.defaultViewOverride || ''}
                   onChange={(e) => setPersonalDefaultOverride(e.target.value || null)}
                   style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, marginBottom: 4 }}>
-                  <option value="">(Use workspace default)</option>
-                  {DEFAULT_VIEW_OPTIONS.filter((o) => isOwner || o.id !== 'activity').map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  <option value="">(Default for your role)</option>
+                  {DEFAULT_VIEW_OPTIONS.filter((o) => canSeeView(tier, o.id)).map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                 </select>
                 <div style={{ fontSize: 10.5, color: TOK.muted }}>Applies on your next app load.</div>
               </div>
