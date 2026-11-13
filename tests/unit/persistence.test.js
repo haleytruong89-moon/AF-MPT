@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids, UNKNOWN_PERSON, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -128,23 +128,23 @@ describe('bannerGroups (follow-up: conflict and error listed separately)', () =>
   it('splits project names by failure kind', () => {
     expect(bannerGroups({
       a: { status: 'conflict', name: 'CRP' }, b: { status: 'error', name: 'MA' }, c: { status: 'error', name: 'UBO' },
-    })).toEqual({ conflict: ['CRP'], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [], history: [] });
-    expect(bannerGroups({})).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] });
+    })).toEqual({ conflict: ['CRP'], 'conflict-meta': [], error: ['MA', 'UBO'], readonly: [], denied: [], refused: [], history: [], 'unknown-person': [] });
+    expect(bannerGroups({})).toEqual({ conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [], 'unknown-person': [] });
   });
   it('lists readonly (v2 pilot) projects separately', () => {
     expect(bannerGroups({
       a: { status: 'readonly', name: 'Pilot' }, b: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [], history: [] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: ['MA'], readonly: ['Pilot'], denied: [], refused: [], history: [], 'unknown-person': [] });
   });
   it('lists denied and refused (P2.3 v2 saves) separately', () => {
     expect(bannerGroups({
       a: { status: 'denied', name: 'Pilot' }, b: { status: 'refused', name: 'KR' }, c: { status: 'error', name: 'MA' },
-    })).toEqual({ conflict: [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'], history: [] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: ['MA'], readonly: [], denied: ['Pilot'], refused: ['KR'], history: [], 'unknown-person': [] });
   });
   it('lists history (close-history-wipe refusals, P3.1 I2) separately from other refusals', () => {
     expect(bannerGroups({
       a: { status: 'history', name: 'KR' }, b: { status: 'refused', name: 'Ops' },
-    })).toEqual({ conflict: [], error: [], readonly: [], denied: [], refused: ['Ops'], history: ['KR'] });
+    })).toEqual({ conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: ['Ops'], history: ['KR'], 'unknown-person': [] });
   });
   it('history is per attempt: a later ok clears it', () => {
     let s = nextSaveState({}, 'p1', 'history', 'KR');
@@ -302,5 +302,47 @@ describe('retryablePids', () => {
   it('empty / missing state -> []', () => {
     expect(retryablePids({})).toEqual([]);
     expect(retryablePids(undefined)).toEqual([]);
+  });
+});
+
+describe('conflict-meta (W2 B2)', () => {
+  it('own banner group; sticky like conflict', () => {
+    let s = nextSaveState({}, 'p1', 'conflict-meta', 'MA');
+    expect(bannerGroups(s)['conflict-meta']).toEqual(['MA']);
+    expect(bannerGroups(s).conflict).toEqual([]);
+    expect(bannerGroups(s).error).toEqual([]);
+    expect(nextSaveState(s, 'p1', 'error', 'MA')).toBe(s);
+  });
+});
+
+describe('W3 unknown-person banner state', () => {
+  it('carries the person name, is per attempt and not retryable', () => {
+    let s = nextSaveState({}, 'p1', UNKNOWN_PERSON + 'Zed Nobody', 'CRP');
+    expect(bannerGroups(s)['unknown-person']).toEqual([{ person: 'Zed Nobody', project: 'CRP' }]);
+    expect(retryablePids(s)).toEqual([]);
+    expect(manualRetryPids(s)).toEqual(['p1']);
+    s = nextSaveState(s, 'p1', 'ok', 'CRP');
+    expect(bannerGroups(s)['unknown-person']).toEqual([]);
+  });
+});
+
+describe('W5 activity save-state keys', () => {
+  it('maps a project id to a distinct key and back', () => {
+    expect(activityStateKey('p1')).toBe('activity:p1');
+    expect(isActivityKey('activity:p1')).toBe(true);
+    expect(isActivityKey('p1')).toBe(false);
+    expect(projectIdOfKey('activity:p1')).toBe('p1');
+    expect(projectIdOfKey('p1')).toBe('p1');
+  });
+  it('a project save ok does not clear a failed activity entry; its own ok does', () => {
+    let st = nextSaveState({}, activityStateKey('p1'), 'error', 'Proj (activity log)');
+    st = nextSaveState(st, 'p1', 'ok');
+    expect(Object.keys(st)).toEqual(['activity:p1']);
+    expect(hasUnsavedWork(0, st)).toBe(true);
+    expect(retryablePids(st)).toEqual(['activity:p1']);
+    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '10:00' }).retry).toBe(true);
+    expect(bannerGroups(st).error).toEqual(['Proj (activity log)']);
+    st = nextSaveState(st, activityStateKey('p1'), 'ok');
+    expect(st).toEqual({});
   });
 });

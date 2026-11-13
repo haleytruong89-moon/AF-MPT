@@ -11,7 +11,7 @@ const isDomainEmail = (email) => /@smartosc\.com$/.test(email);
 export const OWNER_FIELDS = ['workspaceOwner', 'ownershipLog', 'defaultView'];
 export const OWNER_WRITE_FLAG = '__ownerFieldsWrite';
 // Owner-only in the rules too, but never written by the client at all.
-export const ADMIN_ONLY_FIELDS = ['ownerUids'];
+export const ADMIN_ONLY_FIELDS = ['ownerUids', 'config'];
 
 // Shape a meta object for persistence. Ordinary writes (any user, possibly a
 // stale in-memory copy) never carry owner fields — merge:true keeps the stored

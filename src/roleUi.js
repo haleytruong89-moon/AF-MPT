@@ -51,7 +51,7 @@ const isLeadOf = (roles, wsId, programId, uid) => {
  */
 export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
   if (isOwner || !isV2) {
-    return { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true };
+    return { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true, wsMove: true, taskMove: true };
   }
   const pm = isPmOf(roles, programId, uid);
   const lead = isLeadOf(roles, wsId, programId, uid);
@@ -63,7 +63,65 @@ export function uiCaps({ isOwner, isV2, roles, uid, programId, wsId }) {
     wsDelete: pm,
     taskAdd: pm || lead,
     taskEdit: pm || lead,
+    wsMove: false, // Ruling W2-20: wsUpdateOk refuses programId changes for non-Owners
+    taskMove: pm, // a Sub-PM may not change a task's workstreamId (taskLeadOk)
   };
+}
+
+/** Wave 2 O1 (Ruling W2-2): same rule as firestore.rules isOwnerIn - uid in ownerUids OR workspaceOwner email (case-insensitive). */
+export function isWorkspaceOwner(meta, uid, email) {
+  const m = meta || {};
+  if (uid && Array.isArray(m.ownerUids) && m.ownerUids.includes(uid)) return true;
+  const owner = typeof m.workspaceOwner === 'string' ? m.workspaceOwner.trim().toLowerCase() : '';
+  const me = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  return owner !== '' && me !== '' && owner.includes('@') && owner === me;
+}
+
+/**
+ * Wave 2 O2: may a drop be attempted? Owner / v1: yes. v2 non-Owner: work stream
+ * moves never (W2-20); a task only by the PM / Deputy, within their own program.
+ */
+export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targetPgId, targetWsId, taskStart, taskEnd }) {
+  if (isOwner || !isV2) return true;
+  if (sourcePgId !== targetPgId) return false;
+  if (kind === 'ws') return false;
+  // rules taskManagerPm: the task's dates must fit the target work stream (taskDatesOk).
+  return isPmOf(roles, sourcePgId, uid) && datesWithinWs(taskStart, taskEnd, roles?.workstreams?.[targetWsId]);
+}
+
+// PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).
+const holdsProgram = (roles, programId, uid) => {
+  if (!uid || programId == null) return false;
+  if (isPmOf(roles, programId, uid)) return true;
+  return Object.keys(roles?.workstreams || {}).some((w) => isLeadOf(roles, w, programId, uid));
+};
+
+// Any PM / Deputy / Sub-PM role in the project (a new decision's claim).
+const holdsAnyProgram = (roles, uid) => Object.keys(roles?.programs || {}).some((p) => holdsProgram(roles, p, uid));
+
+/** Wave 2 R5: edit raid/{programId}. Owner / v1: true; else a role in that program. */
+export function canEditRaid({ isOwner, isV2, roles, uid, programId }) {
+  if (isOwner || !isV2) return true;
+  return holdsProgram(roles, programId, uid);
+}
+
+/**
+ * Wave 2 R5 (Ruling W2-4): edit a decision. Owner / v1: true; else a role in the
+ * program of its stored claim (roles.decisions[id].programId; null = Owner only).
+ * A decision not in the stored roles yet (created in this tab, unsaved) behaves as
+ * a new one: anyone holding a PM / Deputy / Sub-PM role.
+ */
+export function canEditDecision({ isOwner, isV2, roles, uid, decision }) {
+  if (isOwner || !isV2) return true;
+  const id = decision?.id;
+  const stored = id != null && roles?.decisions && hasOwn(roles.decisions, id) ? roles.decisions[id] : undefined;
+  if (stored === undefined) return holdsAnyProgram(roles, uid);
+  return holdsProgram(roles, stored?.programId ?? null, uid);
+}
+
+/** Wave 2 R5 / W4: deleting a decision or a RAID item is Owner-only on v2; v1 unchanged. */
+export function canDeleteRaidOrDecision({ isOwner, isV2 }) {
+  return !!isOwner || !isV2;
 }
 
 /** Header chip data: label = highest role, detail = every role held. */
@@ -88,4 +146,20 @@ export function myRoleSummary(roles, uid, project) {
   }
   if (!detail.length) return { label: 'View only', detail: ['View only'] };
   return { label: detail[0], detail };
+}
+
+/**
+ * Wave 2 W4: what the delete control on an action does.
+ *  - 'delete': Owner, or any role on a v1 project (today's behaviour).
+ *  - 'cancel': v2 non-Owner who manages the action's work stream (PM / Deputy of its
+ *    program, or its Sub-PM): sets status Cancelled instead of deleting.
+ *  - 'none': v2 non-Owner without that role (e.g. the PIC: rules refuse a cancel).
+ */
+export function actionDeleteMode({ isOwner, isV2, roles, uid, action }) {
+  if (isOwner || !isV2) return 'delete';
+  if (action?.status === 'Cancelled') return 'none'; // rules: no touching a Cancelled action
+  const wsId = action?.workstreamId ?? null;
+  const ws = wsId != null ? roles?.workstreams?.[wsId] : null;
+  if (!ws || ws.programId == null) return 'none';
+  return isPmOf(roles, ws.programId, uid) || isLeadOf(roles, wsId, ws.programId, uid) ? 'cancel' : 'none';
 }

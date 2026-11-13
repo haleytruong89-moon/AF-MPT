@@ -28,6 +28,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Build
+        run: npm run build
+
+      - name: Lint gate
+        run: npm run lint:gate
+
       - name: Unit tests
         run: npm test --if-present
 

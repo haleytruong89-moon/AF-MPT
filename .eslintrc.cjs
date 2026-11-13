@@ -20,6 +20,8 @@ module.exports = {
     'scripts/*.js',
     '.eslintrc.cjs',
     'src/**/*.secured-backup.*',
+    'src/CRP_Project_Tracker_v29_reference.jsx',
+    'src/MyWorkViews.jsx',
   ],
   rules: {
     'react/prop-types': 'off',

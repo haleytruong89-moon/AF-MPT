@@ -244,3 +244,79 @@ describe('applyWritten (shim cache refresh)', () => {
     expect(r.metaPatch['programMeta.X']).toBe(DELETE_FIELD);
   });
 });
+
+describe('executeV2Save metaBase (W2 B2)', () => {
+  it('live top-level field changed after load -> conflict, nothing written (not even the ops)', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, teamMembers: ['new'] }, [`${P}/tasks/t1`]: { version: 1 } });
+    const plan = {
+      batches: [[{ kind: 'tasks', op: 'update', id: 't1', data: { x: 1 }, expectVersion: 1 }]],
+      metaPatch: { teamMembers: ['a', 'b'] }, metaBase: { teamMembers: ['a'] },
+    };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r).toMatchObject({ status: 'conflict', failedBatch: 0, metaWritten: false });
+    expect(store.get(P).teamMembers).toEqual(['new']);
+    expect(store.get(`${P}/tasks/t1`)).toEqual({ version: 1 });
+  });
+
+  it('unchanged live field (Timestamps by millis, absent = absent) -> ok and written', async () => {
+    const ts = (ms) => ({ toMillis: () => ms });
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, teamMembers: ['a'], stamp: ts(7) } });
+    const plan = {
+      batches: [],
+      metaPatch: { teamMembers: ['a', 'b'], stamp: 'x', fresh: 1 },
+      metaBase: { teamMembers: ['a'], stamp: ts(7), fresh: undefined },
+    };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    expect(store.get(P).teamMembers).toEqual(['a', 'b']);
+  });
+
+  it('dotted programMeta keys are not checked: a live change to programMeta still writes', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, programMeta: { p1: { name: 'old', pmUid: 'u9' } } } });
+    const plan = { batches: [], metaPatch: { 'programMeta.p1.name': 'new' }, metaBase: {} };
+    const r = await executeV2Save(fs, ctx(plan));
+    expect(r.status).toBe('ok');
+    expect(store.get(P)['programMeta.p1.name']).toBe('new');
+  });
+});
+
+describe('executeV2Save metaBase fix round 1 (W2 B2)', () => {
+  it('live already holds exactly what this tab writes -> ok (idempotent); a third value -> conflict with reason meta', async () => {
+    const plan = { batches: [], metaPatch: { name: 'B' }, metaBase: { name: 'A' } };
+    const same = fakeFs({ [P]: { schemaVersion: 2, name: 'B' } });
+    expect((await executeV2Save(same.fs, ctx(plan))).status).toBe('ok');
+    const third = fakeFs({ [P]: { schemaVersion: 2, name: 'C' } });
+    const r = await executeV2Save(third.fs, ctx(plan));
+    expect(r).toMatchObject({ status: 'conflict', reason: 'meta' });
+    expect(third.store.get(P).name).toBe('C');
+  });
+
+  it('DELETE_FIELD: live already absent -> ok', async () => {
+    const { fs } = fakeFs({ [P]: { schemaVersion: 2 } });
+    const r = await executeV2Save(fs, ctx({ batches: [], metaPatch: { gone: DELETE_FIELD }, metaBase: { gone: 1 } }));
+    expect(r.status).toBe('ok');
+  });
+
+  it('version conflict on an op carries no reason', async () => {
+    const { fs } = fakeFs({ [`${P}/tasks/t1`]: { version: 5 } });
+    const r = await executeV2Save(fs, ctx({ batches: [[{ kind: 'tasks', op: 'update', id: 't1', data: {}, expectVersion: 1 }]], metaPatch: null }));
+    expect(r.status).toBe('conflict');
+    expect(r.reason).toBeUndefined();
+  });
+
+  it('save -> applyWritten -> second save on another top-level key: no conflict', async () => {
+    const { fs, store } = fakeFs({ [P]: { schemaVersion: 2, name: 'A', note: 'n0' } });
+    const loaded = { meta: { schemaVersion: 2, name: 'A', note: 'n0' }, docs: {} };
+    const p1 = { batches: [], metaPatch: { name: 'B' }, metaBase: { name: 'A' } };
+    const r1 = await executeV2Save(fs, ctx(p1));
+    expect(r1.status).toBe('ok');
+    applyWritten(loaded, r1.written, r1.metaWritten ? r1.metaPatch : null);
+    expect(loaded.meta.name).toBe('B');
+    const p2 = { batches: [], metaPatch: { note: 'n1' }, metaBase: { note: loaded.meta.note } };
+    expect((await executeV2Save(fs, ctx(p2))).status).toBe('ok');
+    // and a repeat of the first key now uses the refreshed base
+    const p3 = { batches: [], metaPatch: { name: 'C' }, metaBase: { name: loaded.meta.name } };
+    expect((await executeV2Save(fs, ctx(p3))).status).toBe('ok');
+    expect(store.get(P)).toMatchObject({ name: 'C', note: 'n1' });
+  });
+});

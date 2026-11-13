@@ -20,6 +20,7 @@ export function nextRev(serverRev) {
 }
 
 // One banner entry per project. 'ok' clears it; 'conflict' is sticky until reload.
+// 'conflict-meta' (W2) = a v2 project-level field changed in another tab; same stickiness, own banner copy.
 // 'readonly' (a v2 doc reaching the v1 write path; unreachable since P2.3) is stickier:
 // even 'ok' keeps it. 'denied' / 'refused' (P2.3) are per attempt, like 'error'.
 export function nextSaveState(prev, pid, status, name) {
@@ -30,7 +31,7 @@ export function nextSaveState(prev, pid, status, name) {
     const { [pid]: _drop, ...rest } = prev;
     return rest;
   }
-  if (cur && cur.status === 'conflict') return prev;
+  if (cur && (cur.status === 'conflict' || cur.status === 'conflict-meta')) return prev;
   if (cur && cur.status === status && cur.name === name) return prev;
   return { ...prev, [pid]: { status, name } };
 }
@@ -67,9 +68,12 @@ export function failedRestores(results) {
 // P2.3: 'denied' (rules refused part of a v2 save) and 'refused' (the planner refused
 // a task delete / history wipe) are per attempt: nextSaveState lets a later 'ok' clear them.
 // P3.1 I2: 'history' = the planner refused a close-history wipe (own banner copy).
+export const UNKNOWN_PERSON = 'unknown-person:';
 export function bannerGroups(saveState) {
-  const out = { conflict: [], error: [], readonly: [], denied: [], refused: [], history: [] };
+  const out = { conflict: [], 'conflict-meta': [], error: [], readonly: [], denied: [], refused: [], history: [], 'unknown-person': [] };
   for (const v of Object.values(saveState || {})) {
+    // W3: 'unknown-person:<name>' carries the name the planner could not resolve.
+    if (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON)) { out['unknown-person'].push({ person: v.status.slice(UNKNOWN_PERSON.length), project: v.name }); continue; }
     (out[v.status] && v.status !== 'error' ? out[v.status] : out.error).push(v.name);
   }
   return out;
@@ -127,6 +131,24 @@ export function saveChip({ pending, saveState, lastSavedAt }) {
 
 // C2: projects whose save may be re-run (Retry / online). Only 'error'; the others would
 // fail again or overwrite someone else's change.
+// W3: the Retry button (manual only, never the online loop) also re-runs an unknown-person
+// state: the shim reloads the directory first, so a person just added now resolves.
+export function manualRetryPids(saveState) {
+  return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error' || (typeof v.status === 'string' && v.status.startsWith(UNKNOWN_PERSON))).map(([pid]) => pid);
+}
 export function retryablePids(saveState) {
   return Object.entries(saveState || {}).filter(([, v]) => v.status === 'error').map(([pid]) => pid);
 }
+
+// W5: a failed activity write is its own saveState entry (key 'activity:<pid>', status 'error'),
+// so a later successful project save cannot clear it and Retry knows to re-send the log.
+export const ACTIVITY_KEY = 'activity:';
+export const activityStateKey = (pid) => ACTIVITY_KEY + pid;
+export const isActivityKey = (key) => typeof key === 'string' && key.startsWith(ACTIVITY_KEY);
+export const projectIdOfKey = (key) => (isActivityKey(key) ? key.slice(ACTIVITY_KEY.length) : key);
+
+// O4: read-only "is there unsaved work right now" signal for the root error boundary,
+// which sits outside App and cannot read its state. App publishes it from an effect.
+let unsavedWorkSignal = false;
+export function setUnsavedWorkSignal(v) { unsavedWorkSignal = !!v; }
+export function isUnsavedWorkPending() { return unsavedWorkSignal; }

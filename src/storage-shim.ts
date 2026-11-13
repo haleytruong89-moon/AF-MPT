@@ -43,6 +43,7 @@ import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loa
 import { planV2Save } from './planV2Save';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
+import { activityDocFor, activityEntryFromDoc } from './activityDoc';
 import { executeRoleChange, wsCacheAfterRoleChange } from './execRoleChange';
 import type { UserProfile } from './types';
 
@@ -238,8 +239,10 @@ export function v2SavedTree(pid: string): Record<string, unknown> | null {
 // failed load is retried on the next save, and that save plans without it
 // (people left unchanged keep their stored uids; a changed pic / contributors makes
 // the planner refuse with 'directory-unavailable' -> reported as 'error', Ruling AH).
-type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string> };
+type PlanDirectory = { dirIndex: ReturnType<typeof buildDirectoryIndex> | null; uidByEmail: Map<string, string>; nameByUid: Map<string, string> };
 let dirPromise: Promise<PlanDirectory> | null = null;
+// W3: the People directory changed (DirectoryModal) or a save met an unknown name: reload on next use.
+export function invalidatePlanDirectory(): void { dirPromise = null; }
 function directoryForPlan(): Promise<PlanDirectory> {
   if (!dirPromise) {
     dirPromise = Promise.all([
@@ -248,20 +251,22 @@ function directoryForPlan(): Promise<PlanDirectory> {
     ]).then(([mSnap, iSnap]) => {
       const entries: Array<Record<string, unknown>> = [];
       const uidByEmail = new Map<string, string>();
+      const nameByUid = new Map<string, string>();
       mSnap.forEach((d) => {
         const m = d.data() as Record<string, unknown>;
         entries.push({ email: m.email, displayName: m.displayName, aliases: m.aliases, status: m.status });
         if (m.email) uidByEmail.set(String(m.email).toLowerCase(), d.id);
+        if (m.displayName) nameByUid.set(d.id, String(m.displayName));
       });
       iSnap.forEach((d) => {
         const m = d.data() as Record<string, unknown>;
         entries.push({ email: m.email || d.id, displayName: m.displayName, aliases: m.aliases, status: m.status });
       });
-      return { dirIndex: buildDirectoryIndex(entries), uidByEmail };
+      return { dirIndex: buildDirectoryIndex(entries), uidByEmail, nameByUid };
     }).catch((e) => {
       console.warn('[storage] directory load for v2 save failed:', e);
       dirPromise = null;
-      return { dirIndex: null, uidByEmail: new Map<string, string>() };
+      return { dirIndex: null, uidByEmail: new Map<string, string>(), nameByUid: new Map<string, string>() };
     });
   }
   return dirPromise;
@@ -269,26 +274,33 @@ function directoryForPlan(): Promise<PlanDirectory> {
 
 // planV2Save / applyWritten are plain JS; their inferred parameter types come from
 // defaults (e.g. dirIndex = null), so give the shim the real signatures.
-type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Record<string, unknown> | null; refused: string | null };
+type V2Plan = { batches: Array<Array<Record<string, unknown>>>; metaPatch: Record<string, unknown> | null; refused: string | null; refusedName?: string };
 const planV2 = planV2Save as unknown as (loaded: V2Loaded, tree: Record<string, unknown>, opts: Record<string, unknown>) => V2Plan;
 const applyV2Written = applyWritten as unknown as (loaded: V2Loaded, written: unknown[], metaPatch: Record<string, unknown> | null) => void;
 
-// P2.3 v2 save: plan against the loaded docs, then one transaction per batch.
-// The cache is refreshed from whatever committed (a later Ruling X step may fail
-// after batch 1 landed); on conflict / denied the rest stays stale until reload.
+// P2.3 v2 save: plan against the loaded docs, then one transaction per batch (a non-Owner
+// plan is split into chunks, W1). The cache is refreshed from whatever committed (a later
+// batch / chunk may fail after earlier ones landed); on conflict / denied the rest stays
+// stale until reload.
 async function saveV2Project(key: string, value: string, pid: string, loaded: V2Loaded, user: UserProfile) {
   const parsed = JSON.parse(value) as Record<string, unknown>;
   const { [FORCE_WRITE_FLAG]: _force, ...tree } = parsed;
   void _force;
   const [isOwner, dir] = await Promise.all([isOwnerNow(user), directoryForPlan()]);
-  const plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  let plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  if (plan.refused === 'unknown-person') {
+    // W3: the cache may be stale (someone just added the person): reload it and plan once more.
+    invalidatePlanDirectory();
+    plan = planV2(loaded, tree, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...(await directoryForPlan()) });
+  }
   if (plan.refused) {
     console.warn('[storage] v2 save refused by the planner:', pid, plan.refused);
     // Ruling AH: a failed directory load is an error (retry / reload), not a refusal.
     // P3.1 I2: a close-history wipe has its own banner copy ('history').
     const error = plan.refused === 'directory-unavailable' ? 'error'
       : plan.refused === 'close-history-wipe' ? 'history' : 'refused';
-    return { key, value, shared: true, error, reason: plan.refused };
+    const person = plan.refused === 'unknown-person' ? plan.refusedName : undefined;
+    return { key, value, shared: true, error: plan.refused === 'unknown-person' ? 'unknown-person' : error, reason: plan.refused, ...(person ? { person } : {}) };
   }
   if (!plan.batches.length && !plan.metaPatch) return { key, value, shared: true };
   const r = await executeV2Save(
@@ -298,7 +310,9 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
   if (r.written.length || r.metaWritten) applyV2Written(loaded, r.written, r.metaWritten ? (r.metaPatch ?? plan.metaPatch) : null);
   if (r.status === 'ok') return { key, value, shared: true };
   console.warn('[storage] v2 save not completed:', pid, r.status, 'batch', r.failedBatch, r.error || '');
-  return { key, value, shared: true, error: r.status };
+  // W2: a project-level field changed meanwhile gets its own banner copy.
+  const error = r.status === 'conflict' && (r as { reason?: string }).reason === 'meta' ? 'conflict-meta' : r.status;
+  return { key, value, shared: true, error };
 }
 
 /** Per-user localStorage key for the "currently selected project". */
@@ -460,12 +474,11 @@ window.storage = {
           // P2.3: one doc per event; the newest ACTIVITY_CAP in the v1 array shape.
           const snap = await getDocs(query(V2_ACTIVITY_COL(pid), orderBy('createdAt', 'desc'), limit(ACTIVITY_CAP)));
           const entries: Array<Record<string, unknown>> = [];
+          // R3: author from the directory by authorUid, time from createdAt; stored
+          // author / timestamp only for events without authorUid (copied from v1).
+          const { nameByUid } = await directoryForPlan();
           snap.forEach((d) => {
-            const { createdAt, ...e } = d.data() as Record<string, unknown>;
-            const ts = createdAt as { toDate?: () => Date } | null | undefined;
-            if (e.timestamp == null && ts && typeof ts.toDate === 'function') e.timestamp = ts.toDate().toISOString();
-            if (e.id == null) e.id = d.id;
-            entries.push(e);
+            entries.push(activityEntryFromDoc(d.data(), d.id, (u: string) => nameByUid.get(u) ?? null));
           });
           v2ActivityKnown.set(pid, new Set(snap.docs.map((d) => d.id)));
           return { key, value: JSON.stringify(entries), shared: true };
@@ -614,15 +627,23 @@ window.storage = {
           const known = v2ActivityKnown.get(pid) || new Set<string>();
           v2ActivityKnown.set(pid, known);
           const fresh = list.filter((e) => e && typeof e.id === 'string' && e.id && !known.has(e.id)).reverse();
+          // W5: a rules refusal is permanent for that entry: skip it, keep writing the rest and report
+          // its id so the caller drops it (retrying it would block every later event).
+          const deniedIds: string[] = [];
           for (const e of fresh) {
-            const { createdAt: _c, authorUid: _a, ...entry } = e;
-            void _c; void _a;
-            await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
-              ...entry, authorUid: user.uid, createdAt: serverTimestamp(),
-            });
-            known.add(e.id as string);
+            try {
+              // R3: allow-listed fields only; no author / timestamp (rules refuse them).
+              await setDoc(doc(V2_ACTIVITY_COL(pid), e.id as string), {
+                ...activityDocFor(e, user.uid), createdAt: serverTimestamp(),
+              });
+              known.add(e.id as string);
+            } catch (err) {
+              if ((err as { code?: string })?.code !== 'permission-denied') throw err;
+              console.warn('[activity] write refused by rules, entry dropped:', e.type, e.id);
+              deniedIds.push(e.id as string);
+            }
           }
-          return { key, value, shared: true };
+          return { key, value, shared: true, ...(deniedIds.length ? { deniedIds } : {}) };
         }
         const incoming = JSON.parse(value);
         let entries: Array<Record<string, unknown>> = Array.isArray(incoming) ? incoming : [];

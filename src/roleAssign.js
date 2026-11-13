@@ -85,6 +85,8 @@ export function roleChangeEvent(change, nameOf, scopeName) {
     description: `Role changed: ${LABEL[change.kind]} of ${scopeName}, ${n(change.fromUid)} → ${n(change.toUid)}`,
     before: { uid: change.fromUid ?? null },
     after: { uid: change.toUid ?? null },
+    programId: change.programId,
+    ...(change.kind === 'lead' ? { workstreamId: change.wsId } : {}),
   };
 }
 

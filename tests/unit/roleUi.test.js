@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary } from '../../src/roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, isWorkspaceOwner, canDropMove } from '../../src/roleUi.js';
 
 const info = (picUid, extra = {}) => ({ programId: 'p1', workstreamId: 'w1', picUid, contributorUids: [], ...extra });
 const roles = {
@@ -18,7 +18,7 @@ const project = {
     { id: 'p2', name: 'Reporting', workstreams: [{ id: 'w2', name: 'Monthly pack' }] },
   ],
 };
-const ALL_TRUE = { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true };
+const ALL_TRUE = { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true, wsMove: true, taskMove: true };
 const ALL_FALSE = Object.fromEntries(Object.keys(ALL_TRUE).map((k) => [k, false]));
 const caps = (uid, over = {}) => uiCaps({ isOwner: false, isV2: true, roles, uid, programId: 'p1', wsId: 'w1', ...over });
 
@@ -70,7 +70,7 @@ describe('uiCaps', () => {
     expect(caps('V', { isOwner: true })).toEqual(ALL_TRUE);
   });
   it('v2 PM and Deputy of the program', () => {
-    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true };
+    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true, taskMove: true };
     expect(caps('P')).toEqual(exp);
     expect(caps('D')).toEqual(exp);
   });
@@ -136,5 +136,145 @@ describe('myRoleSummary', () => {
   });
   it('falls back to the id when the name is unknown', () => {
     expect(myRoleSummary(roles, 'P', { programs: [] }).label).toBe('PM · p1');
+  });
+});
+
+// Wave 2 R5 (Ruling W2-4): RAID / decisions are edited within one's own program.
+describe('canEditRaid / canEditDecision / canDeleteRaidOrDecision', () => {
+  // P is PM of p1 and Sub-PM of w2 (in p2) in rMix; decisions carry the stored claim's program.
+  const rd = {
+    ...roles,
+    decisions: { d1: { programId: 'p1' }, d2: { programId: 'p2' }, dNone: { programId: null } },
+  };
+  const raid = (uid, programId, over = {}) => canEditRaid({ isOwner: false, isV2: true, roles: rd, uid, programId, ...over });
+  const dec = (uid, id, over = {}) => canEditDecision({ isOwner: false, isV2: true, roles: rd, uid, decision: { id }, ...over });
+
+  it('Owner and v1: always true', () => {
+    expect(raid('V', 'p1', { isOwner: true })).toBe(true);
+    expect(raid('V', 'p1', { isV2: false })).toBe(true);
+    expect(dec('V', 'dNone', { isOwner: true })).toBe(true);
+    expect(dec('V', 'd1', { isV2: false })).toBe(true);
+  });
+  it('RAID: PM / Deputy of the program, Sub-PM of a ws in it', () => {
+    expect(raid('P', 'p1')).toBe(true);
+    expect(raid('D', 'p1')).toBe(true);
+    expect(raid('L', 'p1')).toBe(true);
+    expect(raid('L2', 'p2')).toBe(true);
+  });
+  it('RAID: a role in another program does not help', () => {
+    expect(raid('P', 'p2')).toBe(false);
+    expect(raid('L', 'p2')).toBe(false);
+    expect(raid('P2', 'p1')).toBe(false);
+    expect(raid('X', 'zz')).toBe(false); // ws of a program not in programMeta
+    expect(raid('A', 'p1')).toBe(false);
+    expect(raid(null, 'p1')).toBe(false);
+    expect(raid('P', null)).toBe(false);
+  });
+  it('RAID: PM of p1 who is also Sub-PM of a ws in p2 edits both', () => {
+    const rMix = { ...rd, workstreams: { ...rd.workstreams, w2: { programId: 'p2', leadUid: 'P', start: null, end: null } } };
+    expect(canEditRaid({ isOwner: false, isV2: true, roles: rMix, uid: 'P', programId: 'p2' })).toBe(true);
+    expect(canEditRaid({ isOwner: false, isV2: true, roles: rMix, uid: 'L2', programId: 'p2' })).toBe(false);
+  });
+  it('decision: claim on the stored program only', () => {
+    expect(dec('P', 'd1')).toBe(true);
+    expect(dec('L', 'd1')).toBe(true);
+    expect(dec('P2', 'd1')).toBe(false);
+    expect(dec('L2', 'd1')).toBe(false);
+    expect(dec('L2', 'd2')).toBe(true);
+    expect(dec('P', 'd2')).toBe(false);
+  });
+  it('decision without a stored program (Owner-created / migrated): Owner only', () => {
+    expect(dec('P', 'dNone')).toBe(false);
+    expect(dec('L', 'dNone')).toBe(false);
+  });
+  it('decision not saved yet (not in the stored roles): anyone who may create one', () => {
+    expect(dec('P2', 'dNew')).toBe(true);
+    expect(dec('L', 'dNew')).toBe(true);
+    expect(dec('A', 'dNew')).toBe(false);
+    expect(dec('X', 'dNew')).toBe(false);
+    expect(canEditDecision({ isOwner: false, isV2: true, roles: { ...roles }, uid: 'P', decision: { id: 'd1' } })).toBe(true);
+  });
+  it('create gate: an empty decision ({}) = "holds any PM / Deputy / Sub-PM role"', () => {
+    const create = (uid, over = {}) => canEditDecision({ isOwner: false, isV2: true, roles: rd, uid, decision: {}, ...over });
+    expect(create('P')).toBe(true);
+    expect(create('D')).toBe(true);
+    expect(create('P2')).toBe(true);
+    expect(create('L2')).toBe(true);
+    expect(create('A')).toBe(false); // Assignee only
+    expect(create('V')).toBe(false); // no role
+    expect(create('X')).toBe(false); // lead of a ws whose program is not in programMeta
+    expect(create(null)).toBe(false);
+    expect(create('V', { isOwner: true })).toBe(true);
+    expect(create('V', { isV2: false })).toBe(true);
+  });
+  it('delete: Owner only on v2; v1 unchanged', () => {
+    expect(canDeleteRaidOrDecision({ isOwner: true, isV2: true })).toBe(true);
+    expect(canDeleteRaidOrDecision({ isOwner: false, isV2: true })).toBe(false);
+    expect(canDeleteRaidOrDecision({ isOwner: false, isV2: false })).toBe(true);
+  });
+});
+
+import { actionDeleteMode } from '../../src/roleUi.js';
+describe('actionDeleteMode', () => {
+  const act = (extra = {}) => ({ id: 'a1', workstreamId: 'w1', status: 'Pending', ...extra });
+  const base = { isOwner: false, isV2: true, roles };
+  it('Owner and v1 keep delete', () => {
+    expect(actionDeleteMode({ ...base, isOwner: true, uid: 'O', action: act() })).toBe('delete');
+    expect(actionDeleteMode({ ...base, isV2: false, uid: 'Z', action: act() })).toBe('delete');
+  });
+  it('v2 PM, Deputy and Sub-PM cancel', () => {
+    for (const uid of ['P', 'D', 'L']) expect(actionDeleteMode({ ...base, uid, action: act() })).toBe('cancel');
+  });
+  it('v2 PIC, other program, no workstream, or already Cancelled get none', () => {
+    expect(actionDeleteMode({ ...base, uid: 'A', action: act() })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P2', action: act() })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P', action: act({ workstreamId: null }) })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P', action: act({ status: 'Cancelled' }) })).toBe('none');
+  });
+});
+
+describe('isWorkspaceOwner (O1, mirrors rules isOwnerIn)', () => {
+  it('uid only', () => expect(isWorkspaceOwner({ ownerUids: ['U'] }, 'U', 'x@smartosc.com')).toBe(true));
+  it('email only, case-insensitive, even when ownerUids is empty or lists someone else', () => {
+    expect(isWorkspaceOwner({ ownerUids: [], workspaceOwner: 'Hod@SmartOSC.com' }, 'U', 'hod@smartosc.com')).toBe(true);
+    expect(isWorkspaceOwner({ ownerUids: ['Z'], workspaceOwner: 'hod@smartosc.com' }, 'U', 'HOD@smartosc.com')).toBe(true);
+  });
+  it('both', () => expect(isWorkspaceOwner({ ownerUids: ['U'], workspaceOwner: 'a@smartosc.com' }, 'U', 'a@smartosc.com')).toBe(true));
+  it('neither / missing data / display-name owner', () => {
+    expect(isWorkspaceOwner({ ownerUids: ['Z'], workspaceOwner: 'a@smartosc.com' }, 'U', 'b@smartosc.com')).toBe(false);
+    expect(isWorkspaceOwner(null, 'U', 'b@smartosc.com')).toBe(false);
+    expect(isWorkspaceOwner({ workspaceOwner: 'Ha Truong' }, 'U', 'Ha Truong')).toBe(false);
+    expect(isWorkspaceOwner({ ownerUids: ['U'] }, null, null)).toBe(false);
+  });
+});
+
+describe('move caps and canDropMove (O2)', () => {
+  it('v2: ws moves Owner-only; PM / Deputy move tasks; Sub-PM and stranger none', () => {
+    expect(caps('P')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('D')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('L')).toMatchObject({ wsMove: false, taskMove: false });
+    expect(caps('V')).toMatchObject({ wsMove: false, taskMove: false });
+  });
+  const base = { isOwner: false, isV2: true, roles, uid: 'P', kind: 'task', sourcePgId: 'p1', targetPgId: 'p1', targetWsId: 'w1' };
+  it('Owner and v1 may drop anywhere', () => {
+    expect(canDropMove({ ...base, isOwner: true, uid: 'V', targetPgId: 'p2' })).toBe(true);
+    expect(canDropMove({ ...base, isV2: false, uid: 'V', targetPgId: 'p2' })).toBe(true);
+  });
+  it('PM may not move across programs', () => {
+    expect(canDropMove(base)).toBe(true);
+    expect(canDropMove({ ...base, targetPgId: 'p2', targetWsId: 'w2' })).toBe(false);
+    expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p2' })).toBe(false);
+  });
+  it('PM: task dates must fit the target work stream (taskDatesOk)', () => {
+    const inside = { ...base, targetWsId: 'w1', taskStart: '2026-02-01', taskEnd: '2026-03-01' };
+    expect(canDropMove(inside)).toBe(true);
+    expect(canDropMove({ ...inside, taskEnd: '2027-03-01' })).toBe(false);
+    expect(canDropMove({ ...inside, taskStart: '2025-01-01' })).toBe(false);
+    expect(canDropMove({ ...inside, isOwner: true, taskEnd: '2027-03-01' })).toBe(true);
+  });
+  it('Sub-PM never drops a task or ws; PM never moves a ws', () => {
+    expect(canDropMove({ ...base, uid: 'L' })).toBe(false);
+    expect(canDropMove({ ...base, uid: 'L', kind: 'ws' })).toBe(false);
+    expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p1' })).toBe(false);
   });
 });

@@ -113,7 +113,7 @@ Menu actions on Outline / Mind map that `await` a dialog build their update from
 ### App and ops (O)
 
 **O1 — One definition of Owner.** (wave-1 follow-up)
-The app treats someone as Owner when their uid is in `ownerUids`; the `workspaceOwner` email is used only when `ownerUids` is empty — the same rule as `firestore.rules`. Needed before a second Owner is added.
+The app treats someone as Owner when their uid is in `ownerUids` or they match the `workspaceOwner` email (case-insensitive) — the same rule as `firestore.rules` `isOwnerIn` (Ruling W2-2). Needed before a second Owner is added.
 
 **O2 — Outline drag-and-drop follows the role.** (wave-1 follow-up)
 Drag handles appear only where the person may move the item (`uiCaps`); a drop the rules would refuse is not attempted.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { isBriefingDismissed, dismissBriefing } from '../../src/uiPrefs.js';
+import { isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal } from '../../src/uiPrefs.js';
 
 function stubStorage() {
   const m = new Map();
@@ -44,5 +44,28 @@ describe('briefing dismiss prefs', () => {
     globalThis.localStorage = { getItem() { throw new Error('no'); }, setItem() { throw new Error('no'); } };
     expect(isBriefingDismissed('x')).toBe(false);
     expect(() => dismissBriefing('x')).not.toThrow();
+  });
+});
+
+describe('My Work seen prefs (O3)', () => {
+  let store;
+  beforeEach(() => { store = stubStorage(); });
+  afterEach(() => { delete globalThis.localStorage; });
+
+  it('round-trips per uid', () => {
+    expect(lastSeenMyWork('u1')).toBeNull();
+    markMyWorkSeenLocal('u1', '2026-11-12T01:00:00.000Z');
+    expect(lastSeenMyWork('u1')).toBe('2026-11-12T01:00:00.000Z');
+    expect(lastSeenMyWork('u2')).toBeNull();
+  });
+  it('no uid: nothing stored', () => {
+    markMyWorkSeenLocal(null, 'x');
+    expect(store.size).toBe(0);
+    expect(lastSeenMyWork(null)).toBeNull();
+  });
+  it('storage that throws falls back quietly', () => {
+    globalThis.localStorage = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
+    expect(() => markMyWorkSeenLocal('u1', 'x')).not.toThrow();
+    expect(lastSeenMyWork('u1')).toBeNull();
   });
 });

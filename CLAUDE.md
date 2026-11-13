@@ -39,7 +39,7 @@ Việc phát sinh qua email **không** thuộc app này (đã có PMO Tracker).
 | `src/data.ts` | Lớp Firestore có type, phần lớn không dùng (có `canEdit`, `roleOf`, onSnapshot hooks chưa được import) |
 | `src/components/MembersModal.tsx` | RBAC members; **ghi qua đường riêng** (`data.ts saveProject`) → có thể ghi đè chéo |
 | `firestore.rules` | Luật phân quyền, hiện **dán tay** vào Firebase console |
-| `scripts/` | Admin SDK (`migrate.js`, `setup-rbac.js`), cần `service-account.json` (gitignored) |
+| `scripts/` | Admin SDK (`p1-*`, `p2-*` — mặc định xem trước, `--apply` mới ghi), cần `service-account.json` (gitignored) |
 | Bỏ qua | `*.backup`, `App.secured-backup.jsx`, `CRP_Project_Tracker_v29_reference.jsx` (gitignored, code chết), `src/CRPRaid.jsx`, `src/MyWorkViews.jsx` (prototype) |
 
 ## Lệnh
@@ -48,7 +48,7 @@ Việc phát sinh qua email **không** thuộc app này (đã có PMO Tracker).
 npm run dev         # localhost:5173
 npm run build       # tsc --noEmit && vite build
 npm run typecheck
-npm run lint        # hiện 6 errors / 63 warnings — không làm tăng thêm
+npm run lint        # hiện 2 errors / 32 warnings (CI gate: `lint:gate`) — không làm tăng thêm
 npm run test:rules  # Firestore rules trên Emulator (cần Java 21 — máy dev không có, chạy trên CI)
 ```
 CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (nếu có) + rules test cho mọi PR và push vào `main`. **CI xanh là cổng bắt buộc trước khi merge và trước khi deploy rules.** Test rules ở `tests/rules/`, project emulator `demo-afmpt`.
@@ -99,7 +99,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 |---|---|---|
 | Code hỏng sau deploy | Vercel → Deployments → *Promote* bản trước; rồi `git revert` commit lỗi trên `main` | HOD |
 | Rules mới chặn sai | Deploy lại bản rules trước (lưu trong git) | HOD |
-| Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app hoặc `scripts/migrate.js`. Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
+| Dữ liệu bị ghi sai / mất | Restore JSON backup theo project (bản 14/10 + bản mới nhất trước mỗi pha) qua chức năng restore trong app (project v2: `npm run p2:restore`, xem dòng "Project v2 cần restore"). Mất tối đa: dữ liệu từ lần backup gần nhất. **Gói Spark: không có PITR / scheduled export** → Backup JSON trong app là đường khôi phục duy nhất; HOD xuất JSON + Excel trước mỗi pha đụng dữ liệu (DESIGN 6.8) | HOD |
 | Workspace mất owner / owner lưu sai | Firebase Console → Firestore → `workspaces/main` → sửa tay `workspaceOwner` = email owner (chữ thường), hoặc script Admin SDK. Client không claim được nữa (B1) | HOD |
 | Danh bạ P1 ghi sai | `npm run p1:directory -- --rollback <manifest>` (mới nhất trước), rồi rules bản 22/10 12:15 trên Console; sau Promote thì `git revert` merge trên main | HOD |
 | Chuyển một project sang v2 lỗi | Báo mọi người trước. `npm run p2:migrate -- --rollback <pid>` (xem trước, in mã hash) → HOD duyệt → thêm `--apply --expect <hash>`. Nếu từ chối (exit 3) vì đã có sửa trên v2: đọc danh sách, chạy lại **xem trước kèm** `--force-with-report --delete-v2-docs` (mã hash tính cả cờ) rồi `--apply --expect <hash mới>` (ghi file dữ liệu mất trước). Sau đó mọi người hard-refresh. Document v1 giữ nguyên tới P2.5 | HOD |
@@ -107,6 +107,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Pilot copy P2 | `node scripts/p2-pilot-copy.mjs --rollback <manifest>` (chỉ xóa đúng các path đã ghi; từ chối nếu target không phải pilot) | HOD |
 | Gán vai trò sai (PM / Deputy / Sub-PM) | Activity có dòng `role_changed` (cũ → mới): gán lại trong app (Outline, menu Roles…, hoặc ⋯ trên node Mind map), nhiều chỗ thì dùng `p2-assign` (xem trước → duyệt). Code lỗi: Vercel Promote bản trước, `git revert -m 1 <merge>`. Không đổi rules | HOD |
 | P3.1 (duyệt đóng task) lỗi | Rules trước: Console → chọn lại bản rules trước P3.1 (ghi giờ lúc publish). Rồi code: Vercel Promote bản trước, `git revert -m 1 <merge>`, mọi người hard-refresh. Task đang Submitted vẫn còn (bản cũ hiện "Submitted", quản lý chuyển được); blocker đã xử lý trong map bị ẩn, không mất. Không restore từ backup trước P3 khi còn task Submitted | HOD |
+| Webhook Chat bị lộ (nằm trong Backup JSON / ảnh chụp màn hình / chat) | Webhook leaked → in Google Chat, delete the webhook, create a new one, paste it in Project Settings. (Backup/Excel mới không còn chứa webhook; restore trong app và `p2-restore` luôn giữ webhook đang chạy, không lấy từ file backup, kể cả backup cũ.) | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
 
@@ -149,8 +150,13 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 - Đã xong (12/11): repo chuyển public → CI chạy lại, cả 7 PR xanh (rules 313/313). Wave 1 merged vào `main` (#28, #29 trực tiếp; #30–#33 merge vào nhánh xếp chồng, nội dung lên `main` qua #34). Bài học: PR xếp chồng phải đổi base sang `main` trước khi merge; không xóa nhánh base khi PR con chưa đổi base (GitHub tự đóng PR con). Rules #30 (H4, H5): HOD publish trên Console nếu chưa
 - Chờ HOD: xác nhận Ruling W1-1 (cấm tự duyệt chỉ áp cho PM/Sub-PM, Owner vẫn tự đóng task mình — lệch spec §8 call 3); proofread glossary (EN+VI); quyết bỏ tab Aggregation / gom nút header (chưa trả lời)
 - Theo dõi sau wave 1: Owner trong app = email `workspaceOwner`, rules = `ownerUids` → sửa trước khi thêm Owner thứ 2; kéo-thả Outline chưa ẩn theo vai trò → sửa trước khi onboard cả phòng; `markMyWorkSeen` còn ghi meta chung
+- Trước khi thêm Owner thứ 2 (wave 2 PR-D): app liệt kê project bằng `memberIds array-contains uid` → Owner 2 phải được thêm vào `memberIds`/`memberUids` của mọi project (và project mới); project v1 cần Owner 2 là owner của project hoặc phải chuyển lên v2 trước
 - **Wave 2** (spec `docs/superpowers/specs/2026-11-12-wave2-hardening-design.md`, draft; HOD quyết 12/11: Q1 RAID/Decisions chỉ trong program của mình (xóa: Owner), Q2 weight program/WS chỉ Owner, Q3 chưa lên Blaze): rules (weight, tạo task, activity, tạo project, RAID theo program, người bị gỡ), ghi theo lô cho CRP, chống ghi đè trường project, không lưu PIC rỗng, không xóa cứng action/decision/RAID, Owner theo `ownerUids`, kéo-thả theo vai trò, error boundary, CI build + lint + branch protection; sau đó chuyển MA → UBO → AF Lean → CRP
 - Đã xong (12/11): branch protection `main` (bắt buộc PR + CI `checks` xanh, áp cả admin, cấm force-push/xóa)
 - Định hướng (HOD 12/11): sau này chuyển repo sang GitLab công ty và lưu dữ liệu theo quy trình chuẩn của công ty → CI (GitHub Actions), Vercel, Firebase phải xem lại khi chuyển
-- Tiếp theo: smoke test wave 1 (spec wave 1 §7) → HOD duyệt spec wave 2 → plan → code → chuyển 4 project v1 → PR 2 Replace person → onboard. P3.2 / P3.3 hoãn
+- Wave 2 PR-D (12/11, `feat/w2-d-app-ops`): root error boundary (`src/components/RootErrorBoundary.tsx`), xóa `scripts/migrate.js` + `setup-rbac.js` + npm `migrate`; CI nay cũng chạy `npm run build` và `npm run lint:gate` (tối đa 2 errors / 32 warnings, đã loại file gitignored/untracked khỏi ESLint)
+- **Wave 2 code xong (12/11)**, PR xếp chồng: #35 spec+plan → #36 A rules (credit/weight, tạo task, activity, workspace/tạo project, RAID/Decisions theo program, người bị gỡ) → #37 B ghi theo lô ≤ 8 WS, chống ghi đè trường project, PIC không có trong danh bạ → #38 C Cancel thay xóa action, activity tính là chưa lưu, dialog dùng dữ liệu mới nhất, webhook ra khỏi backup → #39 D Owner theo `ownerUids`, kéo-thả theo vai trò, error boundary, CI build + lint gate 2/32. Merge: merge #35 rồi đổi base #36 sang `main`, merge, lặp lại; xóa nhánh sau cùng
+- **Rules wave 2 (#36) CHƯA publish.** Publish 1 lần sau khi #35–#39 đã merge và chạy trên Vercel + mọi người hard-refresh. Điều kiện: mọi người dùng có `members/{uid}` active; ghi ruleset hiện tại `72b1230d…` để hoàn tác; báo PM/Sub-PM thay đổi (chỉ HOD tạo/import project; RAID/Decisions chỉ trong program mình; xóa → Cancel; weight WS chỉ HOD); smoke test cùng ngày với PM, Sub-PM, Assignee, contributor (mở console, tìm `[activity] write refused`)
+- Ghi chú wave 2 cho HOD: decision cũ (chuyển từ v1, không có task liên quan) chỉ HOD sửa được; HOD sửa một trường của decision có task liên quan thì decision nhận program của task đó. Task của người được mời nhưng chưa đăng nhập: uid được gắn khi task đó được sửa lần sau (task cũ không ai sửa: cần script backfill riêng, xem trước → duyệt)
+- Tiếp theo: HOD merge #35→#39 → publish rules wave 2 + smoke test → chuyển MA → UBO → AF Lean → CRP (mỗi ngày 1 project, xem trước → duyệt) → PR 2 Replace person → onboard. Còn treo: W1-1, glossary, tab Aggregation. P3.2 / P3.3 hoãn
 - Chưa onboard cả phòng cho tới khi xong B + P1 + P2

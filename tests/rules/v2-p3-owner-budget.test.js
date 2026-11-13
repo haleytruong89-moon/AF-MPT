@@ -97,9 +97,13 @@ async function renameAllAs(u) {
   for (const w of tree.programs[0].workstreams) for (const t of w.tasks) t.name = `${t.name} (edited)`;
   const plan = planV2Save(loaded, tree, { uid: u.uid, wid: WID, pid: PID, isOwner: u === OWNER, dirIndex, uidByEmail });
   expect(plan.refused).toBe(null);
-  expect(plan.batches).toHaveLength(1);
-  expect(plan.batches[0].filter((op) => op.kind === 'tasks')).toHaveLength(N_WS);
-  return executeV2Save(fs, { db, wid: WID, pid: PID, uid: u.uid, plan });
+  // Wave 2 W1: a non-Owner (PM) plan is split into chunks of <= 8 WS; OB-2 runs
+  // it unchunked so it still measures one transaction over all N_WS.
+  const batch = plan.batches.flat();
+  if (u === OWNER) expect(plan.batches).toHaveLength(1);
+  else expect(plan.batches.length).toBeGreaterThan(1);
+  expect(batch.filter((op) => op.kind === 'tasks')).toHaveLength(N_WS);
+  return executeV2Save(fs, { db, wid: WID, pid: PID, uid: u.uid, plan: { ...plan, batches: [batch] } });
 }
 
 describe('P3.1 I1: Owner get() budget across many workstreams', () => {

@@ -132,8 +132,27 @@ describe('roles and approvals on the v2 tree (P3 task 5)', () => {
       programs: { pA: { pmUid: null, deputyUid: null, start: null, end: null } },
       workstreams: { wA: { programId: null, leadUid: null, start: null, end: null } },
       tasks: { tA: { programId: null, workstreamId: null, picUid: null, contributorUids: [] } },
+      decisions: {},
     });
     expect(rolesFromLoaded({ meta: {}, docs: { workstreams: new Map(), tasks: new Map() } }, ['o']).programs).toEqual({});
+  });
+  it('rolesFromLoaded: decisions[id].programId = the stored claim program (W2 R5, Ruling W2-4)', () => {
+    const loaded = {
+      meta: { programMeta: { pA: { order: 0 } } },
+      docs: {
+        workstreams: new Map([['wA', { version: 1, data: { programId: 'pA' } }]]),
+        tasks: new Map(),
+        decisions: new Map([
+          ['dP', { version: 1, data: { viaProgramId: 'pA' } }],
+          ['dW', { version: 1, data: { viaWorkstreamId: 'wA' } }],
+          ['dGone', { version: 1, data: { viaWorkstreamId: 'wMissing' } }],
+          ['dNone', { version: 1, data: {} }],
+        ]),
+      },
+    };
+    expect(rolesFromLoaded(loaded, []).decisions).toEqual({
+      dP: { programId: 'pA' }, dW: { programId: 'pA' }, dGone: { programId: null }, dNone: { programId: null },
+    });
   });
   it('rolesFromLoaded does not alias the loaded data', () => {
     const s = snapshots();

@@ -1,6 +1,12 @@
 // P2.3 v2 save executor. Runs a planV2Save plan against Firestore: one transaction
 // per batch, in order (Ruling X: batches[1..] are follow-up single-entry steps on the
-// same docs). Firestore functions are injected (fs = { runTransaction, doc,
+// same docs). Wave 2 W1: for a non-Owner the planner splits every batch into chunks
+// of at most MAX_WS_PER_CHUNK work streams (saveChunks.js), so batches = [...chunks
+// of the main ops, ...chunks of each follow-up step]; the executor runs them in
+// order like any batch, and the metaPatch still goes only with the first
+// transaction. A failing chunk leaves earlier chunks committed (W1: Retry re-plans
+// against the refreshed cache, so only what is still different is written).
+// Firestore functions are injected (fs = { runTransaction, doc,
 // serverTimestamp, deleteField }) so the emulator test can pass the client SDK of
 // @firebase/rules-unit-testing; the shim passes the app's SDK.
 //
@@ -23,6 +29,7 @@
 //    null for deletes; data excludes the updatedAt sentinel). A later batch failing
 //    leaves earlier batches committed (partial append accepted per Ruling X).
 import { DELETE_FIELD } from './planV2Save.js';
+import { stableEqual } from './saveChunks.js';
 
 const versionOf = (snap) => {
   const v = snap.exists() ? snap.data()?.version : undefined;
@@ -70,6 +77,16 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
       res = await runTransaction(db, async (tx) => {
         const projectSnap = await tx.get(projectRef);
         if (!projectSnap.exists() || projectSnap.data()?.schemaVersion !== 2) return { conflict: true };
+        // W2: first transaction only, before any write: a top-level project field the
+        // plan changes must still hold the value this tab loaded, else a newer edit wins.
+        if (i === 0 && meta && plan.metaBase) {
+          const live = projectSnap.data() || {};
+          for (const [k, v] of Object.entries(plan.metaBase)) {
+            const want = plan.metaPatch[k] === DELETE_FIELD ? undefined : plan.metaPatch[k];
+            // Already holds what this tab writes (idempotent): not a conflict.
+            if (!stableEqual(live[k], v) && !stableEqual(live[k], want)) return { conflict: true, reason: 'meta' };
+          }
+        }
         const snaps = [];
         for (const op of ops) snaps.push(await tx.get(refOf(op)));
         for (let k = 0; k < ops.length; k++) {
@@ -106,7 +123,7 @@ export async function executeV2Save(fs, { db, wid, pid, uid, plan }) {
       const status = e && e.code === 'permission-denied' ? 'denied' : 'error';
       return { status, written, failedBatch: i, metaWritten, metaPatch: metaApplied, error: e };
     }
-    if (res.conflict) return { status: 'conflict', written, failedBatch: i, metaWritten, metaPatch: metaApplied };
+    if (res.conflict) return { status: 'conflict', ...(res.reason ? { reason: res.reason } : {}), written, failedBatch: i, metaWritten, metaPatch: metaApplied };
     written.push(...res.out);
     if (i === 0 && meta) { metaWritten = true; metaApplied = res.metaOut; }
   }

@@ -616,3 +616,20 @@ describe('planRestore', () => {
     expect(codes(p.warnings)).not.toContain('pending-approvals');
   });
 });
+
+describe('webhook secret', () => {
+  it('p2-restore never writes googleChatWebhook from a backup and does not list it', () => {
+    const live = makeLive();
+    live.meta.googleChatWebhook = 'https://chat/live';
+    const b = backupOf(live);
+    b.googleChatWebhook = 'https://chat/old-leaked';
+    b.projectLead = 'Bob';
+    const p = plan(live, b);
+    expect(p.metaPatch).toEqual({ projectLead: 'Bob' });
+    expect(JSON.stringify(p.report.meta)).not.toContain('googleChatWebhook');
+    const live2 = makeLive();
+    live2.meta.googleChatWebhook = 'https://chat/live';
+    const p2 = plan(live2, backupOf(makeLive()));
+    expect(JSON.stringify(p2.report.meta)).not.toContain('googleChatWebhook');
+  });
+});

@@ -12,6 +12,8 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { assembleProject, splitProject } from '../../src/migrateV2.js';
 import { carryDoc, overlay, keepOrder, META_SKIP, KEEP_PROGRAM } from '../../src/planV2Save.js';
+// The Chat webhook is a bearer secret: restore never writes it from a backup (live value wins).
+const SECRET_META_KEY = 'googleChatWebhook';
 import { appValueFromV2 } from '../../src/readV2.js';
 import { unfoldResolutions } from '../../src/blockerResolutions.js';
 import { stableJson } from './migrate-normalise.mjs';
@@ -360,7 +362,7 @@ export function planRestore({
   const metaPatch = {};
   const nm = split.meta;
   for (const k of Object.keys(nm)) {
-    if (META_SKIP.has(k)) continue;
+    if (META_SKIP.has(k) || k === SECRET_META_KEY) continue;
     if (!hasOwn(lm, k) || !isDeepStrictEqual(lm[k], nm[k])) {
       metaPatch[k] = nm[k];
       report.meta.push({ field: k, from: hasOwn(lm, k) ? lm[k] : null, to: nm[k] });
@@ -368,7 +370,7 @@ export function planRestore({
   }
   // Live-only keys stay (no field delete); listed so HOD sees them.
   for (const k of Object.keys(lm)) {
-    if (!META_SKIP.has(k) && !hasOwn(nm, k)) report.meta.push({ field: k, kept: true });
+    if (!META_SKIP.has(k) && k !== SECRET_META_KEY && !hasOwn(nm, k)) report.meta.push({ field: k, kept: true });
   }
   const storedPM = isObj(lm.programMeta) ? lm.programMeta : {};
   const nextPM = {};
