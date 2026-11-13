@@ -14381,14 +14381,7 @@ export default function App() {
                 }}>Your role: {rs.label}</span>
               );
             })()}
-            <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              setProjectMenu({ x: rect.left, y: rect.bottom + 4 });
-            }} title="Project options"><MoreHorizontal size={12} /></Btn></span>
-            {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowNewProject(true)} title="New project"><Plus size={12} /></Btn>}
-            {isOwner && <Btn size="sm" variant="ghost" onClick={() => setShowImport(true)} title="Import Excel"><FileUp size={12} /></Btn>}
             <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
-            <span data-tour="members" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowMembers(true)} title="Manage members & related parties" disabled={!project}><UserCircle size={12} /></Btn></span>
             <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
           </div>
 
@@ -14468,14 +14461,12 @@ export default function App() {
             })()}
           </div>
 
-          <Btn size="sm" variant="primary" onClick={() => setMeetingMode(true)} title="Enter meeting mode (presentation view)">▶ Meeting</Btn>
-          <Btn size="sm" onClick={() => setShowMeetingExport(true)} title="Generate meeting minutes"><FileText size={12} /> Minutes</Btn>
-          <Btn size="sm" onClick={exportExcel} title="Export to Excel"><FileSpreadsheet size={12} /> Excel</Btn>
-          <Btn size="sm" onClick={backupJson} title="Backup all workspace data to JSON"><Download size={12} /></Btn>
           <input type="file" ref={fileInputRef} accept=".json" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && restoreJson(e.target.files[0])} />
-          {isOwner && (
-            <Btn size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} title="Restore from JSON backup"><Upload size={12} /></Btn>
-          )}
+          {/* P4-B: one menu for export / import / people / project (spec §5). */}
+          <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setProjectMenu({ x: Math.max(8, rect.right - 260), y: rect.bottom + 4 });
+          }} title="Export, import, people and project settings" aria-haspopup="menu"><MoreHorizontal size={12} /> {isOwner ? 'Export / Import' : 'Export'}</Btn></span>
           <button
             onClick={() => setUserMenuOpen(!userMenuOpen)}
             title="Account menu"
@@ -14726,12 +14717,31 @@ export default function App() {
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
             items={[
-              { label: 'Manage members & related parties', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
-              { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
-              { label: 'Roles…', icon: <Users size={13} />, onClick: () => setShowRoles(true) },
-              // B4: deleting a whole project is workspace-owner only.
+              // Export
+              { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
+              { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
+              { label: 'Export Excel', icon: <FileSpreadsheet size={13} />, onClick: exportExcel },
+              { label: 'Backup JSON', icon: <Download size={13} />, onClick: backupJson },
+              // Import (workspace Owner only)
               ...(isOwner ? [
                 { separator: true },
+                { label: 'New project…', icon: <Plus size={13} />, onClick: () => setShowNewProject(true) },
+                { label: 'Import Excel…', icon: <FileUp size={13} />, onClick: () => setShowImport(true) },
+                { label: 'Restore from JSON…', icon: <Upload size={13} />, onClick: () => fileInputRef.current?.click() },
+              ] : []),
+              // People and project (modals enforce rights)
+              ...(project ? [
+                { separator: true },
+                { label: 'Members & related parties…', icon: <UserCircle size={13} />, onClick: () => setShowMembers(true) },
+                { label: 'Roles…', icon: <Users size={13} />, onClick: () => setShowRoles(true) },
+              ] : []),
+              ...(isOwner && verifiedEmail ? [{ label: 'People directory…', icon: <BookOpen size={13} />, onClick: () => setShowDirectory(true) }] : []),
+              ...(project ? [
+                { separator: true },
+                { label: 'Project settings…', icon: <Edit2 size={13} />, onClick: () => setShowProjectSettings(true) },
+              ] : []),
+              // B4: deleting a whole project is workspace-owner only.
+              ...(isOwner && project ? [
                 { label: meta.projectIds.length > 1 ? 'Delete project' : 'Delete project (need 2+)', icon: <Trash2 size={13} />, danger: true, onClick: deleteCurrentProject },
               ] : []),
             ]}

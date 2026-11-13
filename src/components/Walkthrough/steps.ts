@@ -79,7 +79,7 @@ export const STEPS: Step[] = [
     target: 'project-menu',
     placement: 'bottom',
     title: 'Assigning roles',
-    body: 'Open the ⋯ menu and choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
+    body: 'The ⋯ menu holds Meeting mode, Minutes, Excel and Backup, plus Members, Roles… and Project settings. Choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
     primaryCta: 'Next',
   },
   {
@@ -87,8 +87,8 @@ export const STEPS: Step[] = [
     type: 'spotlight',
     target: 'view-tabs',
     placement: 'bottom',
-    title: 'Mind map and Outline',
-    body: 'Mind map is the visual canvas; Outline edits the same tree as a list. Both show the same project.',
+    title: 'Your tabs',
+    body: 'You see the tabs for your role. Plan holds Mind map, Outline and Gantt: switch between them at the top of the plan; all three show the same project.',
     primaryCta: 'Next',
   },
   {
