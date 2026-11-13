@@ -146,3 +146,9 @@ export const ACTIVITY_KEY = 'activity:';
 export const activityStateKey = (pid) => ACTIVITY_KEY + pid;
 export const isActivityKey = (key) => typeof key === 'string' && key.startsWith(ACTIVITY_KEY);
 export const projectIdOfKey = (key) => (isActivityKey(key) ? key.slice(ACTIVITY_KEY.length) : key);
+
+// O4: read-only "is there unsaved work right now" signal for the root error boundary,
+// which sits outside App and cannot read its state. App publishes it from an effect.
+let unsavedWorkSignal = false;
+export function setUnsavedWorkSignal(v) { unsavedWorkSignal = !!v; }
+export function isUnsavedWorkPending() { return unsavedWorkSignal; }

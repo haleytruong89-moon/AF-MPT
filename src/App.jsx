@@ -18,10 +18,10 @@ import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
-import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
+import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
@@ -35,7 +35,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
@@ -7310,8 +7310,10 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     return { result, programCp, workstreamCp, taskCp: taskCpAgg, programEarned, workspaceEarned, topPics };
   }, [project, dirIndex]);
 
+  // Wave 2 O2: a drop the rules would refuse is not attempted (never across programs for a non-Owner).
+  const dropOk = (kind, targetPgId, targetWsId) => canDropMove({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, kind, sourcePgId: dragInfo?.sourcePgId, targetPgId, targetWsId, taskStart: dragInfo?.start, taskEnd: dragInfo?.end });
   const onDragStartTask = (e, task, pg, ws) => {
-    setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id });
+    setDragInfo({ kind: 'task', id: task.id, sourceWsId: ws.id, sourcePgId: pg.id, start: task.start ?? null, end: task.end ?? null });
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', task.id);
   };
@@ -7327,7 +7329,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
   };
   const dropTaskIntoWs = (targetPg, targetWs) => {
     if (!dragInfo || dragInfo.kind !== 'task') return;
-    if (dragInfo.sourceWsId === targetWs.id) { setDragInfo(null); setDragOver(null); return; }
+    if (dragInfo.sourceWsId === targetWs.id || !dropOk('task', targetPg.id, targetWs.id)) { setDragInfo(null); setDragOver(null); return; }
     let task = null, sourceWsName = '';
     const programs = project.programs.map((p) => ({
       ...p,
@@ -7351,7 +7353,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
   };
   const dropWsIntoPg = (targetPg) => {
     if (!dragInfo || dragInfo.kind !== 'ws') return;
-    if (dragInfo.sourcePgId === targetPg.id) { setDragInfo(null); setDragOver(null); return; }
+    if (dragInfo.sourcePgId === targetPg.id || !dropOk('ws', targetPg.id, null)) { setDragInfo(null); setDragOver(null); return; }
     let ws = null, sourcePgName = '';
     const programs = project.programs.map((p) => {
       if (p.id === dragInfo.sourcePgId) {
@@ -7435,7 +7437,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
           const pgCaps = capsFor(pg.id, null);
           return (
             <div key={pg.id}
-              onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id) onDragOverZone(e, 'pg_' + pg.id); }}
+              onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id && dropOk('ws', pg.id, null)) onDragOverZone(e, 'pg_' + pg.id); }}
               onDragLeave={() => setDragOver(null)}
               onDrop={() => dropWsIntoPg(pg)}
               style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(59,109,17,0.15)' : 'none' }}>
@@ -7485,13 +7487,13 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                 const wsCaps = capsFor(pg.id, ws.id);
                 return (
                   <div key={ws.id}
-                    draggable onDragStart={(e) => onDragStartWs(e, ws, pg)}
-                    onDragOver={(e) => { if (dragInfo?.kind === 'task' && dragInfo.sourceWsId !== ws.id) onDragOverZone(e, 'ws_' + ws.id); }}
+                    draggable={wsCaps.wsMove} onDragStart={wsCaps.wsMove ? (e) => onDragStartWs(e, ws, pg) : undefined}
+                    onDragOver={(e) => { if (dragInfo?.kind === 'task' && dragInfo.sourceWsId !== ws.id && dropOk('task', pg.id, ws.id)) onDragOverZone(e, 'ws_' + ws.id); }}
                     onDragLeave={() => setDragOver(null)}
                     onDrop={() => dropTaskIntoWs(pg, ws)}
                     style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
                     <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg, flexWrap: showRoles ? 'wrap' : undefined }}>
-                      <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span>
+                      {wsCaps.wsMove ? <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span> : <span style={{ width: 12 }} />}
                       <button onClick={() => toggleExpand(ws.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.workstreamFg, padding: 2, display: 'flex' }}>
                         {wsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                       </button>
@@ -7532,7 +7534,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                       const tEffWeight = tIdx >= 0 ? (taskWeightInfo.weights[tIdx] || 0) : 0;
                       return (
                         <div key={t.id}
-                          draggable onDragStart={(e) => onDragStartTask(e, t, pg, ws)}
+                          draggable={wsCaps.taskMove} onDragStart={wsCaps.taskMove ? (e) => onDragStartTask(e, t, pg, ws) : undefined}
                           onClick={() => onTaskClick(t.id)}
                           style={{
                             padding: '7px 12px 7px 52px', display: 'flex', alignItems: 'center', gap: 8,
@@ -7542,7 +7544,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                           }}
                           onMouseEnter={(e) => { if (!sel) e.currentTarget.style.background = TOK.bg; }}
                           onMouseLeave={(e) => { if (!sel) e.currentTarget.style.background = TOK.surface; }}>
-                          <span style={{ cursor: 'grab', color: TOK.subtle, display: 'flex' }}><Grip size={11} /></span>
+                          {wsCaps.taskMove ? <span style={{ cursor: 'grab', color: TOK.subtle, display: 'flex' }}><Grip size={11} /></span> : <span style={{ width: 11 }} />}
                           {!dropped && <HealthDot health={t.health || 'green'} size={8} />}
                           <span style={{
                             fontSize: 12.5, color: TOK.ink, flex: 1,
@@ -12979,6 +12981,7 @@ export default function App() {
   const [pendingN, setPendingN] = useState(0); // re-render mirror of pendingSaves.current (C2 chip)
   const bumpPending = useCallback((d) => { pendingSaves.current = Math.max(0, pendingSaves.current + d); setPendingN(pendingSaves.current); }, []);
   const [lastSavedAt, setLastSavedAt] = useState(null);
+  useEffect(() => { setUnsavedWorkSignal(hasUnsavedWork(pendingN, saveState)); }, [pendingN, saveState]); // O4: feeds RootErrorBoundary
   const saveStateRef = useRef({});
   saveStateRef.current = saveState;
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
@@ -13082,13 +13085,24 @@ export default function App() {
   // B1: owner = verified Firebase email only (case-insensitive). Display-name
   // claims are no longer accepted; Firestore rules enforce the same.
   const verifiedEmail = authUser?.email || authorEmail || null;
-  const isOwner = isWorkspaceOwnerEmail(meta?.workspaceOwner, verifiedEmail);
+  const isOwner = isWorkspaceOwner(meta, authUser?.uid, verifiedEmail);
+  // Label only: "You" when the viewer is the workspaceOwner email, or the only ownerUids entry; otherwise show the stored email.
+  const ownerIsMe = isOwner && (!meta?.workspaceOwner
+    || (verifiedEmail && String(meta.workspaceOwner).trim().toLowerCase() === String(verifiedEmail).trim().toLowerCase())
+    || (Array.isArray(meta?.ownerUids) && meta.ownerUids.length === 1 && meta.ownerUids[0] === authUser?.uid));
 
+  const [localSeenAt, setLocalSeenAt] = useState(null); // { uid, at } from this tab; null = read from storage
   // v30 — per-user preferences (lastSeenMyWorkAt, defaultViewOverride, etc.)
   // meta.userPreferences is optional; default to {} so legacy workspaces just work.
   const userPrefs = useMemo(
-    () => (author ? (meta?.userPreferences?.[author] || {}) : {}),
-    [meta, author]
+    () => {
+      if (!author) return {};
+      const shared = meta?.userPreferences?.[author] || {};
+      // O3: "seen" is per browser; fall back to the old shared value once so the marker does not reset on deploy.
+      const local = (localSeenAt && localSeenAt.uid === authUser?.uid ? localSeenAt.at : null) || lastSeenMyWork(authUser?.uid);
+      return local ? { ...shared, lastSeenMyWorkAt: local } : shared;
+    },
+    [meta, author, authUser?.uid, localSeenAt]
   );
 
   // v30 Phase 4 — Badge count on the My Work tab. needsAttention always
@@ -13145,21 +13159,12 @@ export default function App() {
 
   // v30 — mark mentions as seen. Functional setMeta keeps deps stable.
   const markMyWorkSeen = useCallback(async () => {
-    if (!author) return;
-    setMeta((m) => {
-      if (!m) return m;
-      const prefs = m.userPreferences || {};
-      const m2 = {
-        ...m,
-        userPreferences: {
-          ...prefs,
-          [author]: { ...(prefs[author] || {}), lastSeenMyWorkAt: new Date().toISOString() },
-        },
-      };
-      saveMeta(m2);
-      return m2;
-    });
-  }, [author]);
+    if (!author || !authUser?.uid) return;
+    // O3: per-browser marker; no workspaces/main write.
+    const iso = new Date().toISOString();
+    markMyWorkSeenLocal(authUser.uid, iso);
+    setLocalSeenAt({ uid: authUser.uid, at: iso });
+  }, [author, authUser?.uid]);
 
   // v30 Phase 4 — Owner picks the workspace-wide default landing view.
   // Writes meta.defaultView. Defense-in-depth: also guard at handler.
@@ -14758,6 +14763,7 @@ export default function App() {
           <MembersModal
             projectId={project.id}
             currentUserId={authUser.uid}
+            isWorkspaceOwner={isOwner}
             onClose={() => setShowMembers(false)}
             showToast={showToast}
           />
@@ -14826,10 +14832,10 @@ export default function App() {
               </div>
               <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + TOK.line, fontSize: 12 }}>
                 <div style={{ fontSize: 10, color: TOK.muted, fontWeight: 500, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Workspace owner</div>
-                {meta?.workspaceOwner ? (
+                {(meta?.workspaceOwner || isOwner) ? (
                   <>
                     <div style={{ color: TOK.ink, marginBottom: 6 }}>
-                      {isOwner ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : meta.workspaceOwner}
+                      {ownerIsMe ? <><span style={{ color: TOK.accent, fontWeight: 500 }}>You ({author})</span></> : (meta?.workspaceOwner || 'Owner (by uid)')}
                     </div>
                     {isOwner ? (
                       <div style={{ display: 'flex', gap: 6 }}>

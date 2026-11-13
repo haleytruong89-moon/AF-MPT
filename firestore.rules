@@ -17,7 +17,7 @@ rules_version = '2';
 // invisible to clients (the where('memberIds', 'array-contains', uid) query
 // can't match it, and Firestore rejects unconstrained list queries that could
 // return unauthorized docs). Before publishing these rules to a workspace
-// that has v1 data, run scripts/setup-rbac.js with admin credentials so every
+// that has v1 data, run the p1/p2 admin scripts (scripts/p1-*.mjs, scripts/p2-*.mjs; setup-rbac.js was removed) so every
 // existing project gets memberIds/roles populated.
 //
 // Deploy: firebase deploy --only firestore:rules --project <prod project id>

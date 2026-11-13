@@ -37,3 +37,16 @@ export function dismissBriefing(dateISO) {
     localStorage.setItem(BRIEFING_KEY, JSON.stringify(list.slice(-10)));
   } catch { /* storage unavailable: dismissal lasts for this session only */ }
 }
+
+// Wave 2 O3: "My Work seen" is personal to this browser (uid-namespaced), not shared workspace state.
+const seenKey = (uid) => 'afmpt:myWorkSeen:' + uid;
+
+export function lastSeenMyWork(uid) {
+  if (!uid) return null;
+  try { return localStorage.getItem(seenKey(uid)) || null; } catch { return null; }
+}
+
+export function markMyWorkSeenLocal(uid, iso) {
+  if (!uid) return;
+  try { localStorage.setItem(seenKey(uid), iso); } catch { /* storage unavailable: marker lasts for this session only */ }
+}

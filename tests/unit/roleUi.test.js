@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision } from '../../src/roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, isWorkspaceOwner, canDropMove } from '../../src/roleUi.js';
 
 const info = (picUid, extra = {}) => ({ programId: 'p1', workstreamId: 'w1', picUid, contributorUids: [], ...extra });
 const roles = {
@@ -18,7 +18,7 @@ const project = {
     { id: 'p2', name: 'Reporting', workstreams: [{ id: 'w2', name: 'Monthly pack' }] },
   ],
 };
-const ALL_TRUE = { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true };
+const ALL_TRUE = { programEdit: true, wsAdd: true, wsEdit: true, wsDates: true, wsDelete: true, taskAdd: true, taskEdit: true, wsMove: true, taskMove: true };
 const ALL_FALSE = Object.fromEntries(Object.keys(ALL_TRUE).map((k) => [k, false]));
 const caps = (uid, over = {}) => uiCaps({ isOwner: false, isV2: true, roles, uid, programId: 'p1', wsId: 'w1', ...over });
 
@@ -70,7 +70,7 @@ describe('uiCaps', () => {
     expect(caps('V', { isOwner: true })).toEqual(ALL_TRUE);
   });
   it('v2 PM and Deputy of the program', () => {
-    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true };
+    const exp = { ...ALL_FALSE, wsAdd: true, wsEdit: true, wsDelete: true, taskAdd: true, taskEdit: true, taskMove: true };
     expect(caps('P')).toEqual(exp);
     expect(caps('D')).toEqual(exp);
   });
@@ -230,5 +230,51 @@ describe('actionDeleteMode', () => {
     expect(actionDeleteMode({ ...base, uid: 'P2', action: act() })).toBe('none');
     expect(actionDeleteMode({ ...base, uid: 'P', action: act({ workstreamId: null }) })).toBe('none');
     expect(actionDeleteMode({ ...base, uid: 'P', action: act({ status: 'Cancelled' }) })).toBe('none');
+  });
+});
+
+describe('isWorkspaceOwner (O1, mirrors rules isOwnerIn)', () => {
+  it('uid only', () => expect(isWorkspaceOwner({ ownerUids: ['U'] }, 'U', 'x@smartosc.com')).toBe(true));
+  it('email only, case-insensitive, even when ownerUids is empty or lists someone else', () => {
+    expect(isWorkspaceOwner({ ownerUids: [], workspaceOwner: 'Hod@SmartOSC.com' }, 'U', 'hod@smartosc.com')).toBe(true);
+    expect(isWorkspaceOwner({ ownerUids: ['Z'], workspaceOwner: 'hod@smartosc.com' }, 'U', 'HOD@smartosc.com')).toBe(true);
+  });
+  it('both', () => expect(isWorkspaceOwner({ ownerUids: ['U'], workspaceOwner: 'a@smartosc.com' }, 'U', 'a@smartosc.com')).toBe(true));
+  it('neither / missing data / display-name owner', () => {
+    expect(isWorkspaceOwner({ ownerUids: ['Z'], workspaceOwner: 'a@smartosc.com' }, 'U', 'b@smartosc.com')).toBe(false);
+    expect(isWorkspaceOwner(null, 'U', 'b@smartosc.com')).toBe(false);
+    expect(isWorkspaceOwner({ workspaceOwner: 'Ha Truong' }, 'U', 'Ha Truong')).toBe(false);
+    expect(isWorkspaceOwner({ ownerUids: ['U'] }, null, null)).toBe(false);
+  });
+});
+
+describe('move caps and canDropMove (O2)', () => {
+  it('v2: ws moves Owner-only; PM / Deputy move tasks; Sub-PM and stranger none', () => {
+    expect(caps('P')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('D')).toMatchObject({ wsMove: false, taskMove: true });
+    expect(caps('L')).toMatchObject({ wsMove: false, taskMove: false });
+    expect(caps('V')).toMatchObject({ wsMove: false, taskMove: false });
+  });
+  const base = { isOwner: false, isV2: true, roles, uid: 'P', kind: 'task', sourcePgId: 'p1', targetPgId: 'p1', targetWsId: 'w1' };
+  it('Owner and v1 may drop anywhere', () => {
+    expect(canDropMove({ ...base, isOwner: true, uid: 'V', targetPgId: 'p2' })).toBe(true);
+    expect(canDropMove({ ...base, isV2: false, uid: 'V', targetPgId: 'p2' })).toBe(true);
+  });
+  it('PM may not move across programs', () => {
+    expect(canDropMove(base)).toBe(true);
+    expect(canDropMove({ ...base, targetPgId: 'p2', targetWsId: 'w2' })).toBe(false);
+    expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p2' })).toBe(false);
+  });
+  it('PM: task dates must fit the target work stream (taskDatesOk)', () => {
+    const inside = { ...base, targetWsId: 'w1', taskStart: '2026-02-01', taskEnd: '2026-03-01' };
+    expect(canDropMove(inside)).toBe(true);
+    expect(canDropMove({ ...inside, taskEnd: '2027-03-01' })).toBe(false);
+    expect(canDropMove({ ...inside, taskStart: '2025-01-01' })).toBe(false);
+    expect(canDropMove({ ...inside, isOwner: true, taskEnd: '2027-03-01' })).toBe(true);
+  });
+  it('Sub-PM never drops a task or ws; PM never moves a ws', () => {
+    expect(canDropMove({ ...base, uid: 'L' })).toBe(false);
+    expect(canDropMove({ ...base, uid: 'L', kind: 'ws' })).toBe(false);
+    expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p1' })).toBe(false);
   });
 });

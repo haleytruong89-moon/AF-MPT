@@ -50,11 +50,13 @@ const FONT_STACK =
 interface Props {
   projectId: string;
   currentUserId: string;
+  /** Workspace Owner (uid in ownerUids or workspaceOwner email): Owner of every project here. */
+  isWorkspaceOwner?: boolean;
   onClose: () => void;
   showToast?: (msg: string) => void;
 }
 
-export function MembersModal({ projectId, currentUserId, onClose, showToast }: Props) {
+export function MembersModal({ projectId, currentUserId, isWorkspaceOwner = false, onClose, showToast }: Props) {
   const { project, loading } = useProject(projectId);
   const directory = useUserDirectory();
   const [tab, setTab] = useState<'members' | 'parties'>('members');
@@ -71,7 +73,7 @@ export function MembersModal({ projectId, currentUserId, onClose, showToast }: P
     );
   }
 
-  const amIOwner = isOwner(project, currentUserId);
+  const amIOwner = isWorkspaceOwner || isOwner(project, currentUserId);
 
   return (
     <Backdrop onClose={onClose}>
