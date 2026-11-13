@@ -23,6 +23,7 @@ import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, fa
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
+import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
@@ -1570,6 +1571,14 @@ async function loadActivity(id) { const r = await sgetShared(K.activity(id)); if
 async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id)); if (r == null) return null; try { const a = JSON.parse(r); return Array.isArray(a) ? a : null; } catch { return null; } }
 const activityQueue = createKeyedQueue();
 const activityPending = new Map(); // v1 entries whose read failed; merged into the next successful append
+// W3-A1: activity entries and Chat cards of an edit wait for that project's save
+// (sent on 'ok', dropped when the rules refuse it, kept on a retryable error).
+const heldEffects = createHeldEffects();
+const savePending = new Set(); // project ids with a queued or in-flight debounced save
+function afterSaveOf(pid, fn) {
+  if (pid && savePending.has(pid)) heldEffects.hold(pid, fn);
+  else fn();
+}
 // Returns the full list to display (v1, read ok) or null (caller prepends the entry itself / leaves the list).
 // W5: `track` = { start(), done(id, ok) } counts the write as unsaved work while in flight and
 // reports a failed write (v2 write error, or v1 read/write error) so the banner can show it.
@@ -2068,7 +2077,7 @@ function SaveBanner({ saveState, onRetry }) {
         {metaConflictNames.length > 0 && <>Your latest changes to {q(metaConflictNames)} were <b>not saved</b>. Changed in another tab — reload to see it. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
-        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (use Submit as done to close a task). Reload to continue — edits made after this are not saved either. </>}
+        {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them. Reload to see the saved version. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
         {unknownPeople.length > 0 && <>{unknownPeople.map((u) => `“${u.project}”: ${u.person} isn't in the People directory — add them first`).join('. ')}. Later changes to this project are held until then. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
@@ -3581,11 +3590,11 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     // than threading a toast through this secondary path.
     if (!wasEditing && opts.notifyChat && project.googleChatWebhook) {
       const related = a.relatedTaskId ? findTaskInProject(project, a.relatedTaskId) : null;
-      postToChat(project.googleChatWebhook, buildNewActionCard({
+      afterSaveOf(project.id, () => postToChat(project.googleChatWebhook, buildNewActionCard({
         project, action: a, related, author,
       })).then((res) => {
         if (!res.ok) console.error('New-action chat notify failed:', res.status, res.statusText);
-      });
+      }));
     }
   };
   const editAction = (a) => { setEditingAction(a); setShowActionForm(true); };
@@ -5209,13 +5218,13 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     // v30 — notify chat on create (opt-in). Never blocks the create.
     if (!wasEditing && opts.notifyChat && project.googleChatWebhook) {
       const related = a.relatedTaskId ? findTaskInProject(project, a.relatedTaskId) : null;
-      postToChat(project.googleChatWebhook, buildNewActionCard({
+      afterSaveOf(project.id, () => postToChat(project.googleChatWebhook, buildNewActionCard({
         project, action: a, related, author,
       })).then((res) => {
         if (showToast) showToast(res.ok
           ? 'Action created · 📢 Sent to chat'
           : `Action created. Chat notify failed: ${res.status} ${res.statusText}`);
-      });
+      }));
     }
   };
 
@@ -9224,6 +9233,8 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
                   onAddComment(text, isBlocker);
                   setCommentDraft(''); setIsBlocker(false);
                   if (!wantsNotify || me.readOnly) return; // P3-16: View as never posts to Chat
+                  // W3-A1: wait for the comment to be saved; refused -> no card.
+                  await new Promise((resolve) => afterSaveOf(project.id, resolve));
                   const result = await postToChat(webhook, buildActionCard({
                     project,
                     action,
@@ -13295,11 +13306,38 @@ export default function App() {
       setSaveState((prev) => nextSaveState(prev, activityStateKey(pid), ok ? 'ok' : 'error', name + ' (activity log)'));
     },
   }), [bumpPending]);
+  // W3-A1: one place that records a save result. A v2 save the rules refused is undone in
+  // memory (back to the last saved tree, roles kept) and named in a toast; later edits queued
+  // on top of the refused state are dropped with it. Held activity / Chat follow the result.
+  const settleSave = useCallback((pid, tree, status) => {
+    const saved = status === 'denied' && tree?.__v2 ? v2SavedTree(pid) : null;
+    if (saved) {
+      if (saveTimers.current[pid]) {
+        clearTimeout(saveTimers.current[pid]);
+        delete saveTimers.current[pid];
+        delete pendingTree.current[pid];
+        bumpPending(-1);
+      }
+      const current = projectsRef.current[pid];
+      const labels = changedItemLabels(current, saved);
+      const reverted = { ...saved, __v2: current?.__v2 || saved.__v2 };
+      projectsRef.current = { ...projectsRef.current, [pid]: reverted };
+      setProjects((prev) => (prev[pid] ? { ...prev, [pid]: reverted } : prev));
+      showToastRef.current(`Not saved: you can't change ${labels.join(', ')}. Showing the last saved version.`);
+      setSaveState((prev) => nextSaveState(prev, pid, 'ok', tree.name || 'project'));
+    } else {
+      setSaveState((prev) => nextSaveState(prev, pid, status, tree?.name || 'project'));
+    }
+    if (!saveTimers.current[pid] && !inflightSaves.current[pid]) savePending.delete(pid);
+    if (!saveTimers.current[pid]) heldEffects.settle(pid, status);
+  }, [bumpPending]);
+
   const persistProject = useCallback((p) => {
     if (!p) return;
     if (!saveTimers.current[p.id]) bumpPending(1);
     clearTimeout(saveTimers.current[p.id]);
     pendingTree.current[p.id] = p;
+    savePending.add(p.id);
     const fire = async () => {
       if (closeBusy.current[p.id]) { saveTimers.current[p.id] = setTimeout(fire, 400); return; }
       delete saveTimers.current[p.id];
@@ -13313,11 +13351,11 @@ export default function App() {
       if (inflightSaves.current[p.id] === pr) delete inflightSaves.current[p.id];
       bumpPending(-1);
       if (status === 'ok') setLastSavedAt(nowHHMM());
-      setSaveState((prev) => nextSaveState(prev, p.id, status, tree.name || 'project'));
+      settleSave(p.id, tree, status);
       refreshV2Roles(p.id);
     };
     saveTimers.current[p.id] = setTimeout(fire, 400);
-  }, [refreshV2Roles, bumpPending]);
+  }, [refreshV2Roles, bumpPending, settleSave]);
 
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
@@ -13359,17 +13397,17 @@ export default function App() {
       delete saveTimers.current[pid];
       const tree = pendingTree.current[pid];
       delete pendingTree.current[pid];
-      if (!tree) { bumpPending(-1); return null; }
+      if (!tree) { bumpPending(-1); savePending.delete(pid); heldEffects.settle(pid, 'ok'); return null; }
       const status = await saveProject(tree);
       bumpPending(-1);
       if (status === 'ok') setLastSavedAt(nowHHMM());
-      setSaveState((prev) => nextSaveState(prev, pid, status, tree.name || 'project'));
+      settleSave(pid, tree, status);
       refreshV2Roles(pid);
       return status;
     }
     if (inflightSaves.current[pid]) return await inflightSaves.current[pid];
     return null;
-  }, [refreshV2Roles, bumpPending]);
+  }, [refreshV2Roles, bumpPending, settleSave]);
 
   // B2: warn before closing the tab while a save is pending or has failed.
   useEffect(() => {
@@ -13398,10 +13436,13 @@ export default function App() {
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
     const pid = currentId;
-    const log = await appendActivity(pid, entry, { v2, track: activityTrack });
-    if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
-    if (log) setActivity(log);
-    else if (v2) setActivity((prev) => [entry, ...prev]);
+    const run = async () => {
+      const log = await appendActivity(pid, entry, { v2, track: activityTrack });
+      if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
+      if (log) setActivity(log);
+      else if (v2) setActivity((prev) => [entry, ...prev]);
+    };
+    if (v2) afterSaveOf(pid, run); else await run(); // W3-A1: logged only once the edit is saved
   }, [currentId, author, activityTrack]);
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
@@ -13418,11 +13459,14 @@ export default function App() {
       ...(workstreamId !== undefined ? { workstreamId } : {}),
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
-    const log = await appendActivity(projectId, entry, { v2, track: activityTrack });
-    if (projectId === currentIdRef.current) {
-      if (log) setActivity(log);
-      else if (v2) setActivity((prev) => [entry, ...prev]);
-    }
+    const run = async () => {
+      const log = await appendActivity(projectId, entry, { v2, track: activityTrack });
+      if (projectId === currentIdRef.current) {
+        if (log) setActivity(log);
+        else if (v2) setActivity((prev) => [entry, ...prev]);
+      }
+    };
+    if (v2) afterSaveOf(projectId, run); else await run(); // W3-A1
   }, [author, activityTrack]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
@@ -13970,17 +14014,18 @@ export default function App() {
       description: `${actingPrefix}Created action: "${newAction.title}" → ${newAction.pic || '—'} (from My Work)`,
     });
     // v30 — notify chat on create (opt-in). Never blocks the create.
+    // W3-A1: confirm and notify only once the create is saved.
     if (opts.notifyChat && targetProj.googleChatWebhook) {
       const related = newAction.relatedTaskId ? findTaskInProject(targetProj, newAction.relatedTaskId) : null;
-      postToChat(targetProj.googleChatWebhook, buildNewActionCard({
+      afterSaveOf(projectId, () => postToChat(targetProj.googleChatWebhook, buildNewActionCard({
         project: targetProj, action: newAction, related, author: effectiveAuthor,
       })).then((res) => {
         showToast(res.ok
           ? `Action created in ${targetProj.name} · 📢 Sent to chat`
           : `Action created. Chat notify failed: ${res.status} ${res.statusText}`);
-      });
+      }));
     } else {
-      showToast(`Action created in ${targetProj.name}`);
+      afterSaveOf(projectId, () => showToast(`Action created in ${targetProj.name}`));
     }
   }, [projects, updateProject, logActivityForProject, effectiveAuthor]);
 
