@@ -50,3 +50,19 @@ export function markMyWorkSeenLocal(uid, iso) {
   if (!uid) return;
   try { localStorage.setItem(seenKey(uid), iso); } catch { /* storage unavailable: marker lasts for this session only */ }
 }
+
+// P4: last Plan sub-view (Mind map / Outline / Gantt), personal to this browser.
+const PLAN_VIEW_KEY = 'afmpt:planView';
+const PLAN_SUBVIEWS = ['mindmap', 'outline', 'gantt'];
+
+export function readPlanView() {
+  try {
+    const v = localStorage.getItem(PLAN_VIEW_KEY);
+    return PLAN_SUBVIEWS.includes(v) ? v : 'outline';
+  } catch { return 'outline'; }
+}
+
+export function writePlanView(v) {
+  if (!PLAN_SUBVIEWS.includes(v)) return;
+  try { localStorage.setItem(PLAN_VIEW_KEY, v); } catch { /* storage unavailable: choice lasts for this session only */ }
+}
