@@ -20,6 +20,9 @@
 //     'close-history-wipe' (wipesCloseHistory: approval history / close stamps removed) or
 //     'directory-unavailable' (Ruling AH: dirIndex is null and a pic / contributors
 //     value changed or was set on a new doc, so its uid cannot be resolved).
+//     'unknown-person' (Wave 2 W3: a changed / newly set pic or contributor name is not in
+//     the directory index; refusedName = that name; never saved as no one. Names left
+//     unchanged keep their stored uids and are not checked).
 //     A refused plan has no batches and no metaPatch.
 //
 // Ruling R: every new entry of task updates / checkIns, action updates, RAID
@@ -40,8 +43,14 @@
 // updates entry is restored, authorUid = uid). k > 1 new map keys are written in k
 // steps like Ruling X (one key per write, oldest resolvedAt first). A stored map is
 // always re-sent on the full-doc set; none is ever created empty or null.
+// Wave 2 W1 (saveChunks.js): for a non-Owner every batch is split into chunks of
+// at most MAX_WS_PER_CHUNK work streams, so batches = [...chunks of the main ops,
+// ...chunks of step 2, ...]; a work stream's ops stay in one chunk per step.
 import { splitProject, assembleProject } from './migrateV2.js';
 import { unfoldResolutions, newResolutionKeys } from './blockerResolutions.js';
+import { canonicalPerson } from './directory.js';
+import { foldName } from './identity.js';
+import { chunkOpsByWorkstream, wsTouched } from './saveChunks.js';
 
 export const DELETE_FIELD = Symbol('planV2Save.deleteField');
 
@@ -223,20 +232,36 @@ export function keepOrder(stored, next) {
 }
 
 const blank = (v) => v == null || (typeof v === 'string' && !v.trim());
+// W3: the first name in `value` (string or list) that is not already in `before`, is not
+// a contributor group and is unknown to the directory; null when all resolve.
+function unknownName(dirIndex, groups, value, before) {
+  const prev = new Set((Array.isArray(before) ? before : [before]).filter((x) => !blank(x)).map((x) => foldName(String(x))));
+  for (const x of Array.isArray(value) ? value : [value]) {
+    if (blank(x)) continue;
+    const s = String(x);
+    if (prev.has(foldName(s)) || groups.has(foldName(s))) continue;
+    if (!canonicalPerson(dirIndex, s).known) return s;
+  }
+  return null;
+}
 const hasPerson = (v) => (Array.isArray(v) ? v.some((x) => !blank(x)) : !blank(v));
 
 // Keep stored v2 fields the v1 tree cannot express (roles, stored resolutions).
+// I1/M4: same person ignoring case / spacing (arrays element-wise).
+const foldAll = (v) => (Array.isArray(v) ? v : [v]).filter((x) => !blank(x)).map((x) => foldName(String(x)));
+const samePeople = (a, b) => deepEqual(foldAll(a), foldAll(b));
+
 export function overlay(kind, stored, data) {
   const out = { ...data };
   if (kind === 'workstreams') {
     for (const k of KEEP_WS) if (hasOwn(stored, k)) out[k] = stored[k];
   }
   if (kind === 'tasks' || kind === 'actions') {
-    if (deepEqual(stored.pic, data.pic)) {
+    if (samePeople(stored.pic, data.pic)) {
       for (const k of ['picUid', 'picEmail']) if (hasOwn(stored, k)) out[k] = stored[k];
     }
   }
-  if (kind === 'tasks' && deepEqual(stored.contributors, data.contributors) && hasOwn(stored, 'contributorUids')) {
+  if (kind === 'tasks' && samePeople(stored.contributors, data.contributors) && hasOwn(stored, 'contributorUids')) {
     out.contributorUids = stored.contributorUids;
   }
   return out;
@@ -291,6 +316,11 @@ function roleClaims(loaded, uid) {
       if (isPM(programId)) return { viaProgramId: programId };
       const w = led.find((x) => x.data.programId === programId);
       return w ? { viaWorkstreamId: w.id } : {};
+    },
+    // W3 I1: may this caller change the credit uids of a stored task? (rules: Owner, or a
+    // PM / Deputy of its program or the lead of its work stream; others never.)
+    manages(programId, workstreamId) {
+      return isPM(programId) || (workstreamId != null && led.some((x) => x.id === workstreamId));
     },
     // Ruling W2-4: the program of a stored decision's claim (null = none).
     programOf(stored) {
@@ -360,7 +390,16 @@ function normalizeLoaded(loaded) {
 
 export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false, dirIndex = null, uidByEmail = new Map() } = {}) {
   const loaded = normalizeLoaded(rawLoaded);
-  const none = (refused) => ({ batches: [], metaPatch: null, refused });
+  const none = (refused, refusedName) => ({ batches: [], metaPatch: null, refused, ...(refusedName ? { refusedName } : {}) });
+  const groups = new Set((nextTree.contributorRegistry || []).map((g) => foldName(typeof g === 'string' ? g : g?.name || '')).filter(Boolean));
+  // Only checked with a directory: without one, 'directory-unavailable' applies.
+  const unknownIn = (kind, old, data) => {
+    if (!dirIndex) return null;
+    const pic = deepEqual(old.pic, data.pic) ? null : unknownName(dirIndex, groups, data.pic, old.pic);
+    if (pic) return pic;
+    if (kind !== 'tasks' || deepEqual(old.contributors, data.contributors)) return null;
+    return unknownName(dirIndex, groups, data.contributors, old.contributors);
+  };
   const next = splitProject({ ...nextTree, id: pid ?? nextTree.id }, { wid, dirIndex, uidByEmail });
   const docs = loaded.docs || {};
   for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
@@ -382,6 +421,25 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const push = (i, op) => { while (batches.length <= i) batches.push([]); batches[i].push(op); };
 
   for (const kind of KINDS) {
+    const backfillUids = (k, old, data, fresh) => {
+      // I1: an unchanged name that was invite-only (stored uid null) now resolves to a uid
+      // (the person signed in): write it. credit keys are locked for non-Owners on closed
+      // tasks, and only managers may change them, so skip rather than get denied.
+      // Ruling W2-17: called only for a doc this save already writes; a non-Owner needs the
+      // stored AND the new status open by the rules' isOpenSt (missing = Planned) so a direct
+      // close never carries credit keys.
+      const openSt = (d) => { const s = hasOwn(d, 'status') ? d.status : 'Planned'; return s === 'Planned' || s === 'InProgress'; };
+      const may = isOwner || (k === 'tasks' && openSt(old) && openSt(data) && claims.manages(old.programId, old.workstreamId));
+      if (!may) return data;
+      const out = { ...data };
+      if (samePeople(old.pic, fresh.pic) && !old.picUid && fresh.picUid) { out.picUid = fresh.picUid; if (fresh.picEmail) out.picEmail = fresh.picEmail; }
+      if (k === 'tasks' && samePeople(old.contributors, fresh.contributors) && Array.isArray(fresh.contributorUids)) {
+        const have = Array.isArray(old.contributorUids) ? old.contributorUids : [];
+        const add = fresh.contributorUids.filter((u) => u && !have.includes(u));
+        if (add.length) out.contributorUids = [...have, ...add];
+      }
+      return out;
+    };
     const stored = docs[kind] || new Map();
     const nextById = new Map(next[kind].map((d) => [d.id, d.data]));
     // storedData = the stored doc (updates only, claims not stripped).
@@ -417,12 +475,18 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       if (kind === 'tasks') data = unfoldResolutions(old, data, uid);
       data = carryDoc(kind, old, data);
       if (deepEqual(data, old)) continue;
+      // W2-17: backfill only a doc the save already writes for another reason.
+      if (kind === 'tasks' || kind === 'actions') data = backfillUids(kind, old, data, strip(nextById.get(id)));
       // Ruling AH: without the directory a changed person cannot be resolved; never
       // write null uids for it.
       if (!dirIndex && (kind === 'tasks' || kind === 'actions')
         && ((!deepEqual(old.pic, data.pic) && hasPerson(data.pic))
           || (kind === 'tasks' && !deepEqual(old.contributors, data.contributors) && hasPerson(data.contributors)))) {
         return none('directory-unavailable');
+      }
+      if (kind === 'tasks' || kind === 'actions') {
+        const who = unknownIn(kind, old, data);
+        if (who) return none('unknown-person', who);
       }
       if ((kind === 'tasks' || kind === 'actions') && Array.isArray(old.updates) && old.updates.length
         && !(Array.isArray(data.updates) && data.updates.length)) {
@@ -446,6 +510,10 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
       }
       if (!dirIndex && (kind === 'tasks' || kind === 'actions') && (hasPerson(data.pic) || hasPerson(data.contributors))) {
         return none('directory-unavailable');
+      }
+      if (kind === 'tasks' || kind === 'actions') {
+        const who = unknownIn(kind, {}, data);
+        if (who) return none('unknown-person', who);
       }
       // Created docs are not stamped (copied history keeps its original authors),
       // except a non-Owner task create (Wave 2 R1 / W4): rules allow at most one
@@ -491,6 +559,21 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   }
   Object.assign(metaPatch, programMetaPatch(storedPM, nextPM));
 
-  const out = batches[0].length ? batches : [];
-  return { batches: out, metaPatch: Object.keys(metaPatch).length ? metaPatch : null, refused: null };
+  let out = batches[0].length ? batches : [];
+  // Wave 2 W1: a non-Owner save runs each batch in chunks of at most
+  // MAX_WS_PER_CHUNK work streams (rules access-call budget). Chunks of batch i
+  // all precede those of batch i + 1, so a follow-up step (Ruling X, createSteps)
+  // still runs after the chunk that wrote its previous step.
+  if (!isOwner && out.length) {
+    const wsOf = (op) => wsTouched(op, docs[op.kind]?.get(op.id)?.data);
+    out = out.flatMap((b) => chunkOpsByWorkstream(b, wsOf));
+  }
+  // W2: loaded value of every top-level key the patch writes (not the dotted
+  // programMeta.* field paths, nor the whole-map programMeta fallback: those keep
+  // the live-role overlay in the executor). The executor refuses the save when
+  // the live doc no longer matches (a stale tab must not overwrite newer edits).
+  const metaBase = {};
+  for (const k of Object.keys(metaPatch)) if (!k.includes('.') && k !== 'programMeta') metaBase[k] = lm[k];
+  const hasMeta = Object.keys(metaPatch).length > 0;
+  return { batches: out, metaPatch: hasMeta ? metaPatch : null, ...(hasMeta ? { metaBase } : {}), refused: null };
 }

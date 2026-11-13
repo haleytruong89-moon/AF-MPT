@@ -19,7 +19,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -27,7 +27,7 @@ import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { taskUrl, parseDeepLink } from './deepLink';
@@ -1556,7 +1556,9 @@ async function saveProject(p) {
     const r = await window.storage.set(K.project(p.id), JSON.stringify(p), true);
     if (!r) return 'error';
     if (!r.error) return 'ok';
-    return ['conflict', 'readonly', 'denied', 'refused', 'history'].includes(r.error) ? r.error : 'error';
+    // W3: the in-memory tree is untouched; the banner names the person to add.
+    if (r.error === 'unknown-person') return UNKNOWN_PERSON + (r.person || 'This person');
+    return ['conflict', 'conflict-meta', 'readonly', 'denied', 'refused', 'history'].includes(r.error) ? r.error : 'error';
   } catch { return 'error'; }
 }
 async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
@@ -2040,20 +2042,22 @@ let bypassUnloadGuard = false;
 const nowHHMM = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 
 function SaveBanner({ saveState, onRetry }) {
-  const { conflict: conflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames } = bannerGroups(saveState);
-  if (conflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
+  const { conflict: conflictNames, 'conflict-meta': metaConflictNames, error: errorNames, readonly: readonlyNames, denied: deniedNames, refused: refusedNames, history: historyNames, 'unknown-person': unknownPeople } = bannerGroups(saveState);
+  if (unknownPeople.length + conflictNames.length + metaConflictNames.length + errorNames.length + readonlyNames.length + deniedNames.length + refusedNames.length + historyNames.length === 0) return null;
   const q = (list) => list.map((n) => `“${n}”`).join(', ');
   return (
     <div role="alert" style={{ position: 'absolute', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 120, maxWidth: 'calc(100% - 40px)', background: TOK.blockerBg, color: TOK.blocker, border: '1px solid currentColor', borderRadius: 8, padding: '10px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}>
       <span>
         {conflictNames.length > 0 && <>Your latest changes to {q(conflictNames)} were <b>not saved</b> — someone else changed it since you opened it. Reload to get the latest version, then redo your edit. </>}
+        {metaConflictNames.length > 0 && <>Your latest changes to {q(metaConflictNames)} were <b>not saved</b>. Changed in another tab — reload to see it. </>}
         {errorNames.length > 0 && <>Couldn’t save changes to {q(errorNames)}. Your recent edits exist only on this screen — check your connection or permissions, then reload.</>}
         {readonlyNames.length > 0 && <>{q(readonlyNames)} is a v2 pilot project and is read-only for now. Your change was not saved. </>}
         {deniedNames.length > 0 && <>Some changes to {q(deniedNames)} were <b>not saved</b>: you don’t have permission for them (use Submit as done to close a task). Reload to continue — edits made after this are not saved either. </>}
         {refusedNames.length > 0 && <>Changes to {q(refusedNames)} were <b>not saved</b>: deleting tasks or clearing all comments isn’t allowed. Mark the task Dropped instead, then reload to continue — edits made after this are not saved either. </>}
+        {unknownPeople.length > 0 && <>{unknownPeople.map((u) => `“${u.project}”: ${u.person} isn't in the People directory — add them first`).join('. ')}. Later changes to this project are held until then. </>}
         {historyNames.length > 0 && <>Changes to {q(historyNames)} were <b>not saved</b>: approval history can’t be removed. Reload to continue. </>}
       </span>
-      {errorNames.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
+      {errorNames.length + unknownPeople.length > 0 && onRetry && <button onClick={onRetry} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Retry</button>}
       <button onClick={() => { bypassUnloadGuard = true; window.location.reload(); }} style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 10px', borderRadius: 6, border: '1px solid currentColor', background: TOK.surface, color: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reload</button>
     </div>
   );
@@ -12865,6 +12869,7 @@ export default function App() {
   const { user: authUser, logOut } = useAuth();
   const directory = useUserDirectory();
   const { entries: dirEntries, reload: reloadDirectory } = useWorkspaceDirectory(authUser);
+  const reloadDirectoryAndPlan = useCallback(() => { invalidatePlanDirectory(); return reloadDirectory(); }, [reloadDirectory]);
   const [showDirectory, setShowDirectory] = useState(false);
   const dirIndex = useMemo(() => (dirEntries.length ? buildDirectoryIndex(dirEntries) : null), [dirEntries]);
   const fileInputRef = useRef(null);
@@ -13218,6 +13223,13 @@ export default function App() {
     for (const pid of retryablePids(saveStateRef.current)) {
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
+      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+    }
+  }, [persistProject]);
+  // Banner Retry: also re-runs an unknown-person state (manual only, not on 'online').
+  const retryManually = useCallback(() => {
+    for (const pid of manualRetryPids(saveStateRef.current)) {
+      if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
   }, [persistProject]);
@@ -14572,7 +14584,7 @@ export default function App() {
             onCreate={(newAction, projectId, opts) => createActionFromMyWork(newAction, projectId, '', opts)}
           />
         )}
-        <SaveBanner saveState={saveState} onRetry={retryFailedSaves} />
+        <SaveBanner saveState={saveState} onRetry={retryManually} />
         <Toast toast={toast} onClose={() => setToast(null)} />
         <DialogHost dialog={dialog} close={closeDialog} />
         <Walkthrough
@@ -14631,7 +14643,7 @@ export default function App() {
           <DirectoryModal
             entries={dirEntries}
             ownerEmail={verifiedEmail}
-            onChanged={reloadDirectory}
+            onChanged={reloadDirectoryAndPlan}
             onClose={() => setShowDirectory(false)}
             showToast={showToast}
           />

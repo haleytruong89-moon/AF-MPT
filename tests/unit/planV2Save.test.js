@@ -630,6 +630,95 @@ describe('planV2Save', () => {
     expect(op.data.picUid).toBe('uid2');
   });
 
+  it('W3: a changed pic / contributor / new action pic the directory cannot resolve is refused with its name', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].pic = 'Zed Nobody';
+    expect(planV2Save(loaded, tree, ctx())).toEqual({ batches: [], metaPatch: null, refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    const tree2 = treeOf(loaded);
+    ws1(tree2).tasks[0].contributors = ['Carol Tran', 'Zed Nobody'];
+    expect(planV2Save(loaded, tree2, ctx())).toMatchObject({ batches: [], refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    const tree3 = treeOf(loaded);
+    tree3.actionItems.unshift({ id: 'aNew', title: 'New', pic: 'Zed Nobody' });
+    expect(planV2Save(loaded, tree3, ctx())).toMatchObject({ batches: [], refused: 'unknown-person', refusedName: 'Zed Nobody' });
+    // A known name (even without a uid yet) is fine.
+    const tree4 = treeOf(loaded);
+    ws1(tree4).tasks[0].contributors = ['Carol Tran'];
+    expect(planV2Save(loaded, tree4, ctx()).refused).toBeNull();
+  });
+
+  it('W3: an unchanged legacy unresolved name keeps its stored uids and is not refused', () => {
+    const loaded = makeLoaded();
+    const t = loaded.docs.tasks.get('t2');
+    t.data.pic = 'Legacy Ghost';
+    t.data.picUid = 'uidGhost';
+    const tree = treeOf(loaded);
+    ws1(tree).tasks[1].name = 'renamed';
+    const r = planV2Save(loaded, tree, ctx());
+    expect(r.refused).toBeNull();
+    expect(allOps(r)[0].data.picUid).toBe('uidGhost');
+  });
+
+  describe('W3 I1: invite-only uid backfill', () => {
+    const withUid = { ...Object.fromEntries([...uidByEmail]), 'carol@smartosc.com': 'uid3' };
+    const fresh = () => ctx({ uid: 'uidPM', uidByEmail: new Map(Object.entries(withUid)) });
+    const setup = (status, uidKey = 'picUid') => {
+      if (status === 'In Progress') status = 'InProgress';
+      const loaded = makeLoaded();
+      const d = loaded.docs.tasks.get('t2').data;
+      d.pic = 'Carol Tran'; d[uidKey] = null; d.status = status;
+      return loaded;
+    };
+    const run = (loaded, c) => { const tree = treeOf(loaded); ws1(tree).tasks[1].name = 'x'; return planV2Save(loaded, tree, c); };
+    it('PM backfills an open task', () => {
+      const op = allOps(run(setup('In Progress'), fresh())).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('PM does not backfill a Completed task (credit keys locked)', () => {
+      const r = run(setup('Completed'), fresh());
+      expect(allOps(r).every((o) => o.data.picUid !== 'uid3')).toBe(true);
+    });
+    it('Owner backfills a Completed task', () => {
+      const op = allOps(run(setup('Completed'), { ...fresh(), uid: 'uidOwner', isOwner: true })).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('W2-17: an untouched task with a resolvable null picUid is not in the plan', () => {
+      const loaded = setup('InProgress');
+      const tree = treeOf(loaded);
+      ws1(tree).tasks[0].name = 'edited elsewhere';
+      const ids = allOps(planV2Save(loaded, tree, fresh())).map((o) => o.id);
+      expect(ids).not.toContain('t2');
+      expect(planV2Save(loaded, treeOf(loaded), fresh())).toEqual({ batches: [], metaPatch: null, refused: null });
+    });
+    it('W2-17: a manager direct close (Planned -> Completed) carries no picUid change', () => {
+      const loaded = setup('Planned');
+      const tree = treeOf(loaded);
+      Object.assign(ws1(tree).tasks[1], { status: 'Completed', approvedByUid: 'uidPM', approvedAt: '2026-11-12T00:00:00.000Z', closedByUid: 'uidPM' });
+      const op = allOps(planV2Save(loaded, tree, fresh())).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBeNull();
+      expect(op.data).toMatchObject({ approvedByUid: 'uidPM', closedByUid: 'uidPM' });
+    });
+    it('W2-17: a task with a missing status edited by a PM is backfilled', () => {
+      const loaded = setup('InProgress');
+      delete loaded.docs.tasks.get('t2').data.status;
+      const tree = treeOf(loaded);
+      delete ws1(tree).tasks[1].status;
+      ws1(tree).tasks[1].name = 'x';
+      const op = allOps(planV2Save(loaded, tree, fresh())).find((o) => o.id === 't2');
+      expect(op.data.picUid).toBe('uid3');
+    });
+    it('a pic changed only in case keeps the stored uid', () => {
+      const loaded = makeLoaded();
+      const d = loaded.docs.tasks.get('t2').data;
+      d.pic = 'Legacy Ghost'; d.picUid = 'uidGhost';
+      const tree = treeOf(loaded);
+      ws1(tree).tasks[1].pic = 'legacy ghost ';
+      const r = planV2Save(loaded, tree, ctx());
+      expect(r.refused).toBeNull();
+      expect(allOps(r)[0].data.picUid).toBe('uidGhost');
+    });
+  });
+
   it('does not mutate its inputs', () => {
     const loaded = makeLoaded();
     const tree = treeOf(loaded);
@@ -887,5 +976,25 @@ describe('planV2Save created task updates (Wave 2 A1)', () => {
     const ops = allOps(r).filter((o) => o.id === 'tNew');
     expect(ops).toHaveLength(1);
     expect(ops[0].data.updates).toEqual([{ id: 'u2', text: 'b' }, { id: 'u1', text: 'a' }]);
+  });
+});
+
+describe('planV2Save metaBase (W2 B2)', () => {
+  it('metaBase holds the loaded value of every non-dotted metaPatch key; dotted / whole programMeta excluded', () => {
+    const loaded = makeLoaded();
+    const tree = treeOf(loaded);
+    const oldName = loaded.meta.name;
+    tree.name = 'Renamed by tab A';
+    tree.programs[0].name = 'Program renamed';
+    const r = planV2Save(loaded, tree, ctx({ isOwner: true }));
+    expect(r.metaPatch.name).toBe('Renamed by tab A');
+    expect(r.metaBase).toEqual({ name: oldName });
+    expect(Object.keys(r.metaBase).some((k) => k.includes('.') || k === 'programMeta')).toBe(false);
+    expect(Object.keys(r.metaPatch).some((k) => k.startsWith('programMeta.'))).toBe(true);
+  });
+
+  it('no metaPatch -> no metaBase', () => {
+    const loaded = makeLoaded();
+    expect(planV2Save(loaded, treeOf(loaded), ctx()).metaBase).toBeUndefined();
   });
 });
