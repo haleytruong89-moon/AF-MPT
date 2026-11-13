@@ -107,6 +107,7 @@ CI: GitHub Actions (`.github/workflows/ci.yml`) chạy typecheck + unit test (n�
 | Pilot copy P2 | `node scripts/p2-pilot-copy.mjs --rollback <manifest>` (chỉ xóa đúng các path đã ghi; từ chối nếu target không phải pilot) | HOD |
 | Gán vai trò sai (PM / Deputy / Sub-PM) | Activity có dòng `role_changed` (cũ → mới): gán lại trong app (Outline, menu Roles…, hoặc ⋯ trên node Mind map), nhiều chỗ thì dùng `p2-assign` (xem trước → duyệt). Code lỗi: Vercel Promote bản trước, `git revert -m 1 <merge>`. Không đổi rules | HOD |
 | P3.1 (duyệt đóng task) lỗi | Rules trước: Console → chọn lại bản rules trước P3.1 (ghi giờ lúc publish). Rồi code: Vercel Promote bản trước, `git revert -m 1 <merge>`, mọi người hard-refresh. Task đang Submitted vẫn còn (bản cũ hiện "Submitted", quản lý chuyển được); blocker đã xử lý trong map bị ẩn, không mất. Không restore từ backup trước P3 khi còn task Submitted | HOD |
+| Webhook Chat bị lộ (nằm trong Backup JSON / ảnh chụp màn hình / chat) | Webhook leaked → in Google Chat, delete the webhook, create a new one, paste it in Project Settings. (Backup/Excel mới không còn chứa webhook; restore trong app và `p2-restore` luôn giữ webhook đang chạy, không lấy từ file backup, kể cả backup cũ.) | HOD |
 
 **Quy tắc:** trước mỗi pha có đụng dữ liệu → HOD xuất JSON + Excel tất cả project.
 

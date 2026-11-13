@@ -19,7 +19,7 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { isWorkspaceOwnerEmail, transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing } from './uiPrefs';
 import { taskWithStatus } from './taskOps';
@@ -35,7 +35,9 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode } from './roleUi.js';
+import { findProgram, findWorkstream } from './treeLatest.js';
+import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -1568,19 +1570,32 @@ async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id
 const activityQueue = createKeyedQueue();
 const activityPending = new Map(); // v1 entries whose read failed; merged into the next successful append
 // Returns the full list to display (v1, read ok) or null (caller prepends the entry itself / leaves the list).
-function appendActivity(id, e, { v2 = false } = {}) {
+// W5: `track` = { start(), done(id, ok) } counts the write as unsaved work while in flight and
+// reports a failed write (v2 write error, or v1 read/write error) so the banner can show it.
+// A failed entry stays in activityPending (v1 and v2) and is re-sent by the next append or flushActivity.
+function appendActivity(id, e, { v2 = false, track } = {}) {
+  track?.start();
   return activityQueue.run(id, async () => {
-    const pending = activityPending.get(id) || [];
-    const read = v2 ? null : await loadActivityStrict(id);
-    const plan = planActivityAppend({ v2, read, pending, entry: e });
-    if (plan.write) {
-      const ok = await ssetShared(K.activity(id), JSON.stringify(plan.write));
-      if (!ok && !v2) { activityPending.set(id, [e, ...pending]); return null; }
-    }
-    if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
-    return plan.display;
+    let ok = true;
+    try {
+      const pending = activityPending.get(id) || [];
+      if (!e && !pending.length) return null;
+      const read = v2 ? null : await loadActivityStrict(id);
+      const plan = planActivityAppend({ v2, read, pending, entry: e });
+      if (plan.write) {
+        let r = null;
+        try { r = await window.storage.set(K.activity(id), JSON.stringify(plan.write), true); } catch { r = null; }
+        if (!r) { ok = false; activityPending.set(id, [...(e ? [e] : []), ...pending]); return null; }
+        // W5: the shim skips entries the rules refused (result.deniedIds) and writes the rest, so a
+        // successful write clears pending below: a refused entry is dropped for good, no banner.
+      } else if (!v2 && read === null) ok = false; // v1 read failed: entry kept pending
+      if (plan.pending.length) activityPending.set(id, plan.pending); else activityPending.delete(id);
+      return plan.display;
+    } finally { track?.done(id, ok); }
   });
 }
+// Re-send activity entries whose write failed (banner Retry / back online).
+const flushActivity = (id, opts) => appendActivity(id, null, opts);
 
 /* ═════════ EXCEL I/O ═════════ */
 const COL = {
@@ -3268,7 +3283,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
 }
 
 /* ═════════ TASK DETAIL PANEL ═════════ */
-function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast }) {
+function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpdate, author, teamMembers, dialogs, isOwner = false, onNavigateRaid, showToast, onActivity }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const me = useContext(MeContext);
   // P3 (v2): message when a manager's PIC / contributor edit would need a manual split.
@@ -3573,7 +3588,16 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     }
   };
   const editAction = (a) => { setEditingAction(a); setShowActionForm(true); };
+  const actionMode = (a) => actionDeleteMode({ isOwner, isV2, roles: v2Roles, uid: me.uid, action: a });
   const removeAction = async (a) => {
+    if (actionMode(a) === 'cancel') {
+      // W4: v2 non-Owners never hard-delete (rules deny it); cancel keeps the record.
+      const okCancel = await dialogs.confirm({ title: 'Cancel action?', message: `Cancel "${a.title}"?`, danger: true, okLabel: 'Cancel action' });
+      if (!okCancel) return;
+      onProjectUpdate({ ...project, actionItems: (project.actionItems || []).map((x) => x.id === a.id ? { ...x, status: 'Cancelled' } : x) });
+      if (onActivity) onActivity({ type: 'action_status_change', description: `Action "${a.title}": ${a.status || 'Pending'} → Cancelled` });
+      return;
+    }
     const ok = await dialogs.confirm({ title: 'Delete action?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, actionItems: (project.actionItems || []).filter((x) => x.id !== a.id) });
@@ -4046,7 +4070,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 )}
                 {linkedActions.map((a) => (
                   <ActionRowCompact key={a.id} action={a} teamMembers={teamMembers}
-                    onEdit={editAction} onDelete={removeAction} />
+                    deleteMode={actionMode(a)} onEdit={editAction} onDelete={removeAction} />
                 ))}
               </div>
             </>
@@ -4416,7 +4440,7 @@ function DecisionRowCompact({ decision, onEdit, onDelete, teamMembers }) {
 }
 
 // Compact action row used inside the milestone panel
-function ActionRowCompact({ action, onEdit, onDelete, teamMembers }) {
+function ActionRowCompact({ action, onEdit, onDelete, teamMembers, deleteMode = 'delete' }) {
   const sc = actionStatusColor(action.status);
   const pc = priorityColor(action.priority);
   const overdue = action.dueDate && action.status !== 'Done' && action.status !== 'Cancelled' && parseDate(action.dueDate) < today();
@@ -4448,9 +4472,11 @@ function ActionRowCompact({ action, onEdit, onDelete, teamMembers }) {
         <button onClick={() => onEdit(action)} title="Edit" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
           <Edit2 size={11} />
         </button>
-        <button onClick={() => onDelete(action)} title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
-          <Trash2 size={11} />
-        </button>
+        {deleteMode !== 'none' && (
+          <button onClick={() => onDelete(action)} title={deleteMode === 'cancel' ? 'Cancel action' : 'Delete'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}>
+            {deleteMode === 'cancel' ? <X size={11} /> : <Trash2 size={11} />}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -5001,7 +5027,7 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
   );
 }
 
-function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, showCheckbox = false, teamMembers }) {
+function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, showCheckbox = false, teamMembers, deleteMode = 'delete' }) {
   const sc = actionStatusColor(action.status);
   const pc = priorityColor(action.priority);
   const related = action.relatedTaskId ? findTaskInProject(project, action.relatedTaskId) : null;
@@ -5036,7 +5062,11 @@ function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, 
         color: sc.fg, background: sc.bg, whiteSpace: 'nowrap',
       }}>{action.status}</span>
       <Btn size="sm" variant="ghost" onClick={() => onEdit(action)} title="Edit"><Edit2 size={11} /></Btn>
-      <Btn size="sm" variant="ghost" onClick={() => onDelete(action)} title="Delete"><Trash2 size={11} /></Btn>
+      {deleteMode !== 'none' && (
+        <Btn size="sm" variant="ghost" onClick={() => onDelete(action)} title={deleteMode === 'cancel' ? 'Cancel action' : 'Delete'}>
+          {deleteMode === 'cancel' ? <X size={11} /> : <Trash2 size={11} />}
+        </Btn>
+      )}
     </div>
   );
 }
@@ -5221,7 +5251,21 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
     }
   };
 
+  const actionMode = (a) => actionDeleteMode({ isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2 ? project.__v2.roles || null : null, uid: me.uid, action: a });
   const removeAction = async (a) => {
+    if (actionMode(a) === 'cancel') {
+      // W4: v2 non-Owners never hard-delete (rules deny it); cancel keeps the record.
+      const okCancel = await dialogs.confirm({ title: 'Cancel action?', message: `Cancel "${a.title}"?`, danger: true, okLabel: 'Cancel action' });
+      if (!okCancel) return;
+      const cancelled = { ...a, status: 'Cancelled' };
+      if (editing && editing.id === a.id) setEditing(cancelled);
+      if (onApplyAction) onApplyAction(cancelled, project.id, 'Actions tab'); // logs action_status_change
+      else {
+        onProjectUpdate({ ...project, actionItems: actions.map((x) => x.id === a.id ? cancelled : x) });
+        onActivity({ type: 'action_status_change', description: `Action "${a.title}": ${a.status || 'Pending'} → Cancelled` });
+      }
+      return;
+    }
     const ok = await dialogs.confirm({ title: 'Delete action item?', message: `Delete "${a.title}"?`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     onProjectUpdate({ ...project, actionItems: actions.filter((x) => x.id !== a.id) });
@@ -5458,7 +5502,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
                     <Btn size="sm" variant="ghost" onClick={() => emailPic(pic, items)} disabled={!hasEmail} title={hasEmail ? `Email ${pic}` : 'No email on file'}>📧 Email</Btn>
                   </div>
                   {items.map((a) => (
-                    <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers}
+                    <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers} deleteMode={actionMode(a)}
                       onEdit={startEdit} onDelete={removeAction} />
                   ))}
                 </div>
@@ -5470,7 +5514,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         {filtered.length > 0 && mode === 'flat' && (
           <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, overflow: 'hidden' }}>
             {filtered.map((a) => (
-              <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers}
+              <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers} deleteMode={actionMode(a)}
                 onEdit={startEdit} onDelete={removeAction}
                 onSelect={toggleSelect} selected={selected.has(a.id)} showCheckbox />
             ))}
@@ -6644,7 +6688,7 @@ function buildMindTree(project, collapsed) {
   return mk(project, 'project', programs);
 }
 
-function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles, isOwner = false, uid = null }) {
+function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onProjectUpdate, getLatestProject, onActivity, dialogs, roles = null, nameOf = null, onOpenRoles, isOwner = false, uid = null }) {
   // Wave 1 U6 (v2): menu items the rules would refuse are hidden. v1 / Owner: all.
   const capsFor = (programId, wsId) => uiCaps({ isOwner, isV2: !!project.__v2, roles, uid, programId, wsId });
   // Drop a separator left at the end (or doubled) once items are hidden.
@@ -6763,12 +6807,16 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     setMenu({ x: clientX - rect.left, y: clientY - rect.top, node: n });
   };
 
+  // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
+  const latest = () => (getLatestProject ? getLatestProject(project.id) : null);
   // Actions
   const actAddProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
-    onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
+    const cur = latest();
+    if (!cur) return;
+    onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     // Expand the new program so its (empty) workstream slot is visible
     setCollapsed((s) => { const n = new Set(s); n.delete(p.id); return n; });
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
@@ -6777,15 +6825,21 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
     const name = await dialogs.prompt({ title: 'New work stream', message: `Under "${pg.name}"`, placeholder: 'Work stream name', okLabel: 'Create' });
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
+    const cur = latest();
+    if (!cur) return;
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     onActivity({ type: 'ws_add', description: `Added work stream "${w.name}" under "${pg.name}"` });
   };
   const actAddTask = async (pg, ws) => {
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const cur = latest();
+    if (!cur) return;
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...(w.tasks || []), t] } : w) } : p
       ),
     });
@@ -6798,14 +6852,20 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       const name = await dialogs.prompt({ title: 'Rename program', initial: pg.name, okLabel: 'Rename' });
       if (!name || name === pg.name) return;
       const old = pg.name;
-      onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
+      const cur = latest();
+      if (!cur) return;
+      if (!findProgram(cur, pg.id)) return;
+      onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
       onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
     } else {
       const name = await dialogs.prompt({ title: 'Rename work stream', initial: ws.name, okLabel: 'Rename' });
       if (!name || name === ws.name) return;
       const old = ws.name;
+      const cur = latest();
+      if (!cur) return;
+      if (!findWorkstream(cur, pg.id, ws.id)) return;
       onProjectUpdate({
-        ...project, programs: project.programs.map((p) =>
+        ...cur, programs: cur.programs.map((p) =>
           p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, name } : w) } : p
         ),
       });
@@ -6818,18 +6878,29 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       const r = rollup(pg);
       const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
-      onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
+      // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
+      const cur = latest();
+      if (!cur) return;
+      const curPg = findProgram(cur, pg.id);
+      if (!curPg) return;
+      if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
       if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
+      const cur = latest();
+      if (!cur) return;
+      const curWs = findWorkstream(cur, pg.id, ws.id);
+      if (!curWs) return;
+      if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
       onProjectUpdate({
-        ...project, programs: project.programs.map((p) =>
+        ...cur, programs: cur.programs.map((p) =>
           p.id === pg.id ? { ...p, workstreams: p.workstreams.filter((w) => w.id !== ws.id) } : p
         ),
       });
-      onActivity({ type: 'ws_delete', description: `Deleted work stream "${ws.name}" (${(ws.tasks || []).length} tasks)` });
+      onActivity({ type: 'ws_delete', description: `Deleted work stream "${ws.name}" (${(curWs.tasks || []).length} tasks)` });
     }
   };
 
@@ -7009,7 +7080,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
+function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
   const dirIndex = useContext(DirectoryIndexContext);
   // Role assignment: pickers only on v2 projects.
   const showRoles = !!(project.__v2 && roles && me);
@@ -7046,11 +7117,15 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
 
   const toggleExpand = (id) => setExpanded((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
+  // After a dialog closes, build from the latest project state, not the one captured when the menu opened.
+  const latest = () => (getLatestProject ? getLatestProject(project.id) : null);
   const addProgram = async () => {
     const name = await dialogs.prompt({ title: 'New program', placeholder: 'Program name', okLabel: 'Create' });
     if (!name) return;
     const p = { id: uid('p'), name, workstreams: [], raid: [] };
-    onProjectUpdate({ ...project, programs: [...(project.programs || []), p] });
+    const cur = latest();
+    if (!cur) return;
+    onProjectUpdate({ ...cur, programs: [...(cur.programs || []), p] });
     setExpanded((s) => new Set([...s, p.id]));
     onActivity({ type: 'program_add', description: `Added program "${p.name}"` });
   };
@@ -7058,7 +7133,10 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'Rename program', initial: pg.name, okLabel: 'Rename' });
     if (!name || name === pg.name) return;
     const old = pg.name;
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
+    const cur = latest();
+    if (!cur) return;
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, name } : p) });
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
   };
   const deleteProgram = async (pg) => {
@@ -7066,14 +7144,23 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const r = rollup(pg);
     const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
-    onProjectUpdate({ ...project, programs: project.programs.filter((p) => p.id !== pg.id) });
+    // Re-check on the latest state: tasks may have arrived (or the program vanished) while the dialog was open.
+    const cur = latest();
+    if (!cur) return;
+    const curPg = findProgram(cur, pg.id);
+    if (!curPg) return;
+    if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
     onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
   };
   const addWorkstream = async (pg) => {
     const name = await dialogs.prompt({ title: `New work stream`, message: `Under program "${pg.name}"`, placeholder: 'Work stream name', okLabel: 'Create' });
     if (!name) return;
     const w = { id: uid('w'), name, tasks: [] };
-    onProjectUpdate({ ...project, programs: project.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...p.workstreams, w] } : p) });
+    const cur = latest();
+    if (!cur) return;
+    if (!findProgram(cur, pg.id)) return;
+    onProjectUpdate({ ...cur, programs: cur.programs.map((p) => p.id === pg.id ? { ...p, workstreams: [...(p.workstreams || []), w] } : p) });
     setExpanded((s) => new Set([...s, w.id]));
     onActivity({ type: 'ws_add', description: `Added work stream "${w.name}" under "${pg.name}"` });
   };
@@ -7081,8 +7168,11 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'Rename work stream', initial: ws.name, okLabel: 'Rename' });
     if (!name || name === ws.name) return;
     const old = ws.name;
+    const cur = latest();
+    if (!cur) return;
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, name } : w) } : p
       ),
     });
@@ -7090,11 +7180,16 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
   };
   const deleteWorkstream = async (pg, ws) => {
     if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
-    const n = (ws.tasks || []).length;
     const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
+    const cur = latest();
+    if (!cur) return;
+    const curWs = findWorkstream(cur, pg.id, ws.id);
+    if (!curWs) return;
+    if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    const n = (curWs.tasks || []).length;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
+      ...cur, programs: cur.programs.map((p) =>
         p.id === pg.id ? { ...p, workstreams: p.workstreams.filter((w) => w.id !== ws.id) } : p
       ),
     });
@@ -7104,9 +7199,12 @@ function OutlineView({ project, onProjectUpdate, onTaskClick, selectedTaskId, on
     const name = await dialogs.prompt({ title: 'New task', message: `Under "${ws.name}"`, placeholder: 'Task name', okLabel: 'Create' });
     if (!name) return;
     const t = { id: uid('t'), name, status: 'Planned', pic: null, contributors: [], creditSharesMode: 'auto', start: null, end: null, duration: null, deliverables: null, dependencies: null, checkIns: [], updates: [], health: 'green' };
+    const cur = latest();
+    if (!cur) return;
+    if (!findWorkstream(cur, pg.id, ws.id)) return;
     onProjectUpdate({
-      ...project, programs: project.programs.map((p) =>
-        p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...w.tasks, t] } : w) } : p
+      ...cur, programs: cur.programs.map((p) =>
+        p.id === pg.id ? { ...p, workstreams: p.workstreams.map((w) => w.id === ws.id ? { ...w, tasks: [...(w.tasks || []), t] } : w) } : p
       ),
     });
     onActivity({ type: 'task_add', description: `Added task "${t.name}" in "${ws.name}"` });
@@ -13193,6 +13291,15 @@ export default function App() {
   const pendingTree = useRef({});
   const inflightSaves = useRef({});
   const closeBusy = useRef({});
+  // W5: activity writes bump the same pending counter and report failures under their own saveState key.
+  const activityTrack = useMemo(() => ({
+    start: () => bumpPending(1),
+    done: (pid, ok) => {
+      bumpPending(-1);
+      const name = projectsRef.current[pid]?.name || 'project';
+      setSaveState((prev) => nextSaveState(prev, activityStateKey(pid), ok ? 'ok' : 'error', name + ' (activity log)'));
+    },
+  }), [bumpPending]);
   const persistProject = useCallback((p) => {
     if (!p) return;
     if (!saveTimers.current[p.id]) bumpPending(1);
@@ -13219,20 +13326,31 @@ export default function App() {
 
   // C2: re-run saves that failed with a retryable 'error' (network/unknown). Conflict, denied,
   // refused and history are never retried: that would fail again or overwrite.
+  // W5: re-send a project's pending activity. Project gone: drop the entry and its queue.
+  const retryActivityKey = useCallback((key) => {
+    const pid = projectIdOfKey(key);
+    if (impersonatingRef.current) return; // P3-16: View as is read-only
+    if (!projectsRef.current[pid]) { activityPending.delete(pid); setSaveState((prev) => nextSaveState(prev, key, 'ok')); return; }
+    flushActivity(pid, { v2: !!projectsRef.current[pid].__v2, track: activityTrack });
+  }, [activityTrack]);
   const retryFailedSaves = useCallback(() => {
-    for (const pid of retryablePids(saveStateRef.current)) {
+    for (const key of retryablePids(saveStateRef.current)) {
+      const pid = projectIdOfKey(key);
+      if (isActivityKey(key)) { retryActivityKey(key); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
       // Project no longer in memory (e.g. deleted): nothing to save, drop the stale entry.
       else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
     }
-  }, [persistProject]);
+  }, [persistProject, retryActivityKey]);
   // Banner Retry: also re-runs an unknown-person state (manual only, not on 'online').
   const retryManually = useCallback(() => {
-    for (const pid of manualRetryPids(saveStateRef.current)) {
+    for (const key of manualRetryPids(saveStateRef.current)) {
+      const pid = projectIdOfKey(key);
+      if (isActivityKey(key)) { retryActivityKey(key); continue; }
       if (projectsRef.current[pid]) persistProject(projectsRef.current[pid]);
-      else setSaveState((prev) => nextSaveState(prev, pid, 'ok'));
+      else setSaveState((prev) => nextSaveState(prev, key, 'ok'));
     }
-  }, [persistProject]);
+  }, [persistProject, retryActivityKey]);
   useEffect(() => {
     window.addEventListener('online', retryFailedSaves);
     return () => window.removeEventListener('online', retryFailedSaves);
@@ -13269,6 +13387,10 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [saveState]);
 
+  // Latest tree of the open project; views read it after a dialog closes (W6).
+  // Ref-based and dependency-free on purpose: looks the project up by id so a deleted project is never resurrected.
+  const getLatestProject = useCallback((id) => projectsRef.current[id], []);
+
   const updateProject = useCallback((updated) => {
     if (impersonatingRef.current) { showToastRef.current(READ_ONLY_MESSAGE); return; } // P3-16
     setProjects((prev) => ({ ...prev, [updated.id]: updated }));
@@ -13281,11 +13403,11 @@ export default function App() {
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type, description };
     const v2 = !!projectsRef.current[currentId]?.__v2;
     const pid = currentId;
-    const log = await appendActivity(pid, entry, { v2 });
+    const log = await appendActivity(pid, entry, { v2, track: activityTrack });
     if (pid !== currentIdRef.current) return; // switched project meanwhile: keep the new view's log
     if (log) setActivity(log);
     else if (v2) setActivity((prev) => [entry, ...prev]);
-  }, [currentId, author]);
+  }, [currentId, author, activityTrack]);
 
   // v30 — write to a specific project's activity log (My Work edits tasks/actions
   // across projects, not just currentId). Refresh in-memory feed only if it's
@@ -13301,12 +13423,12 @@ export default function App() {
       ...(workstreamId !== undefined ? { workstreamId } : {}),
     };
     const v2 = !!projectsRef.current[projectId]?.__v2;
-    const log = await appendActivity(projectId, entry, { v2 });
+    const log = await appendActivity(projectId, entry, { v2, track: activityTrack });
     if (projectId === currentIdRef.current) {
       if (log) setActivity(log);
       else if (v2) setActivity((prev) => [entry, ...prev]);
     }
-  }, [author]);
+  }, [author, activityTrack]);
 
   // Sign out: clear local identity AND Firebase auth session. After Firebase
   // signs out, AuthGate (auth.tsx) re-renders the "Sign in with Google" screen
@@ -14127,7 +14249,7 @@ export default function App() {
     downloadBlob(blob, project.name.replace(/[^a-z0-9]+/gi, '_') + '_' + toISODate(new Date()) + '.xlsx');
   };
   const backupJson = async () => {
-    const everything = { meta, projects, activity: {} };
+    const everything = { meta, projects: stripSecretsFromProjects(projects), activity: {} };
     const unreadable = [];
     for (const pid of meta.projectIds) {
       const list = await loadActivityStrict(pid);
@@ -14153,7 +14275,7 @@ export default function App() {
       for (const pid of v1Ids) {
         if (!data.projects[pid]) continue;
         // Explicit restore overrides the stale-write guard (B3) for this write only.
-        const status = await saveProject({ ...data.projects[pid], [FORCE_WRITE_FLAG]: true });
+        const status = await saveProject({ ...projectForRestore(data.projects[pid], projects[pid]), [FORCE_WRITE_FLAG]: true });
         results.push({ name: data.projects[pid].name || pid, status });
         if (activityToRestore(status, data.activity && data.activity[pid])) await ssetShared(K.activity(pid), JSON.stringify(data.activity[pid]));
       }
@@ -14481,8 +14603,8 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
-              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
+              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
@@ -14565,6 +14687,7 @@ export default function App() {
               onDelete={onTaskDelete}
               onProjectUpdate={updateProject}
               isOwner={isOwner}
+              onActivity={logActivity}
               onNavigateRaid={(programId) => {
                 setRaidScopeProgramId(programId);
                 setView('raid');

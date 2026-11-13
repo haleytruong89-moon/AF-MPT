@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids, UNKNOWN_PERSON, manualRetryPids } from '../../src/persistence.js';
+import { classifyReadError, checkRevision, nextRev, nextSaveState, hasUnsavedWork, createKeyedQueue, failedRestores, bannerGroups, buildProjectWrite, loadFailures, saveChip, retryablePids, UNKNOWN_PERSON, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from '../../src/persistence.js';
 
 describe('classifyReadError', () => {
   it('treats permission-denied and not-found as a missing doc (create path)', () => {
@@ -323,5 +323,26 @@ describe('W3 unknown-person banner state', () => {
     expect(manualRetryPids(s)).toEqual(['p1']);
     s = nextSaveState(s, 'p1', 'ok', 'CRP');
     expect(bannerGroups(s)['unknown-person']).toEqual([]);
+  });
+});
+
+describe('W5 activity save-state keys', () => {
+  it('maps a project id to a distinct key and back', () => {
+    expect(activityStateKey('p1')).toBe('activity:p1');
+    expect(isActivityKey('activity:p1')).toBe(true);
+    expect(isActivityKey('p1')).toBe(false);
+    expect(projectIdOfKey('activity:p1')).toBe('p1');
+    expect(projectIdOfKey('p1')).toBe('p1');
+  });
+  it('a project save ok does not clear a failed activity entry; its own ok does', () => {
+    let st = nextSaveState({}, activityStateKey('p1'), 'error', 'Proj (activity log)');
+    st = nextSaveState(st, 'p1', 'ok');
+    expect(Object.keys(st)).toEqual(['activity:p1']);
+    expect(hasUnsavedWork(0, st)).toBe(true);
+    expect(retryablePids(st)).toEqual(['activity:p1']);
+    expect(saveChip({ pending: 0, saveState: st, lastSavedAt: '10:00' }).retry).toBe(true);
+    expect(bannerGroups(st).error).toEqual(['Proj (activity log)']);
+    st = nextSaveState(st, activityStateKey('p1'), 'ok');
+    expect(st).toEqual({});
   });
 });

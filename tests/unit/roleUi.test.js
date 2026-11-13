@@ -213,3 +213,22 @@ describe('canEditRaid / canEditDecision / canDeleteRaidOrDecision', () => {
     expect(canDeleteRaidOrDecision({ isOwner: false, isV2: false })).toBe(true);
   });
 });
+
+import { actionDeleteMode } from '../../src/roleUi.js';
+describe('actionDeleteMode', () => {
+  const act = (extra = {}) => ({ id: 'a1', workstreamId: 'w1', status: 'Pending', ...extra });
+  const base = { isOwner: false, isV2: true, roles };
+  it('Owner and v1 keep delete', () => {
+    expect(actionDeleteMode({ ...base, isOwner: true, uid: 'O', action: act() })).toBe('delete');
+    expect(actionDeleteMode({ ...base, isV2: false, uid: 'Z', action: act() })).toBe('delete');
+  });
+  it('v2 PM, Deputy and Sub-PM cancel', () => {
+    for (const uid of ['P', 'D', 'L']) expect(actionDeleteMode({ ...base, uid, action: act() })).toBe('cancel');
+  });
+  it('v2 PIC, other program, no workstream, or already Cancelled get none', () => {
+    expect(actionDeleteMode({ ...base, uid: 'A', action: act() })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P2', action: act() })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P', action: act({ workstreamId: null }) })).toBe('none');
+    expect(actionDeleteMode({ ...base, uid: 'P', action: act({ status: 'Cancelled' }) })).toBe('none');
+  });
+});

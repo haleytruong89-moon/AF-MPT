@@ -124,3 +124,19 @@ export function myRoleSummary(roles, uid, project) {
   if (!detail.length) return { label: 'View only', detail: ['View only'] };
   return { label: detail[0], detail };
 }
+
+/**
+ * Wave 2 W4: what the delete control on an action does.
+ *  - 'delete': Owner, or any role on a v1 project (today's behaviour).
+ *  - 'cancel': v2 non-Owner who manages the action's work stream (PM / Deputy of its
+ *    program, or its Sub-PM): sets status Cancelled instead of deleting.
+ *  - 'none': v2 non-Owner without that role (e.g. the PIC: rules refuse a cancel).
+ */
+export function actionDeleteMode({ isOwner, isV2, roles, uid, action }) {
+  if (isOwner || !isV2) return 'delete';
+  if (action?.status === 'Cancelled') return 'none'; // rules: no touching a Cancelled action
+  const wsId = action?.workstreamId ?? null;
+  const ws = wsId != null ? roles?.workstreams?.[wsId] : null;
+  if (!ws || ws.programId == null) return 'none';
+  return isPmOf(roles, ws.programId, uid) || isLeadOf(roles, wsId, ws.programId, uid) ? 'cancel' : 'none';
+}
