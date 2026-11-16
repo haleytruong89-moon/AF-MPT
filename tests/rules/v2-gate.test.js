@@ -236,7 +236,7 @@ describe('P2.2 pre-P2.2 gate rules', () => {
     // W3-B1 (D1): the PIC may still comment like any reader; nothing else (status / health).
     await assertSucceeds(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
     await assertFails(up(ASG, `${P1}/tasks/t9`, { health: 'Red' }));
-    // A contributor (not PIC) may still append on a closed task.
-    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), { text: 'old' }] }));
+    // A contributor (not PIC) may still append on a closed task (on top of the PIC's comment).
+    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), by(ASG), { text: 'old' }], version: 3 }));
   });
 });
