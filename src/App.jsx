@@ -36,7 +36,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
@@ -854,7 +854,9 @@ function computeProjectCredits(project, dirIndex = null) {
 // Pure read; no mutation. Called from MyWorkView via useMemo, and from
 // TeamOverviewView per-member (Phase 3). lastSeenAt drives unread-mentions
 // partitioning; pass null to treat all mentions as unread.
-function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, authorEmail = null) {
+// W3 D3: uid (optional) drops overdue steps the person cannot tick (not the action PIC,
+// not a manager) from needsAttention; null keeps every step (View as, tests).
+function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, authorEmail = null, uid = null) {
   const startOfToday = today();
   const todayEnd = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000 - 1);
   const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -966,7 +968,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
           out.actionItems.later.push(subEntry);
         } else if (pDueDate <= todayEnd) {
           out.actionItems.today.push(subEntry);
-          if (pDueDate < startOfToday) {
+          if (pDueDate < startOfToday && (!uid || canTickStep({ isOwner, isV2: !!proj.__v2, roles: proj.__v2 ? proj.__v2.roles || null : null, uid, action: a, isPic: isMe(a.pic) }))) {
             out.needsAttention.push({ kind: 'overdue_subtask', subtask: sub, parentAction: a, project: proj });
           }
         } else if (pDueDate <= weekEnd) {
@@ -2418,7 +2420,7 @@ function UpdateEntry({ entry, teamMembers, onResolveBlocker }) {
         </div>
       )}
       {/* Resolve action — only for active blockers (not legacy, not already resolved) */}
-      {blocker && !resolved && !isLegacy && (
+      {blocker && !resolved && !isLegacy && onResolveBlocker && (
         <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
           <Btn size="sm" onClick={() => onResolveBlocker?.(entry)} title="Mark this blocker as resolved">
             <CheckCircle2 size={11} /> Mark resolved
@@ -2506,7 +2508,7 @@ function ReferenceRow({ reference, onEdit, onDelete }) {
           {shortUrl(reference.url)}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 4, opacity: hover ? 1 : 0, transition: 'opacity .12s' }}>
+      {onEdit && <div style={{ display: 'flex', gap: 4, opacity: hover ? 1 : 0, transition: 'opacity .12s' }}>
         <button onClick={() => setEditing(true)} title="Edit"
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 4 }}>
           <Edit2 size={13} />
@@ -2515,7 +2517,7 @@ function ReferenceRow({ reference, onEdit, onDelete }) {
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 4 }}>
           <Trash2 size={13} />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -2561,7 +2563,7 @@ function ReferenceForm({ initial, onSave, onCancel }) {
 }
 
 // Collapsible section showing all references for a task. Lives between meta info and tabs in TaskDetail.
-function ReferencesSection({ task, onUpdate, author }) {
+function ReferencesSection({ task, onUpdate, author, readOnly = false }) {
   const refs = task.references || [];
   const [expanded, setExpanded] = useState(refs.length > 0);
   const [adding, setAdding] = useState(false);
@@ -2612,13 +2614,13 @@ function ReferencesSection({ task, onUpdate, author }) {
         <div style={{ marginTop: 4 }}>
           {refs.length === 0 && !adding && (
             <div style={{ fontSize: 12, color: TOK.subtle, padding: '8px 4px', fontStyle: 'italic' }}>
-              No references yet. Add Google Docs, Sheets, or any link related to this milestone.
+              {readOnly ? 'No references yet.' : 'No references yet. Add Google Docs, Sheets, or any link related to this milestone.'}
             </div>
           )}
           {refs.map((r) => (
-            <ReferenceRow key={r.id} reference={r} onEdit={editRef} onDelete={deleteRef} />
+            <ReferenceRow key={r.id} reference={r} onEdit={readOnly ? null : editRef} onDelete={deleteRef} />
           ))}
-          {adding ? (
+          {readOnly ? null : adding ? (
             <ReferenceForm onSave={addRef} onCancel={() => setAdding(false)} />
           ) : (
             <button
@@ -3390,6 +3392,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
   // dates; Edit / Drop hidden when the rules would refuse. v1 unchanged.
   const isV2 = !!project.__v2;
   const caps = uiCaps({ isOwner, isV2, roles: v2Roles, uid: me.uid, programId: program.id, wsId: workstream.id });
+  // W3-A2: Health / References / Resolve blocker / Add action as the rules allow (taskUpdateWith, action create).
+  const panelCaps = taskPanelCaps({ isOwner, isV2, roles: v2Roles, uid: me.uid, taskId: task.id, status: task.status });
   const canDates = isV2 ? canEditTaskDates({ isOwner, isV2, roles: v2Roles, taskId: task.id, uid: me.uid }) : isOwner;
   const wsWindow = (v2Roles && v2Roles.workstreams && v2Roles.workstreams[workstream.id]) || workstream;
   const setDraftDate = (key, v) => {
@@ -3710,11 +3714,13 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               };
               const m = map[h];
               return (
-                <button key={h} onClick={() => onUpdate({ ...task, health: h })} style={{
+                <button key={h} disabled={!panelCaps.health}
+                  title={panelCaps.health ? undefined : 'Only the PIC (while the task is open) or a manager can set health'}
+                  onClick={() => onUpdate({ ...task, health: h })} style={{
                   flex: 1, fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '6px 8px', borderRadius: 7,
                   border: '1px solid ' + (active ? m.fg : TOK.lineStrong),
                   background: active ? m.bg : TOK.surface, color: active ? m.fg : TOK.ink,
-                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                  cursor: panelCaps.health ? 'pointer' : 'default', opacity: panelCaps.health || active ? 1 : 0.6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
                 }}>
                   <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: m.fg }} />
                   {HEALTH_LABEL[h]}
@@ -3722,7 +3728,10 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               );
             })}
           </div>
-          {(task.health === 'amber' || task.health === 'red') && (
+          {(task.health === 'amber' || task.health === 'red') && !panelCaps.health && (
+            <div style={{ fontSize: 12, color: TOK.muted, whiteSpace: 'pre-wrap' }}>{task.healthNote || '—'}</div>
+          )}
+          {(task.health === 'amber' || task.health === 'red') && panelCaps.health && (
             <Textarea
               value={task.healthNote || ''}
               onChange={(v) => onUpdate({ ...task, healthNote: v })}
@@ -3969,7 +3978,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
         )}
 
         {/* ─── References (wiki links): collapsible section between meta info and tabs ─── */}
-        <ReferencesSection task={task} onUpdate={onUpdate} author={author} />
+        <ReferencesSection task={task} onUpdate={onUpdate} author={author} readOnly={!panelCaps.refs} />
 
         {/* ─── Meeting Hub: Updates / Decisions / Actions tabs ─── */}
         <div style={{ marginTop: 20, borderTop: '1px solid ' + TOK.line, paddingTop: 14 }}>
@@ -4000,7 +4009,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
             <>
               <UpdateForm onSubmit={addUpdate} author={author} teamMembers={teamMembers} />
               <div style={{ marginTop: 12 }}>
-                <UpdatesFeed task={task} teamMembers={teamMembers} onResolveBlocker={resolveBlocker} />
+                <UpdatesFeed task={task} teamMembers={teamMembers} onResolveBlocker={panelCaps.resolveBlocker ? resolveBlocker : null} />
               </div>
             </>
           )}
@@ -4045,7 +4054,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           {/* Actions tab — linked to this milestone */}
           {panelTab === 'actions' && (
             <>
-              {!showActionForm && (
+              {!showActionForm && panelCaps.addAction && (
                 <Btn size="sm" variant="primary" onClick={() => { setEditingAction(null); setShowActionForm(true); }}>
                   <Plus size={11} /> Add action
                 </Btn>
@@ -4060,6 +4069,8 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                     defaultRelatedTaskId={taskId}
                     onSave={saveAction}
                     onCancel={() => { setShowActionForm(false); setEditingAction(null); }}
+                    mode={editingAction ? actionEditMode({ isOwner, isV2, roles: v2Roles, uid: me.uid, action: editingAction, isPic: !!me.isMe?.(editingAction.pic) }) : 'full'}
+                    taskIds={isOwner || !isV2 ? null : [taskId]}
                   />
                 </div>
               )}
@@ -4697,7 +4708,10 @@ function actionStatusColor(s) {
   return { fg: TOK.plannedFg, bg: TOK.plannedBg };
 }
 
-function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel, onAddComment, onSubtasksChange }) {
+// W3-A2: mode = actionEditMode ('full' | 'pic' | 'comment'); taskIds = the milestones a
+// non-Owner may attach a new action to (actionTaskOptions), null = any and optional.
+function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedTaskId, onSave, onCancel, onAddComment, onSubtasksChange, mode = 'full', taskIds = null }) {
+  const locked = mode !== 'full';
   const [title, setTitle] = useState(initial?.title || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [pic, setPic] = useState(initial?.pic || '');
@@ -4723,14 +4737,21 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [teamMembers]);
 
-  const taskOptions = useMemo(() => projectTaskOptions(project), [project]);
+  const taskOptions = useMemo(() => {
+    const all = projectTaskOptions(project);
+    return taskIds ? all.filter((t) => taskIds.includes(t.id)) : all;
+  }, [project, taskIds]);
+  const needsTask = !!taskIds && !initial;
+  const statusOptions = mode === 'full' ? ACTION_STATUSES : ACTION_STATUSES.filter((x) => x !== 'Cancelled' || x === status);
 
-  const canSave = title.trim() && pic.trim();
+  const canSave = title.trim() && pic.trim() && (!needsTask || relatedTaskId);
 
   const submit = () => {
     // Merge onto the current stored action (fresh from project, else the snapshot) so
     // fields the form does not edit (updates, subtasks, completedAt…) are kept.
     const base = (initial && (project?.actionItems || []).find((x) => x.id === initial.id)) || initial || {};
+    // W3-A2: the PIC may change only the status (rules actionPicKeys); send nothing else.
+    if (mode === 'pic' && initial) { onSave({ ...base, status }, { notifyChat: false }); return; }
     onSave({
       ...base,
       id: initial?.id || uid('act'),
@@ -4751,6 +4772,12 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
     <div style={{ background: TOK.bg, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 14 }}>
       <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>{initial ? 'Edit action item' : 'New action item'}</div>
 
+      {locked && (
+        <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 10 }}>
+          {mode === 'pic' ? 'As PIC you can change the status, steps and comments. A manager of this work stream changes the rest.' : 'You can comment. A manager of this work stream or the PIC changes the action.'}
+        </div>
+      )}
+      <fieldset disabled={locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <FieldLabel>Action *</FieldLabel>
       <Input value={title} onChange={setTitle} placeholder="e.g., Setup HIO bank account" />
 
@@ -4778,28 +4805,31 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
         </div>
       </div>
 
+      </fieldset>
       <div style={{ height: 12 }} />
       <div style={{ display: 'flex', gap: 12 }}>
-        <div style={{ flex: 1 }}>
+        <fieldset disabled={locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, flex: 1 }}>
           <FieldLabel>Due date</FieldLabel>
           <Input type="date" value={dueDate} onChange={setDueDate} />
-        </div>
+        </fieldset>
         <div style={{ flex: 1 }}>
           <FieldLabel>Status</FieldLabel>
-          <select value={status} onChange={(e) => setStatus(e.target.value)}
+          <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={mode === 'comment'}
             style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink }}>
-            {ACTION_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
       </div>
 
       <div style={{ height: 12 }} />
-      <FieldLabel>Related milestone (optional)</FieldLabel>
+      <fieldset disabled={locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <FieldLabel>{needsTask ? 'Related milestone *' : 'Related milestone (optional)'}</FieldLabel>
       <select value={relatedTaskId || ''} onChange={(e) => setRelatedTaskId(e.target.value)}
         style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink }}>
-        <option value="">— None —</option>
+        <option value="">{needsTask ? '— Choose a milestone in your work stream —' : '— None —'}</option>
         {taskOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
       </select>
+      </fieldset>
 
       {/* v30.A.1 — Comment thread (Edit mode only; new actions have no comments yet) */}
       {initial && (
@@ -4845,7 +4875,7 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
       )}
 
       {/* v30.B — Sub-tasks (Edit mode only; new actions get them once saved) */}
-      {initial && onSubtasksChange && (
+      {initial && onSubtasksChange && mode !== 'comment' && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + TOK.line }}>
           <SubtaskEditor
             subtasks={initial.subtasks || []}
@@ -4869,8 +4899,8 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
         </label>
       )}
       <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <Btn onClick={onCancel}>Cancel</Btn>
-        <Btn variant="primary" disabled={!canSave} onClick={submit}>{initial ? 'Save' : 'Create action'}</Btn>
+        <Btn onClick={onCancel}>{mode === 'comment' ? 'Close' : 'Cancel'}</Btn>
+        {mode !== 'comment' && <Btn variant="primary" disabled={!canSave} onClick={submit}>{initial ? 'Save' : 'Create action'}</Btn>}
       </div>
     </div>
   );
@@ -4985,12 +5015,23 @@ function SubtaskEditorRow({ subtask, picSuggestions, inputRefAttach, onUpdate, o
   );
 }
 
+// W3-A2: may `me` attach a new action to this task (Owner, v1, or a manager of its work stream)?
+function canAddActionOn(me, project, taskId) {
+  return taskPanelCaps({ isOwner: !!me?.isOwner, isV2: !!project?.__v2, roles: project?.__v2 ? project.__v2.roles || null : null, uid: me?.uid || null, taskId }).addAction;
+}
+
 // v30.A.1 — Modal wrapper for creating an action from My Work. Adds a
 // project picker step (hidden when only one project exists) and forwards
 // optional defaults (relatedTaskId, PIC = author) into ActionItemForm.
 function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, author, defaultPic, teamMembers, onClose, onCreate }) {
-  const projectIds = useMemo(() => Object.keys(projects || {}).filter((id) => id !== '__all__'), [projects]);
-  const [projectId, setProjectId] = useState(defaultProjectId && projects?.[defaultProjectId] ? defaultProjectId : (projectIds[0] || ''));
+  const me = useContext(MeContext);
+  // W3-A2: only projects where the person may create an action; milestones limited to their work streams.
+  const ctxOf = (p) => ({ isOwner: !!me.isOwner, isV2: !!p?.__v2, roles: p?.__v2 ? p.__v2.roles || null : null, uid: me.uid });
+  const projectIds = useMemo(() => Object.keys(projects || {})
+    .filter((id) => id !== '__all__' && canCreateAction(projects[id], ctxOf(projects[id]))),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [projects, me.isOwner, me.uid]);
+  const [projectId, setProjectId] = useState(defaultProjectId && projectIds.includes(defaultProjectId) ? defaultProjectId : (projectIds[0] || ''));
   const project = projects?.[projectId];
   // v30 Phase 3 — defaultPic overrides author for the form's PIC pre-fill,
   // so an action created during impersonation lands on the impersonated user.
@@ -5014,6 +5055,7 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
           teamMembers={teamMembers}
           author={effectivePic}
           defaultRelatedTaskId={defaultRelatedTaskId || null}
+          taskIds={me.isOwner || !project.__v2 ? null : actionTaskOptions(project, ctxOf(project)).map((o) => o.task.id)}
           onSave={(newAction, opts) => {
             const finalAction = { ...newAction, pic: newAction.pic || effectivePic || '' };
             onCreate(finalAction, projectId, opts);
@@ -5022,7 +5064,7 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
           onCancel={onClose}
         />
       ) : (
-        <div style={{ color: TOK.muted, fontSize: 13 }}>No project available.</div>
+        <div style={{ color: TOK.muted, fontSize: 13 }}>No project where you can create an action. A PM or Sub-PM creates actions in their work streams.</div>
       )}
     </Modal>
   );
@@ -5253,6 +5295,11 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   };
 
   const actionMode = (a) => actionDeleteMode({ isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2 ? project.__v2.roles || null : null, uid: me.uid, action: a });
+  // W3-A2: who may create / change what (mirrors rules action create / actionUpdateOk).
+  const roleCtx = { isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2 ? project.__v2.roles || null : null, uid: me.uid };
+  const mayCreate = canCreateAction(project, roleCtx);
+  const createTaskIds = roleCtx.isOwner || !roleCtx.isV2 ? null : actionTaskOptions(project, roleCtx).map((o) => o.task.id);
+  const editModeOf = (a) => actionEditMode({ ...roleCtx, action: a, isPic: !!me.isMe?.(a.pic) });
   const removeAction = async (a) => {
     if (actionMode(a) === 'cancel') {
       // W4: v2 non-Owners never hard-delete (rules deny it); cancel keeps the record.
@@ -5387,7 +5434,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
                 border: 'none', background: mode === 'flat' ? TOK.bg : 'transparent', color: TOK.ink, cursor: 'pointer',
               }}>Flat table</button>
             </div>
-            <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New action</Btn>
+            {mayCreate && <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New action</Btn>}
           </div>
         </div>
 
@@ -5473,6 +5520,8 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
               onCancel={() => { setShowForm(false); setEditing(null); }}
               onAddComment={editing ? handleAddComment : null}
               onSubtasksChange={editing ? handleSubtasksChange : null}
+              mode={editing ? editModeOf(editing) : 'full'}
+              taskIds={createTaskIds}
             />
           </div>
         )}
@@ -5480,7 +5529,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         {filtered.length === 0 && !showForm && (
           <div style={{ padding: 40, textAlign: 'center', color: TOK.subtle, fontSize: 13, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10 }}>
             {actions.length === 0 ? (
-              <>No action items yet. <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Create one</button></>
+              <>No action items yet.{mayCreate && <> <button onClick={() => setShowForm(true)} style={{ background: 'none', border: 'none', color: TOK.accent, cursor: 'pointer', fontSize: 13 }}>Create one</button></>}</>
             ) : (
               'No actions match the current filters.'
             )}
@@ -8886,7 +8935,9 @@ function collectTaskSteps(task, project) {
 // v30.M — Compact step row used inline inside the task card. ✓ Done button
 // shows only when this user owns the step. Done steps render at the bottom
 // dimmed/strikethrough; not interactive.
-function StepLine({ entry, isFirstOpen, isMine, onDone }) {
+// W3 D3: canTick = canTickStep for the parent action (PIC / manager / Owner); a step
+// owner who cannot tick sees who to ask instead.
+function StepLine({ entry, isFirstOpen, isMine, onDone, canTick = true }) {
   const { subtask, order } = entry;
   const done = subtask.status === 'Done';
   return (
@@ -8917,7 +8968,10 @@ function StepLine({ entry, isFirstOpen, isMine, onDone }) {
       {subtask.pic && !done && (
         <span style={{ fontSize: 10, color: TOK.muted, marginLeft: 4 }}>· {subtask.pic}</span>
       )}
-      {isMine && !done && onDone && (
+      {isMine && !done && onDone && !canTick && (
+        <span style={{ fontSize: 10, color: TOK.muted, marginLeft: 4 }} title="Only the action PIC ticks steps">Ask {entry.action.pic || 'the PIC'} to tick this step</span>
+      )}
+      {isMine && !done && onDone && canTick && (
         <button onClick={(e) => { e.stopPropagation(); onDone(); }}
           title="Mark step done"
           style={{
@@ -8931,6 +8985,11 @@ function StepLine({ entry, isFirstOpen, isMine, onDone }) {
 }
 
 function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction, onMarkDone, onStepDone }) {
+  const me = useContext(MeContext);
+  const tickCtx = { isOwner: !!me.isOwner, isV2: !!project?.__v2, roles: project?.__v2 ? project.__v2.roles || null : null, uid: me.uid };
+  // W3-A2: a contributor (or a PIC once the task is closed) cannot change status or ask
+  // for an extension (rules taskAssigneeUpdate / taskContributorUpdate).
+  const statusOk = taskPanelCaps({ ...tickCtx, taskId: task.id, status: task.status }).health;
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
   const [isBlocker, setIsBlocker] = useState(false);
@@ -8965,9 +9024,9 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
           </div>
         </div>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={task.status} onChange={(st) => onStatusChange(st)} />
+          <StatusQuickPill status={task.status} onChange={statusOk && onStatusChange ? (st) => onStatusChange(st) : null} />
         </span>
-        {task.status !== 'Completed' && onMarkDone && (
+        {task.status !== 'Completed' && onMarkDone && statusOk && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
@@ -9000,6 +9059,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
                   entry={entry}
                   isFirstOpen={idx === 0}
                   isMine={entry.subtask.pic === author}
+                  canTick={canTickStep({ ...tickCtx, action: entry.action, isPic: !!me.isMe?.(entry.action.pic) })}
                   onDone={onStepDone ? () => onStepDone(entry.action, entry.subtask) : null}
                 />
               ))}
@@ -9062,7 +9122,8 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
               onAddUpdate(draft.trim(), isBlocker);
               setDraft(''); setIsBlocker(false); setExpanded(false);
             }}>Post update</Btn>
-            <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request extension</Btn>
+            {statusOk ? <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request extension</Btn>
+              : <span style={{ fontSize: 11.5, color: TOK.muted, alignSelf: 'center' }}>Only the PIC submits</span>}
             {onAddAction && (
               <Btn size="sm" onClick={(e) => { e.stopPropagation(); onAddAction(); }}><Plus size={11} /> Add action</Btn>
             )}
@@ -9086,6 +9147,11 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
   const [commentDraft, setCommentDraft] = useState('');
   const [isBlocker, setIsBlocker] = useState(false);
   const [showAllComments, setShowAllComments] = useState(false);
+  // W3-A2: fields follow the rules (actionUpdateOk): 'full' manager / Owner, 'pic' status +
+  // steps + comments, 'comment' comments only (D3: steps ticked by the PIC).
+  const editMode = actionEditMode({ isOwner: !!me.isOwner, isV2: !!project?.__v2, roles: project?.__v2 ? project.__v2.roles || null : null, uid: me.uid, action, isPic: !!me.isMe?.(action.pic) });
+  const full = editMode === 'full';
+  const statusOpts = full ? ACTION_STATUSES : ACTION_STATUSES.filter((x) => x !== 'Cancelled');
   const webhook = project?.googleChatWebhook || null;
   const [notifyChat, setNotifyChat] = useState(() => webhook ? getNotifyPref(project.id) : false);
 
@@ -9110,7 +9176,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
         style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 44 }}>
         <span style={{ color: TOK.subtle, fontSize: 13, lineHeight: 1 }}>▢</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          {expanded ? (
+          {expanded && full ? (
             <input
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
@@ -9136,15 +9202,21 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
         </div>
         <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{action.priority}</span>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-          <StatusQuickPill status={action.status} onChange={(st) => onChange({ status: st })} statuses={ACTION_STATUSES} />
+          <StatusQuickPill status={action.status} onChange={editMode === 'comment' ? null : (st) => onChange({ status: st })} statuses={statusOpts} />
         </span>
-        {action.status !== 'Done' && onMarkDone && (
+        {action.status !== 'Done' && onMarkDone && editMode !== 'comment' && (
           <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
       </div>
       {expanded && (
         <div style={{ padding: '10px 12px 12px', borderTop: '1px solid ' + TOK.line, background: TOK.bg, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {!full && (
+            <div style={{ fontSize: 11.5, color: TOK.muted }}>
+              {editMode === 'pic' ? 'As PIC you can change the status, steps and comments. A manager of this work stream changes the rest.' : 'You can comment. Ask the PIC to update this action.'}
+            </div>
+          )}
+          <fieldset disabled={!full} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, minWidth: 50 }}>PIC</span>
             <select
@@ -9174,6 +9246,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
               {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
+          </fieldset>
 
           <div style={{ borderTop: '1px solid ' + TOK.line, paddingTop: 10 }}>
             <div style={{ fontSize: 11, color: TOK.muted, fontWeight: 500, marginBottom: 6 }}>💬 Comments ({updates.length})</div>
@@ -9244,7 +9317,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
             </div>
           </div>
 
-          {onSubtasksChange && (
+          {onSubtasksChange && editMode !== 'comment' && (
             <div style={{ borderTop: '1px solid ' + TOK.line, paddingTop: 10 }}>
               <SubtaskEditor
                 subtasks={action.subtasks || []}
@@ -11101,6 +11174,7 @@ function ByProjectCard({
   showToast, onNavigateRaid,
 }) {
   const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions } = bundle;
+  const me = useContext(MeContext);
   const [collapsed, setCollapsed] = useState(false);
   const [openSec, setOpenSec] = useState({
     taskWeek: false, taskLater: false, taskContrib: false,
@@ -11127,7 +11201,7 @@ function ByProjectCard({
       onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
       onRequestExtension={() => handleRequestExtension(e.task, e.project)}
       onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
-      onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+      onAddAction={onCreateAction && canAddActionOn(me, e.project, e.task.id) ? () => onCreateAction(e.project.id, e.task.id) : null}
       onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
       onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
     />
@@ -11527,8 +11601,8 @@ function MyWorkView({
   const me = useContext(MeContext);
   const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
   const myWork = useMemo(
-    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail),
-    [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail]
+    () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly ? null : me.uid),
+    [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly, me.uid]
   );
   const myRaid = useMemo(
     () => computeMyRaid(author, projects, isOwner),
@@ -11908,7 +11982,7 @@ function MyWorkView({
         defaultOpen={myWork.actionItems.today.length > 0}
         headerRight={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {onCreateAction && (
+            {onCreateAction && Object.entries(projects || {}).some(([id, p]) => id !== "__all__" && p && canCreateAction(p, { isOwner: !!me.isOwner, isV2: !!p.__v2, roles: p.__v2 ? p.__v2.roles || null : null, uid: me.uid })) && (
               <Btn size="sm" variant="primary" onClick={() => onCreateAction(null, null)}>
                 <Plus size={11} /> New action
               </Btn>
@@ -12049,7 +12123,7 @@ function MyWorkView({
             onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
             onRequestExtension={() => handleRequestExtension(e.task, e.project)}
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
-            onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+            onAddAction={onCreateAction && canAddActionOn(me, e.project, e.task.id) ? () => onCreateAction(e.project.id, e.task.id) : null}
             onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
             onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
           />
@@ -12073,7 +12147,7 @@ function MyWorkView({
             onAddUpdate={(text, blocker) => handleAddUpdate(e.task, e.project, text, blocker)}
             onRequestExtension={() => handleRequestExtension(e.task, e.project)}
             onOpenDetails={() => onTaskClick(e.task.id, e.project.id)}
-            onAddAction={onCreateAction ? () => onCreateAction(e.project.id, e.task.id) : null}
+            onAddAction={onCreateAction && canAddActionOn(me, e.project, e.task.id) ? () => onCreateAction(e.project.id, e.task.id) : null}
             onMarkDone={() => handleStatusChange(e.task, e.project, 'Completed')}
             onStepDone={(action, subtask) => handleStepDone(action, subtask, e.project)}
           />
@@ -13113,12 +13187,12 @@ export default function App() {
   // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
-    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail);
+    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail, authUser?.uid || null);
     const r = computeMyRaid(author, projects, isOwner);
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
-  }, [projects, author, isOwner, userPrefs, dirIndex, verifiedEmail]);
+  }, [projects, author, isOwner, userPrefs, dirIndex, verifiedEmail, authUser]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
   const raidPendingBadge = useMemo(() => {
@@ -13233,9 +13307,11 @@ export default function App() {
     readOnly: !!impersonatingAs,
     nameOf: dirByUid.nameOf,
     isActive: dirByUid.isActive,
+    // W3-A2: is a stored person string (action PIC...) me? Same test as My Work.
+    isMe: isMeFor(dirIndex, author, impersonatingAs ? null : verifiedEmail),
     onReadOnly: () => showToastRef.current(READ_ONLY_MESSAGE),
     notify: (msg) => showToastRef.current(msg),
-  }), [authUser, author, isOwner, impersonatingAs, dirByUid]);
+  }), [authUser, author, isOwner, impersonatingAs, dirByUid, dirIndex, verifiedEmail]);
   const meRef = useRef(meValue);
   meRef.current = meValue;
   // U1: the My Work tab count adds close requests waiting on me (not under View as:
@@ -14721,7 +14797,8 @@ export default function App() {
               { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
               { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
               { label: 'Export Excel', icon: <FileSpreadsheet size={13} />, onClick: exportExcel },
-              { label: 'Backup JSON', icon: <Download size={13} />, onClick: backupJson },
+              // W3 D4: Backup JSON is Owner only (PM / members use Export Excel).
+              ...(isOwner ? [{ label: 'Backup JSON', icon: <Download size={13} />, onClick: backupJson }] : []),
               // Import (workspace Owner only)
               ...(isOwner ? [
                 { separator: true },
@@ -14996,6 +15073,7 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
 }
 
 function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialogs, isOwner = false, author }) {
+  const settingsReadOnly = !isOwner && !!project.__v2;
   const [name, setName] = useState(project.name);
   const [opCode, setOpCode] = useState(project.openProjectCode || '');
   const [members, setMembers] = useState(project.teamMembers || []);
@@ -15451,6 +15529,13 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
 
   return (
     <Modal title="Project settings" onClose={onClose} width={560}>
+      {/* W3-A2: v2 project fields are Owner-only (rules ownerOnlyProjectKeys): read-only view. */}
+      {settingsReadOnly && (
+        <div style={{ fontSize: 12, color: TOK.muted, background: TOK.bg, border: '1px solid ' + TOK.line, borderRadius: 7, padding: '8px 10px', marginBottom: 14 }}>
+          Only the Owner can change project settings.
+        </div>
+      )}
+      <fieldset disabled={settingsReadOnly} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <FieldLabel>Project name</FieldLabel>
       <Input value={name} onChange={setName} />
 
@@ -15981,10 +16066,11 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
           How to get this: open the project's Google Chat space → Space settings → Apps &amp; integrations → + Add webhook → Copy URL and paste above.
         </div>
       </div>
+      </fieldset>
 
       <div style={{ marginTop: 20, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <Btn onClick={onClose}>Cancel</Btn>
-        <Btn variant="primary" disabled={!name.trim()} onClick={save}>Save</Btn>
+        <Btn onClick={onClose}>{settingsReadOnly ? 'Close' : 'Cancel'}</Btn>
+        {!settingsReadOnly && <Btn variant="primary" disabled={!name.trim()} onClick={save}>Save</Btn>}
       </div>
     </Modal>
   );

@@ -278,3 +278,72 @@ describe('move caps and canDropMove (O2)', () => {
     expect(canDropMove({ ...base, kind: 'ws', targetPgId: 'p1' })).toBe(false);
   });
 });
+
+import { actionWsId, managesWs, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps } from '../../src/roleUi.js';
+describe('W3-A2 capability helpers', () => {
+  const v2 = { isOwner: false, isV2: true, roles };
+  const tree = {
+    programs: [
+      { id: 'p1', workstreams: [{ id: 'w1', tasks: [{ id: 'tA' }] }] },
+      { id: 'p2', workstreams: [{ id: 'w2', tasks: [{ id: 'tB' }] }] },
+    ],
+  };
+  const rolesB = { ...roles, tasks: { ...roles.tasks, tB: info('B', { programId: 'p2', workstreamId: 'w2', contributorUids: ['C'] }) } };
+
+  it('actionWsId: stored field first, else the related task, else null', () => {
+    expect(actionWsId(roles, { workstreamId: 'w2', relatedTaskId: 'tA' })).toBe('w2');
+    expect(actionWsId(roles, { relatedTaskId: 'tA' })).toBe('w1');
+    expect(actionWsId(roles, { relatedTaskId: 'nope' })).toBeNull();
+    expect(actionWsId(roles, {})).toBeNull();
+  });
+  it('managesWs: PM, Deputy, Sub-PM of that ws only; orphan program refused', () => {
+    for (const u of ['P', 'D', 'L']) expect(managesWs(roles, u, 'w1')).toBe(true);
+    for (const u of ['P2', 'L2', 'A', null]) expect(managesWs(roles, u, 'w1')).toBe(false);
+    expect(managesWs(roles, 'X', 'wOrphan')).toBe(false);
+    expect(managesWs(roles, 'P', null)).toBe(false);
+  });
+  it('actionTaskOptions / canCreateAction by role', () => {
+    const ids = (ctx) => actionTaskOptions(tree, ctx).map((o) => o.task.id);
+    expect(ids({ ...v2, isOwner: true, uid: 'O' })).toEqual(['tA', 'tB']);
+    expect(ids({ ...v2, isV2: false, uid: 'Z' })).toEqual(['tA', 'tB']);
+    expect(ids({ ...v2, uid: 'L' })).toEqual(['tA']);
+    expect(ids({ ...v2, uid: 'P2' })).toEqual(['tB']);
+    expect(ids({ ...v2, uid: 'A' })).toEqual([]);
+    expect(canCreateAction(tree, { ...v2, uid: 'A' })).toBe(false);
+    expect(canCreateAction(tree, { ...v2, uid: 'D' })).toBe(true);
+    expect(canCreateAction({ programs: [] }, { ...v2, isOwner: true, uid: 'O' })).toBe(true);
+  });
+  it('actionEditMode: full / pic / comment', () => {
+    const a = { id: 'a1', relatedTaskId: 'tA', status: 'Pending' };
+    expect(actionEditMode({ ...v2, isOwner: true, uid: 'O', action: a })).toBe('full');
+    expect(actionEditMode({ ...v2, isV2: false, uid: 'Z', action: a })).toBe('full');
+    expect(actionEditMode({ ...v2, uid: 'L', action: a })).toBe('full');
+    expect(actionEditMode({ ...v2, uid: 'A', action: a, isPic: true })).toBe('pic');
+    expect(actionEditMode({ ...v2, uid: 'Z', action: a })).toBe('comment');
+    expect(actionEditMode({ ...v2, uid: 'P', action: { status: 'Pending' } })).toBe('comment'); // no ws: Owner only
+    expect(actionEditMode({ ...v2, uid: 'A', action: { ...a, status: 'Cancelled' }, isPic: true })).toBe('comment');
+  });
+  it('canTickStep (D3): PIC, manager, Owner; not others', () => {
+    const a = { id: 'a1', relatedTaskId: 'tA', status: 'Pending' };
+    expect(canTickStep({ ...v2, uid: 'A', action: a, isPic: true })).toBe(true);
+    expect(canTickStep({ ...v2, uid: 'P', action: a })).toBe(true);
+    expect(canTickStep({ ...v2, isOwner: true, uid: 'O', action: a })).toBe(true);
+    expect(canTickStep({ ...v2, uid: 'C', action: a })).toBe(false);
+  });
+  it('taskPanelCaps by role and status', () => {
+    const all = { health: true, refs: true, resolveBlocker: true, addAction: true };
+    const c = (uid, taskId, status, over = {}) => taskPanelCaps({ ...v2, roles: rolesB, uid, taskId, status, ...over });
+    expect(c('O', 'tA', 'Planned', { isOwner: true })).toEqual(all);
+    expect(c('Z', 'tA', 'Planned', { isV2: false })).toEqual(all);
+    expect(c('L', 'tA', 'Completed')).toEqual(all);
+    expect(c('P2', 'tB', 'InProgress')).toEqual(all);
+    expect(c('A', 'tA', 'InProgress')).toEqual({ health: true, refs: true, resolveBlocker: true, addAction: false });
+    expect(c('A', 'tA', 'Submitted').health).toBe(true);
+    expect(c('A', 'tA', 'Completed')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false });
+    expect(c('C', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: true, addAction: false });
+    expect(c('L', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false });
+  });
+  it('actionDeleteMode now resolves the ws through the related task', () => {
+    expect(actionDeleteMode({ ...v2, uid: 'L', action: { relatedTaskId: 'tA', status: 'Pending' } })).toBe('cancel');
+  });
+});
