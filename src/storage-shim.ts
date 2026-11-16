@@ -59,6 +59,10 @@ const ACTIVITY_CAP = 500;
 
 // B3: rev of each project as last read/written by this client.
 const knownRev = new Map<string, number>();
+// W3-B3 (M3): bumped when any write of a project starts; peekProject commits its read only
+// if no write started while the read was in flight.
+const writeEpoch = new Map<string, number>();
+const bumpWriteEpoch = (pid: string) => { writeEpoch.set(pid, (writeEpoch.get(pid) || 0) + 1); };
 // Recent saves whose outcome is unknown (network error after commit was sent).
 const pendingWriteIds = new Map<string, string[]>(); // last 50, newest last (a long outage may queue many autosaves)
 const projectWriteQueue = createKeyedQueue();
@@ -76,7 +80,7 @@ const v2Loaded = new Map<string, V2Loaded>();
 // v2 activity: ids of events known to exist on the server, per pid.
 const v2ActivityKnown = new Map<string, Set<string>>();
 const V2_ACTIVITY_COL = (pid: string) => collection(db, 'workspaces', WORKSPACE, 'projects', pid, 'activity');
-async function getV2Project(key: string, pid: string, meta: Record<string, unknown>) {
+async function getV2Project(key: string, pid: string, meta: Record<string, unknown>, defer = false) {
   type Snap = { id: string; data: Record<string, unknown> };
   let lists: { ws: Snap[]; tasks: Snap[]; actions: Snap[]; raid: Snap[]; decisions: Snap[] };
   // P3: approvals/{reqId}, read alongside (separate from V2_SUBCOLS: the planner's
@@ -102,7 +106,8 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
     meta,
     docs: { workstreams: toMap(ws), tasks: toMap(tasks), actions: toMap(actions), raid: toMap(raid), decisions: toMap(decisions) },
   };
-  v2Loaded.set(pid, loaded);
+  const commit = () => { v2Loaded.set(pid, loaded); };
+  if (!defer) commit();
   const roles = rolesFromLoaded(loaded, ownerUids);
   const { project, orphans, orphanCount } = assembleFromSnapshots({ meta, ws, tasks, actions, raid, decisions });
   if (orphanCount > 0) {
@@ -118,7 +123,37 @@ async function getV2Project(key: string, pid: string, meta: Record<string, unkno
     key,
     value: JSON.stringify(appValueFromV2(project as Record<string, unknown>, pid, orphanCount, { roles, approvals })),
     shared: true,
+    commit,
   };
+}
+
+/**
+ * W3-B3 (M3): read a project like storage.get('project:<pid>') but leave the shim's state
+ * for it (v2 cache, knownRev, pendingWriteIds) untouched until commit(). commit() applies
+ * it and returns true only if no write of the project started since the read began; else
+ * it returns false and the caller keeps its current copy. null = missing / deleted / failed.
+ */
+export async function peekProject(pid: string): Promise<{ value: string; commit: () => boolean } | null> {
+  const epoch = writeEpoch.get(pid) || 0;
+  try {
+    await getUser();
+    const snap = await getDoc(PROJECT_REF(pid));
+    if (!snap.exists()) return null;
+    const data = snap.data() as Record<string, unknown>;
+    if (data.deletedAt) return null;
+    const rev = typeof data.rev === 'number' ? data.rev : 0;
+    const idle = () => (writeEpoch.get(pid) || 0) === epoch;
+    const base = () => { knownRev.set(pid, rev); pendingWriteIds.delete(pid); };
+    if (data.schemaVersion === 2) {
+      const r = await getV2Project(`project:${pid}`, pid, data, true);
+      if (!r) return null;
+      return { value: r.value, commit: () => { if (!idle()) return false; base(); r.commit(); return true; } };
+    }
+    return { value: JSON.stringify(appValueFromV1(data, pid)), commit: () => { if (!idle()) return false; base(); v2Loaded.delete(pid); return true; } };
+  } catch (e) {
+    console.warn('[storage] peek failed:', pid, e);
+    return null;
+  }
 }
 
 // Workspace doc as last read (Owner check for the planner: ownerUids or legacy email).
@@ -187,6 +222,7 @@ export async function changeRoleV2(
   opts: { addMemberUid?: string } = {},
 ): Promise<'ok' | 'changed' | 'conflict' | 'denied' | 'error'> {
   const user = await getUser();
+  bumpWriteEpoch(pid);
   return await projectWriteQueue.run(`project:${pid}`, async () => {
     const res = await executeRoleChange(
       { runTransaction, doc, serverTimestamp, arrayUnion },
@@ -284,6 +320,7 @@ const applyV2Written = applyWritten as unknown as (loaded: V2Loaded, written: un
 // batch / chunk may fail after earlier ones landed); on conflict / denied the rest stays
 // stale until reload.
 async function saveV2Project(key: string, value: string, pid: string, loaded: V2Loaded, user: UserProfile) {
+  bumpWriteEpoch(pid);
   const parsed = JSON.parse(value) as Record<string, unknown>;
   const { [FORCE_WRITE_FLAG]: _force, ...tree } = parsed;
   void _force;
@@ -618,6 +655,7 @@ window.storage = {
       }
 
       if (key.startsWith('project:')) {
+        bumpWriteEpoch(key.substring('project:'.length));
         // B3 fix: one write per project at a time (see createKeyedQueue).
         return await projectWriteQueue.run(key, async () => {
         const pid = key.substring('project:'.length);

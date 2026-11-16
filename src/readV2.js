@@ -79,6 +79,9 @@ export function rolesFromLoaded(loaded, ownerUids) {
       contributorUids: Array.isArray(d.contributorUids) ? [...d.contributorUids] : [],
     };
   }
+  // W3-B3: the tree drops picUid from actions (assembleProject); My Work reads it here.
+  const actions = {};
+  for (const [id, { data: d }] of loaded.docs.actions || new Map()) actions[id] = { picUid: orNull(d.picUid) };
   // Wave 2 R5 (Ruling W2-4): a decision's program = the program of its stored
   // claim (viaProgramId, else the program of viaWorkstreamId); null = Owner only.
   const decisions = {};
@@ -88,7 +91,7 @@ export function rolesFromLoaded(loaded, ownerUids) {
     else if (typeof d?.viaWorkstreamId === 'string') programId = workstreams[d.viaWorkstreamId]?.programId ?? null;
     decisions[id] = { programId };
   }
-  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks, decisions };
+  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks, actions, decisions };
 }
 
 const isoOrNull = (ts) => ts?.toDate?.().toISOString() ?? null;

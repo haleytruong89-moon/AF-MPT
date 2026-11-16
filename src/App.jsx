@@ -19,7 +19,9 @@ import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
-import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey } from './persistence';
+import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey, shouldReloadOnFocus } from './persistence';
+import { mentionsMe } from './mentions.js';
+import { rejectedCloseItem } from './myWorkItems.js';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
@@ -29,7 +31,7 @@ import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2 } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { taskUrl, parseDeepLink } from './deepLink';
@@ -37,7 +39,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
@@ -876,7 +878,6 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
   };
   if (!author) return out;
 
-  const authorLc = author.toLowerCase();
   // P1: with dirIndex, any alias of the same person matches; without it, exact string (legacy).
   // authorEmail (signed-in user only, never for View as) wins when the directory knows it.
   // The signed-in name also counts: a Google name added after the directory was built is not an alias yet.
@@ -888,6 +889,26 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
     for (const pg of (proj.programs || [])) {
       for (const ws of (pg.workstreams || [])) {
         for (const t of (ws.tasks || [])) {
+          // Scan task updates + legacy check-ins for @mentions of me (W3-B3 M2: every
+          // status, directory-aware names via mentionsMe).
+          const mentionTexts = [];
+          for (const upd of (t.updates || [])) {
+            mentionTexts.push({ ts: upd.timestamp, postAuthor: upd.author, text: upd.text || '' });
+          }
+          for (const ci of (t.checkIns || [])) {
+            const ciText = [ci.done, ci.plan, ci.blockers].filter(Boolean).join(' ');
+            if (ciText) mentionTexts.push({ ts: ci.timestamp, postAuthor: ci.author, text: ciText });
+          }
+          for (const e of mentionTexts) {
+            if (!mentionsMe(e.text, isMe, author)) continue;
+            const item = {
+              ts: e.ts, postAuthor: e.postAuthor, text: e.text,
+              task: t, project: proj, program: pg, workstream: ws,
+            };
+            out.allMentions.push(item);
+            if (e.ts && new Date(e.ts) > lastSeen) out.unreadMentions.push(item);
+          }
+
           if (t.status === 'Dropped' || t.status === 'Completed' || t.status === 'Submitted') continue; // Submitted waits on the approver (P3)
           const enriched = { task: t, project: proj, program: pg, workstream: ws };
 
@@ -908,30 +929,12 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
             }
           }
 
+          // W3-B3 (M3): my close request was rejected -> Needs attention (max 14 days).
+          const rej = rejectedCloseItem(t, { uid, isMe, now: new Date() });
+          if (rej) out.needsAttention.push({ kind: 'rejected_close', ...enriched, ...rej });
+
           if (Array.isArray(t.contributors) && t.contributors.some(isMe) && !isMe(t.pic)) {
             out.tasksContributing.push({ ...enriched, primaryPic: t.pic });
-          }
-
-          // Scan task updates + legacy check-ins for @<author> mentions.
-          // findMentions() needs a teamMembers list which we don't have here;
-          // a name-token regex is sufficient and matches v22+ mention writing.
-          const mentionTexts = [];
-          for (const upd of (t.updates || [])) {
-            mentionTexts.push({ ts: upd.timestamp, postAuthor: upd.author, text: upd.text || '' });
-          }
-          for (const ci of (t.checkIns || [])) {
-            const ciText = [ci.done, ci.plan, ci.blockers].filter(Boolean).join(' ');
-            if (ciText) mentionTexts.push({ ts: ci.timestamp, postAuthor: ci.author, text: ciText });
-          }
-          for (const e of mentionTexts) {
-            const tokens = (e.text.match(/@([A-Za-zÀ-ỹ0-9._-]+)/g) || []).map((m) => m.slice(1).toLowerCase());
-            if (!tokens.includes(authorLc)) continue;
-            const item = {
-              ts: e.ts, postAuthor: e.postAuthor, text: e.text,
-              task: t, project: proj, program: pg, workstream: ws,
-            };
-            out.allMentions.push(item);
-            if (e.ts && new Date(e.ts) > lastSeen) out.unreadMentions.push(item);
           }
 
           if (isOwner && t.deadlineRequest) {
@@ -946,8 +949,7 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
     // (not just ones assigned to author). Mirrors task.updates scan above.
     for (const a of (proj.actionItems || [])) {
       for (const upd of (a.updates || [])) {
-        const tokens = ((upd.text || '').match(/@([A-Za-zÀ-ỹ0-9._-]+)/g) || []).map((m) => m.slice(1).toLowerCase());
-        if (!tokens.includes(authorLc)) continue;
+        if (!mentionsMe(upd.text || '', isMe, author)) continue;
         const item = {
           ts: upd.timestamp, postAuthor: upd.author, text: upd.text || '',
           action: a, project: proj,
@@ -1016,7 +1018,8 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
             out.actionItems.later.push(enriched);
           } else if (due <= todayEnd) {
             out.actionItems.today.push(enriched);
-            if (due < startOfToday) {
+            // W3-B3 (M6): only when I can tick it (else the row stays, with a note).
+            if (due < startOfToday && (!uid || canEditRaid({ isOwner, isV2: !!proj.__v2, roles: proj.__v2 ? proj.__v2.roles || null : null, uid, programId: pg.id }))) {
               out.needsAttention.push({ kind: 'overdue_mitigation', mitigation, parentItem: item, parentProgram: pg, project: proj });
             }
           } else if (due <= weekEnd) {
@@ -1063,7 +1066,10 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
 // v30 RAID Phase 4 — Aggregate RAID items that need the user's attention across
 // all projects/programs. Pure read; no mutation. Mirrors the shape of
 // computeMyWork: returns named buckets that MyRaidSection renders directly.
-function computeMyRaid(author, projects, isOwner) {
+// W3-B3: isMe (directory-aware) replaces the exact name compare; uid drops escalating /
+// needsReview / overdueActions for items I cannot edit (canEditRaid): no red badge for
+// work only the program PM / Sub-PM can update. owned / dueThisWeek unchanged.
+function computeMyRaid(author, projects, isOwner, uid = null, isMe = null) {
   const out = {
     pendingApproval: [],   // owner-only — items awaiting their approval
     escalating: [],        // items where owner===author AND trend==='escalating' AND status active
@@ -1076,9 +1082,11 @@ function computeMyRaid(author, projects, isOwner) {
   const startOfToday = today();
   const weekFromToday = new Date(startOfToday);
   weekFromToday.setDate(weekFromToday.getDate() + 7);
+  const mine = typeof isMe === 'function' ? isMe : (raw) => raw === author;
 
   for (const proj of Object.values(projects || {})) {
     for (const pg of (proj.programs || [])) {
+      const canAct = !uid || canEditRaid({ isOwner, isV2: !!proj.__v2, roles: proj.__v2 ? proj.__v2.roles || null : null, uid, programId: pg.id });
       for (const item of (pg.raid || [])) {
         const isActive = item.status === 'Active' || item.status === 'Mitigating';
         const isClosed = item.status === 'Closed' || item.status === 'Resolved' || item.status === 'Accepted';
@@ -1090,27 +1098,27 @@ function computeMyRaid(author, projects, isOwner) {
         }
 
         // Escalating — items I own that are trending bad.
-        if (isActive && item.owner === author && item.trend === 'escalating') {
+        if (canAct && isActive && mine(item.owner) && item.trend === 'escalating') {
           out.escalating.push(enriched);
         }
 
         // Needs review — items I own that haven't been reviewed in over 7 days.
-        if (isActive && item.owner === author && raidDaysSinceReview(item) > RAID_REVIEW_STALE_DAYS) {
+        if (canAct && isActive && mine(item.owner) && raidDaysSinceReview(item) > RAID_REVIEW_STALE_DAYS) {
           out.needsReview.push(enriched);
         }
 
         // All owned active items.
-        if (item.owner === author && !isClosed && item.status !== 'Draft') {
+        if (mine(item.owner) && !isClosed && item.status !== 'Draft') {
           out.owned.push(enriched);
         }
 
         // Mitigation actions assigned to me — overdue + due this week.
         for (const act of (item.mitigationActions || [])) {
-          if (act.pic !== author || act.status === 'Done') continue;
+          if (!mine(act.pic) || act.status === 'Done') continue;
           const dueDate = parseDate(act.due);
           const actionEnriched = { action: act, item, project: proj, program: pg };
           if (dueDate && dueDate < startOfToday) {
-            out.overdueActions.push(actionEnriched);
+            if (canAct) out.overdueActions.push(actionEnriched);
           } else if (dueDate && dueDate <= weekFromToday) {
             out.dueThisWeek.push(actionEnriched);
           }
@@ -3682,6 +3690,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
         ) : (
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 500, lineHeight: 1.35 }}>{task.name}</h2>
         )}
+        {isUnlinkedForMe(me, project, { taskId: task.id, pic: task.pic, contributors: task.contributors }) && <UnlinkedHint />}
 
         <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <Pill status={task.status || 'Planned'} />
@@ -9010,6 +9019,27 @@ function StepLine({ entry, isFirstOpen, isMine, onDone, canTick = true }) {
   );
 }
 
+// W3-B3 (M1): my assignment on a v2 item is stored by name only (no uid): rules refuse my
+// edits until it is linked. Only for the signed-in user (never View as), only for items
+// already saved (present in the stored roles).
+function isUnlinkedForMe(me, project, { taskId = null, actionId = null, pic = null, contributors = null }) {
+  if (!me || me.readOnly || !me.uid || !project?.__v2) return false;
+  const roles = project.__v2.roles || null;
+  const isMe = typeof me.isMe === 'function' ? me.isMe : () => false;
+  if (actionId != null) {
+    const st = roles?.actions?.[actionId];
+    return !!st && unlinkedAssignment({ isV2: true, uid: me.uid, storedUid: st.picUid, isPic: isMe(pic) });
+  }
+  const st = roles?.tasks?.[taskId];
+  if (!st) return false;
+  const isPic = isMe(pic);
+  return unlinkedAssignment({ isV2: true, uid: me.uid, storedUid: st.picUid, isPic })
+    || unlinkedContribution({ isV2: true, uid: me.uid, storedUids: st.contributorUids, isContributor: !isPic && Array.isArray(contributors) && contributors.some(isMe) });
+}
+function UnlinkedHint() {
+  return <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{UNLINKED_HINT}</div>;
+}
+
 function TaskRowInline({ task, project, program, workstream, author, teamMembers, onStatusChange, onAddUpdate, onRequestExtension, onOpenDetails, onAddAction, onMarkDone, onStepDone }) {
   const me = useContext(MeContext);
   const tickCtx = { isOwner: !!me.isOwner, isV2: !!project?.__v2, roles: project?.__v2 ? project.__v2.roles || null : null, uid: me.uid };
@@ -9048,6 +9078,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
               <span style={{ fontSize: 11, color: TOK.muted }}>· {openSteps.length} step{openSteps.length > 1 ? 's' : ''}</span>
             )}
           </div>
+          {isUnlinkedForMe(me, project, { taskId: task.id, pic: task.pic, contributors: task.contributors }) && <UnlinkedHint />}
         </div>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
           <StatusQuickPill status={task.status} onChange={statusOk && onStatusChange ? (st) => onStatusChange(st) : null} />
@@ -9225,6 +9256,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
               <span>· ✓ {(action.subtasks || []).filter((s) => s.status === 'Done').length}/{(action.subtasks || []).length}</span>
             )}
           </div>
+          {isUnlinkedForMe(me, project, { actionId: action.id, pic: action.pic }) && <UnlinkedHint />}
         </div>
         <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{action.priority}</span>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
@@ -9452,6 +9484,11 @@ function MitigationRowInline({
               </span>
             )}
           </div>
+          {(() => {
+            // W3-B3 (M6): say who can tick it when I cannot.
+            const note = raidUpdaterNote({ isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2?.roles || null, uid: me.uid, programId: parentProgram.id, programName: parentProgram.name });
+            return note ? <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{note}</div> : null;
+          })()}
         </div>
         {pc && (
           <span style={{ fontSize: 10.5, fontWeight: 500, padding: '2px 7px', borderRadius: 999, color: pc.fg, background: pc.bg }}>{derivedPriority}</span>
@@ -11633,8 +11670,8 @@ function MyWorkView({
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly, me.uid]
   );
   const myRaid = useMemo(
-    () => computeMyRaid(author, projects, isOwner),
-    [projects, author, isOwner]
+    () => computeMyRaid(author, projects, isOwner, me.readOnly ? null : me.uid, isMeFor(dirIndex, author, authorEmail)),
+    [projects, author, isOwner, me.readOnly, me.uid, dirIndex, authorEmail]
   );
   const picSuggestions = useMemo(() => {
     const set = new Set();
@@ -11895,6 +11932,22 @@ function MyWorkView({
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>Nothing urgent right now.</div>
         )}
         {myWork.needsAttention.map((it, i) => {
+          if (it.kind === 'rejected_close') {
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ✕ Close request rejected by {it.decidedBy}: {it.reason}
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ color: TOK.ink }}>{it.task.name}</span>
+                  <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>Open task</Btn>
+                </div>
+              </div>
+            );
+          }
           if (it.kind === 'overdue_task') {
             const days = (() => {
               const e = parseDate(it.task.end); if (!e) return 0;
@@ -12205,6 +12258,11 @@ function MyWorkView({
                   {d.date && <span>· {fmtDateShort(d.date)}</span>}
                   {d.expectedReviewDate && <span style={{ color: reviewOverdue ? TOK.overdueFg : TOK.muted, fontWeight: reviewOverdue ? 500 : 400 }}>· review {fmtDateShort(d.expectedReviewDate)}{reviewOverdue ? ' ⚠' : ''}</span>}
                 </div>
+                {(() => {
+                  // W3-B3 (M6): who can update the follow-up when I cannot.
+                  const note = decisionUpdaterNote({ isOwner, isV2: !!e.project.__v2, roles: e.project.__v2?.roles || null, uid: me.uid, decision: d });
+                  return note ? <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{note}</div> : null;
+                })()}
               </div>
               {/* Wave 2 R5 / W2-9: read-only unless the decision's stored program is mine (v2). */}
               <span onClick={(ev) => ev.stopPropagation()} style={{ display: 'inline-flex' }}>
@@ -13087,6 +13145,8 @@ export default function App() {
   useEffect(() => { setUnsavedWorkSignal(hasUnsavedWork(pendingN, saveState)); }, [pendingN, saveState]); // O4: feeds RootErrorBoundary
   const saveStateRef = useRef({});
   saveStateRef.current = saveState;
+  // W3-B3 (M3): when projects were last read (boot load / focus reload); 0 = not loaded yet.
+  const lastLoadAt = useRef(0);
   const { dialog, api: dialogs, close: closeDialog } = useDialogs();
 
   // Roster of @mention-able teammates: derived from PICs + check-in/update authors + project teamMembers list + RBAC members (from user directory)
@@ -13125,6 +13185,7 @@ export default function App() {
       m.projectIds.forEach((pid, i) => { if (results[i]) ps[pid] = ensureProjectRaid(results[i]); });
       setLoadFailed(loadFailures(m.projectIds, results));
       setProjects(ps);
+      lastLoadAt.current = Date.now();
 
       if (localUser) {
         // Back-compat: localUser was previously a plain string; now it's JSON {name, email}
@@ -13216,7 +13277,7 @@ export default function App() {
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
     const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail, authUser?.uid || null);
-    const r = computeMyRaid(author, projects, isOwner);
+    const r = computeMyRaid(author, projects, isOwner, authUser?.uid || null, isMeFor(dirIndex, author, verifiedEmail));
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
@@ -13390,6 +13451,65 @@ export default function App() {
   const pendingTree = useRef({});
   const inflightSaves = useRef({});
   const closeBusy = useRef({});
+  // W3-B3 (M3): re-read projects when the tab comes back into view, so a decision made in
+  // another browser (e.g. a rejected close request) appears. Never while anything is
+  // unsaved, queued or held, or a close flow runs (shouldReloadOnFocus); a project that got
+  // a pending save while the reads were in flight keeps its local copy. No toast.
+  useEffect(() => {
+    let running = false;
+    const onFocus = async () => {
+      if (running || !lastLoadAt.current) return;
+      const ok = shouldReloadOnFocus({
+        visible: document.visibilityState === 'visible',
+        pendingCount: pendingSaves.current,
+        saveState: saveStateRef.current,
+        savePendingSize: savePending.size,
+        closeBusy: Object.keys(closeBusy.current).some((k) => closeBusy.current[k]),
+        lastLoadAt: lastLoadAt.current,
+        now: Date.now(),
+      });
+      if (!ok) return;
+      running = true;
+      lastLoadAt.current = Date.now();
+      try {
+        const boot = await loadMetaStrict(window.storage);
+        if (boot.status !== 'ok' || !Array.isArray(boot.meta?.projectIds)) return;
+        const ids = boot.meta.projectIds;
+        const reads = await Promise.all(ids.map((pid) => peekProject(pid)));
+        // Synchronous: a project with a queued / held save, or a write that started while
+        // the read was in flight (commit() false), keeps its local copy and the shim state
+        // its edits are based on. Failed reads keep the old copy too.
+        const fresh = {};
+        ids.forEach((pid, i) => {
+          const r = reads[i];
+          if (!r || savePending.has(pid) || closeBusy.current[pid]) return;
+          let parsed;
+          try { parsed = JSON.parse(r.value); } catch { return; }
+          if (r.commit()) fresh[pid] = ensureProjectRaid(parsed);
+        });
+        setProjects((prev) => {
+          const next = {};
+          for (const pid of ids) {
+            if (fresh[pid]) next[pid] = fresh[pid];
+            else if (prev[pid]) next[pid] = prev[pid];
+          }
+          return next;
+        });
+        setMeta((prev) => (prev ? { ...prev, projectIds: ids } : prev));
+      } catch (e) {
+        console.warn('[focus reload] failed', e);
+      } finally {
+        running = false;
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
   // W5: activity writes bump the same pending counter and report failures under their own saveState key.
   const activityTrack = useMemo(() => ({
     start: () => bumpPending(1),
