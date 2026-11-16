@@ -119,6 +119,31 @@ export function canEditDecision({ isOwner, isV2, roles, uid, decision }) {
   return holdsProgram(roles, stored?.programId ?? null, uid);
 }
 
+/**
+ * W3-B3 (M1): my assignment is stored by name only (no uid yet, or another uid): the rules
+ * refuse my edits until it is linked. Shown as a hint, never in View as (uid null).
+ */
+export function unlinkedAssignment({ isV2, uid, storedUid, isPic }) {
+  return !!isV2 && !!uid && !!isPic && storedUid !== uid;
+}
+export function unlinkedContribution({ isV2, uid, storedUids, isContributor }) {
+  return !!isV2 && !!uid && !!isContributor && !(Array.isArray(storedUids) && storedUids.includes(uid));
+}
+export const UNLINKED_HINT = "Assignment not linked to your account yet — ask the Owner";
+
+/** W3-B3 (M6): who can update a RAID mitigation / decision follow-up, when I cannot. */
+export function raidUpdaterNote({ isOwner, isV2, roles, uid, programId, programName }) {
+  if (canEditRaid({ isOwner, isV2, roles, uid, programId })) return null;
+  return `Only the PM / Sub-PM of ${programName || "its program"} can update this. Tell them when it is done.`;
+}
+export function decisionUpdaterNote({ isOwner, isV2, roles, uid, decision }) {
+  if (canEditDecision({ isOwner, isV2, roles, uid, decision })) return null;
+  const id = decision?.id;
+  const stored = id != null && roles?.decisions && hasOwn(roles.decisions, id) ? roles.decisions[id] : undefined;
+  if (stored !== undefined && (stored?.programId ?? null) === null) return "Only the Owner can update the follow-up.";
+  return "Only the PM / Sub-PM of its program can update the follow-up.";
+}
+
 /** Wave 2 R5 / W4: deleting a decision or a RAID item is Owner-only on v2; v1 unchanged. */
 export function canDeleteRaidOrDecision({ isOwner, isV2 }) {
   return !!isOwner || !isV2;

@@ -170,6 +170,18 @@ export function setUnsavedWorkSignal(v) { unsavedWorkSignal = !!v; }
 export function isUnsavedWorkPending() { return unsavedWorkSignal; }
 
 /**
+ * W3-B3 (M3): reload projects when the tab regains focus, so a decision made in another
+ * browser (e.g. a rejected close request) shows up. Never while anything is unsaved,
+ * queued, held, or a close flow is running; at most once a minute.
+ */
+export const FOCUS_RELOAD_MS = 60_000;
+export function shouldReloadOnFocus({ visible, pendingCount, saveState, savePendingSize, closeBusy, lastLoadAt, now }) {
+  if (!visible || closeBusy) return false;
+  if (hasUnsavedWork(pendingCount, saveState) || savePendingSize > 0) return false;
+  return typeof lastLoadAt === 'number' && now - lastLoadAt >= FOCUS_RELOAD_MS;
+}
+
+/**
  * W3-B1 (D5): projects a user can list = their memberIds query, then the
  * department-visible v2 query. Each list: [{ id, data }]. Keeps the first
  * occurrence of an id, in order, and skips soft-deleted docs.

@@ -123,7 +123,8 @@ describe('roles and approvals on the v2 tree (P3 task 5)', () => {
       docs: {
         workstreams: new Map([['wA', { version: 1, data: {} }]]),
         tasks: new Map([['tA', { version: 1, data: { contributorUids: null } }]]),
-        actions: new Map(), raid: new Map(), decisions: new Map(),
+        actions: new Map([['aA', { version: 1, data: { picUid: 'uA' } }], ['aB', { version: 1, data: {} }]]),
+        raid: new Map(), decisions: new Map(),
       },
     };
     const roles = rolesFromLoaded(loaded, undefined);
@@ -132,6 +133,7 @@ describe('roles and approvals on the v2 tree (P3 task 5)', () => {
       programs: { pA: { pmUid: null, deputyUid: null, start: null, end: null } },
       workstreams: { wA: { programId: null, leadUid: null, start: null, end: null } },
       tasks: { tA: { programId: null, workstreamId: null, picUid: null, contributorUids: [] } },
+      actions: { aA: { picUid: 'uA' }, aB: { picUid: null } },
       decisions: {},
     });
     expect(rolesFromLoaded({ meta: {}, docs: { workstreams: new Map(), tasks: new Map() } }, ['o']).programs).toEqual({});
