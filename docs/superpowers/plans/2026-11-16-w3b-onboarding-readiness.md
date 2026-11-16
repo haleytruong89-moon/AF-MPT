@@ -160,7 +160,7 @@ npm: `"p2:visibility": "node scripts/p2-visibility.mjs"`.
 
 ---
 
-## Open questions for HOD (recommended answer first)
+## Questions for HOD — answered 16/11: all as recommended (Q1 yes, Q2 none by default — HOD names each project, Q3 accept)
 
 - **Q1** Reader comments may carry the blocker flag (🚩)? Recommended: **yes** — a person waiting on a task is the one who knows it is blocked; only PIC / contributor / manager resolve it. If no, Task 1 adds the `isBlocker == false` check and the UI hides the checkbox for `'comment'` readers.
 - **Q2** Which projects go `department` at onboarding? Recommended: none by default; HOD names them one by one (AF 2026 Operation and Key Results are the likely ones; MA, UBO stay restricted).

@@ -69,6 +69,8 @@ Tests: `nodeSpan` ignores Dropped and undated tasks; `nodePct` fixture (1 Comple
 
 ## PR W3-C2 — one filter rule (branch `feat/w3-c2-focus`, from `main` after C1)
 
+> **DEFERRED (HOD 16/11):** the project selector + FOCUS are to be brainstormed again together with a UI / UX review of the project view. Do not implement this PR; the tasks below are input for that brainstorm only. C3 follows C1 directly.
+
 ### Task 4: `src/focusScope.js` + tests; exports in `src/tabsByRole.js`
 
 **Produces:**
@@ -96,7 +98,7 @@ Tests: `showsProjectControls` for every tab id in `tabsFor('owner')` plus Plan s
 
 ---
 
-## PR W3-C3 — Portfolio click-through + Approvals strip (branch `feat/w3-c3-portfolio`, from `main` after C2)
+## PR W3-C3 — Portfolio click-through + Approvals strip (branch `feat/w3-c3-portfolio`, from `main` after C1; C2 deferred)
 
 ### Task 6: `src/ownerQueue.js` + tests
 
@@ -175,7 +177,7 @@ Tests: message per case (no task / all dropped / mixed); each refusal reason; hi
 - **P7:** close-flow Chat block: `close_reassigned` event → `buildCloseReassignedCard` (same webhook gate, fire-and-forget). Deep-link handler: when `dpProj` is not in `ps`, `showToastRef.current("You don't have access to that project, or it was removed.")` after load.
 - Verify, PR; CLAUDE.md status: W3-C/D done.
 
-## Open questions for HOD (recommended answer in bold; the plan assumes it)
+## Questions for HOD — answered 16/11: 1, 3, 4 as recommended; 2 deferred with C2 (FOCUS brainstorm)
 
 1. Workload numbers (D2): **open = Planned + In Progress; Submitted shown separately as "awaiting approval"; task and action overdue in separate columns.** Changes Team and Portfolio counts slightly.
 2. FOCUS on Actions / Decisions (C2): items with no program (action with no task, old decision) are **hidden while FOCUS is set, with a count line** — not shown in every program.
