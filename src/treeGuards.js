@@ -29,3 +29,20 @@ export function splitRestoreByV2(data, liveProjects) {
 export function activityToRestore(status, list) {
   return status === 'ok' && Array.isArray(list) && list.length > 0;
 }
+
+/**
+ * W3-D1 (O7): what a Backup JSON restore would do, before any confirm.
+ * -> { v1Names, v2: [{ id, name }], invalid: string | null }
+ */
+export function restorePreview(data, liveProjects) {
+  if (!data || typeof data !== 'object' || !data.meta || !data.projects) return { v1Names: [], v2: [], invalid: 'Invalid backup file.' };
+  const { v1Ids, v2Ids } = splitRestoreByV2(data, liveProjects);
+  const nameOf = (pid) => (data.projects[pid] && data.projects[pid].name) || pid;
+  return { v1Names: v1Ids.map(nameOf), v2: v2Ids.map((id) => ({ id, name: nameOf(id) })), invalid: null };
+}
+
+/** W3-D1 (O7): the restore-script command per v2 project (file name quoted). */
+export function restoreScriptHint(v2, fileName) {
+  const f = String(fileName || 'backup.json').replace(/"/g, '\\"');
+  return (v2 || []).map((p) => `npm run p2:restore -- ${p.id} --backup "${f}"`);
+}

@@ -52,11 +52,13 @@ interface Props {
   currentUserId: string;
   /** Workspace Owner (uid in ownerUids or workspaceOwner email): Owner of every project here. */
   isWorkspaceOwner?: boolean;
+  /** W3-D1 (O8): v2 project: access is member / not member; roles live in Roles…. */
+  isV2?: boolean;
   onClose: () => void;
   showToast?: (msg: string) => void;
 }
 
-export function MembersModal({ projectId, currentUserId, isWorkspaceOwner = false, onClose, showToast }: Props) {
+export function MembersModal({ projectId, currentUserId, isWorkspaceOwner = false, isV2 = false, onClose, showToast }: Props) {
   const { project, loading } = useProject(projectId);
   const directory = useUserDirectory();
   const [tab, setTab] = useState<'members' | 'parties'>('members');
@@ -140,8 +142,14 @@ export function MembersModal({ projectId, currentUserId, isWorkspaceOwner = fals
           ))}
         </div>
 
+        {tab === 'members' && isV2 && (
+          <div style={{ marginBottom: 10, fontSize: 12, color: TOK.muted, lineHeight: 1.5 }}>
+            Access is member / not member. Set PM, Deputy and Sub-PM in Roles…
+          </div>
+        )}
         {tab === 'members' ? (
           <MembersTab
+            isV2={isV2}
             project={project}
             directory={directory}
             currentUserId={currentUserId}
@@ -158,12 +166,14 @@ export function MembersModal({ projectId, currentUserId, isWorkspaceOwner = fals
 
 /* ─────── Members tab ─────── */
 function MembersTab({
+  isV2 = false,
   project,
   directory,
   currentUserId,
   amIOwner,
   showToast,
 }: {
+  isV2?: boolean;
   project: Project;
   directory: UserDirEntry[];
   currentUserId: string;
@@ -291,7 +301,11 @@ function MembersTab({
                 {m.email}
               </div>
             </div>
-            {amIOwner ? (
+            {isV2 ? (
+              <span style={{ fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 999, background: TOK.bg, color: TOK.muted }}>
+                {m.role === ROLE.OWNER ? 'Owner' : 'Member'}
+              </span>
+            ) : amIOwner ? (
               <select
                 value={m.role}
                 onChange={(e) => handleRoleChange(m.uid, e.target.value as Role)}
@@ -313,7 +327,7 @@ function MembersTab({
             ) : (
               <RoleBadge role={m.role} />
             )}
-            {amIOwner && (
+            {amIOwner && !(isV2 && m.role === ROLE.OWNER) && (
               <button
                 onClick={() => handleRemove(m.uid, m.name || m.email || m.uid, m.role)}
                 title="Remove"
@@ -407,20 +421,28 @@ function MembersTab({
                         {u.email}
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleAdd(u, ROLE.MEMBER)}
-                      style={smallBtnStyle()}
-                      title="Add as Viewer"
-                    >
-                      + Viewer
-                    </button>
-                    <button
-                      onClick={() => handleAdd(u, ROLE.OPERATOR)}
-                      style={smallBtnStyle()}
-                      title="Add as Operator"
-                    >
-                      + Operator
-                    </button>
+                    {isV2 ? (
+                      <button onClick={() => handleAdd(u, ROLE.MEMBER)} style={smallBtnStyle()} title="Add as member">
+                        + Add
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleAdd(u, ROLE.MEMBER)}
+                          style={smallBtnStyle()}
+                          title="Add as Viewer"
+                        >
+                          + Viewer
+                        </button>
+                        <button
+                          onClick={() => handleAdd(u, ROLE.OPERATOR)}
+                          style={smallBtnStyle()}
+                          title="Add as Operator"
+                        >
+                          + Operator
+                        </button>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>

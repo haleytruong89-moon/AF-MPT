@@ -33,6 +33,8 @@ interface Props {
   onClose: () => void;
   ownerEmail: string;
   showToast?: (msg: string) => void;
+  /** W3-D1 (O13): one sentence of what the person still holds ('' = nothing). */
+  holdingsTextFor?: (e: DirectoryEntry) => string;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -62,8 +64,10 @@ const btnStyle: React.CSSProperties = {
 const th: React.CSSProperties = { textAlign: 'left', fontSize: 11, color: TOK.muted, fontWeight: 500, padding: '6px 8px' };
 const td: React.CSSProperties = { padding: '7px 8px', fontSize: 12, verticalAlign: 'top', borderTop: '1px solid ' + TOK.line };
 
-export function DirectoryModal({ entries, onChanged, onClose, ownerEmail, showToast }: Props) {
+export function DirectoryModal({ entries, onChanged, onClose, ownerEmail, showToast, holdingsTextFor }: Props) {
   const [q, setQ] = useState('');
+  // W3-D1 (O13): Deactivate asks first, naming what the person still holds.
+  const [confirmDeactivate, setConfirmDeactivate] = useState<{ entry: DirectoryEntry; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [editPath, setEditPath] = useState<string | null>(null);
@@ -174,6 +178,21 @@ export function DirectoryModal({ entries, onChanged, onClose, ownerEmail, showTo
             </div>
             <button style={btnStyle} onClick={startAdd} disabled={busy}><Plus size={12} /> Add person</button>
           </div>
+          {confirmDeactivate && (
+            <div role="alertdialog" style={{ border: '1px solid ' + TOK.danger, borderRadius: 8, padding: 12, marginBottom: 10, background: TOK.surface }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Deactivate {confirmDeactivate.entry.displayName || confirmDeactivate.entry.email}?</div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 10 }}>
+                They lose access at their next sign-in.{confirmDeactivate.text ? ' ' + confirmDeactivate.text : ''} Reassign these first, or they stay assigned to an inactive person.
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...btnStyle, background: TOK.danger, color: '#fff', borderColor: TOK.danger }} disabled={busy}
+                  onClick={() => { const e = confirmDeactivate.entry; setConfirmDeactivate(null); void run(() => setDirectoryStatus(e, 'deactivated', ownerEmail)); }}>
+                  Deactivate
+                </button>
+                <button style={btnStyle} onClick={() => setConfirmDeactivate(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
           {adding && (
             <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, padding: 10, marginBottom: 10, background: TOK.bg }}>
               <div style={{ fontSize: 12, fontWeight: 500 }}>Add person (invite)</div>
@@ -212,7 +231,9 @@ export function DirectoryModal({ entries, onChanged, onClose, ownerEmail, showTo
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       <button style={btnStyle} disabled={busy} onClick={() => startEdit(e)}><Edit2 size={11} /> Edit</button>{' '}
                       <button style={btnStyle} disabled={busy}
-                        onClick={() => void run(() => setDirectoryStatus(e, e.status === 'deactivated' ? 'active' : 'deactivated', ownerEmail))}>
+                        onClick={() => (e.status === 'deactivated'
+                          ? void run(() => setDirectoryStatus(e, 'active', ownerEmail))
+                          : setConfirmDeactivate({ entry: e, text: holdingsTextFor ? holdingsTextFor(e) : '' }))}>
                         {e.status === 'deactivated' ? 'Reactivate' : 'Deactivate'}
                       </button>
                     </td>
