@@ -46,3 +46,19 @@ export function restoreScriptHint(v2, fileName) {
   const f = String(fileName || 'backup.json').replace(/"/g, '\\"');
   return (v2 || []).map((p) => `npm run p2:restore -- ${p.id} --backup "${f}"`);
 }
+
+/**
+ * W3-D3 (P4): why a program / work stream cannot be deleted, or null when it has no task.
+ * Only Dropped tasks left: they are kept for history, so say so.
+ */
+export function deleteBlockMessage(node) {
+  const n = taskCountUnder(node);
+  if (!n) return null;
+  const tasks = [...(Array.isArray(node.tasks) ? node.tasks : []), ...(node.workstreams || []).flatMap((w) => w.tasks || [])];
+  if (tasks.every((t) => t && t.status === 'Dropped')) {
+    const what = Array.isArray(node.workstreams) ? 'program' : 'work stream';
+    const where = what === 'program' ? 'a work stream of another program' : 'another work stream';
+    return `This ${what} keeps ${n} dropped task${n === 1 ? '' : 's'} for history, so it can't be deleted. Rename it, or move the tasks to ${where} first.`;
+  }
+  return DELETE_HAS_TASKS_MESSAGE;
+}

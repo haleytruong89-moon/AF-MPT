@@ -17,7 +17,7 @@ function InactiveBadge() {
 
 export function RolePicker({
   label, valueUid = null, editable = false, people = [], nameOf = (u) => u, isActive = () => true,
-  blankText = '—', scopeName = '', onPick,
+  blankText = '—', scopeName = '', onPick, note = null,
 }) {
   const inactive = !!valueUid && !isActive(valueUid);
   const wrap = { display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: FONT, fontSize: 11, color: C.muted, whiteSpace: 'nowrap' };
@@ -40,7 +40,7 @@ export function RolePicker({
         value={valueUid || ''}
         onChange={(e) => onPick && onPick(e.target.value || null)}
         aria-label={`${label} of ${scopeName}`}
-        title={valueUid ? undefined : blankText}
+        title={note || (valueUid ? undefined : blankText)}
         style={{ fontFamily: FONT, fontSize: 11, padding: '2px 4px', borderRadius: 6, border: '1px solid ' + C.lineStrong, background: C.surface, color: C.ink, maxWidth: 160 }}>
         <option value="">None</option>
         {!listed && <option value={valueUid}>{nameOf(valueUid)}{inactive ? ' (inactive)' : ''}</option>}
