@@ -23,6 +23,8 @@ import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, fa
 import { mentionsMe } from './mentions.js';
 import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
+import { personWorkload } from './workload.js';
+import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
@@ -7731,7 +7733,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
 }
 
 /* ═════════ DASHBOARD VIEW ═════════ */
-function DashboardView({ project, activity, onTaskClick, scopeProgramId }) {
+function DashboardView({ project, activity, onTaskClick, scopeProgramId, onOpenLog = null }) {
   const scopedNode = useMemo(() => {
     if (!scopeProgramId) return project;
     const pg = (project.programs || []).find((p) => p.id === scopeProgramId);
@@ -7843,6 +7845,11 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId }) {
               <span style={{ color: TOK.subtle, whiteSpace: 'nowrap', fontSize: 11 }}>{a.author} · {fmtDateTime(a.timestamp)}</span>
             </div>
           ))}
+          {onOpenLog && (
+            <div style={{ padding: '7px 12px', borderTop: '1px solid ' + TOK.line }}>
+              <Btn size="sm" variant="ghost" onClick={() => onOpenLog(project.id)}>View full log</Btn>
+            </div>
+          )}
         </Panel>
 
         {noUpdates.length > 0 && (
@@ -8212,7 +8219,72 @@ function PICDetailModal({ metrics, onClose }) {
   );
 }
 
-function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
+// W3-D2: the full activity log across projects (Owner), filterable. Reads each project's
+// log on open (the same read as the Dashboard: newest 500 per project).
+function ActivityLogModal({ projects, projectIds, initialProjectId = '', onClose }) {
+  const [state, setState] = useState({ loading: true, entries: [], failed: [] });
+  const [f, setF] = useState({ projectId: initialProjectId || '', person: '', type: '', from: '', to: '', text: '' });
+  const [limit, setLimit] = useState(200);
+  const ids = useMemo(() => (projectIds || []).filter((pid) => projects?.[pid]), [projectIds, projects]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const lists = await Promise.all(ids.map((pid) => loadActivityStrict(pid).catch(() => null)));
+      if (cancelled) return;
+      const entries = [];
+      const failed = [];
+      ids.forEach((pid, i) => {
+        if (!lists[i]) { failed.push(projects[pid]?.name || pid); return; }
+        for (const e of lists[i]) entries.push({ ...e, projectId: pid });
+      });
+      setState({ loading: false, entries, failed });
+    })();
+    return () => { cancelled = true; };
+  }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
+  const types = useMemo(() => activityTypes(state.entries), [state.entries]);
+  const rows = useMemo(() => filterActivity(state.entries, { ...f, types: f.type ? [f.type] : [] }), [state.entries, f]);
+  const set = (k) => (e) => { setF((cur) => ({ ...cur, [k]: e.target.value })); setLimit(200); };
+  const ctl = { fontFamily: FONT_STACK, fontSize: 12, padding: '5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink };
+  return (
+    <Modal title="Activity log" onClose={onClose} width={900}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        <select value={f.projectId} onChange={set('projectId')} style={ctl} aria-label="Project">
+          <option value="">All projects</option>
+          {ids.map((pid) => <option key={pid} value={pid}>{projects[pid].name}</option>)}
+        </select>
+        <input value={f.person} onChange={set('person')} placeholder="Person" style={{ ...ctl, width: 120 }} aria-label="Person" />
+        <select value={f.type} onChange={set('type')} style={ctl} aria-label="Type">
+          <option value="">All types</option>
+          {types.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input type="date" value={f.from} onChange={set('from')} style={ctl} aria-label="From" />
+        <input type="date" value={f.to} onChange={set('to')} style={ctl} aria-label="To" />
+        <input value={f.text} onChange={set('text')} placeholder="Search" style={{ ...ctl, flex: 1, minWidth: 120 }} aria-label="Search" />
+      </div>
+      <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 6 }}>Up to 500 newest events per project.{!state.loading ? ` ${rows.length} event${rows.length === 1 ? '' : 's'}.` : ''}</div>
+      {state.failed.map((n) => <div key={n} style={{ fontSize: 12, color: TOK.overdueFg, marginBottom: 4 }}>Couldn't load {n}</div>)}
+      {state.loading ? (
+        <div style={{ fontSize: 12.5, color: TOK.muted, padding: 12 }}>Loading activity…</div>
+      ) : (
+        <div style={{ maxHeight: '55vh', overflowY: 'auto', border: '1px solid ' + TOK.line, borderRadius: 8 }}>
+          {rows.length === 0 && <div style={{ fontSize: 12.5, color: TOK.muted, padding: 12 }}>No events match.</div>}
+          {rows.slice(0, limit).map((a, i) => (
+            <div key={`${a.projectId}-${a.id || i}`} style={{ padding: '7px 12px', borderTop: i ? '1px solid ' + TOK.line : 'none', fontSize: 12, display: 'flex', gap: 10 }}>
+              <span style={{ color: TOK.muted, whiteSpace: 'nowrap', minWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis' }}>{projects[a.projectId]?.name}</span>
+              <span style={{ flex: 1, color: TOK.ink }}>{a.description}</span>
+              <span style={{ color: TOK.subtle, whiteSpace: 'nowrap', fontSize: 11 }}>{a.author} · {fmtDateTime(a.timestamp)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!state.loading && rows.length > limit && (
+        <div style={{ marginTop: 8 }}><Btn size="sm" variant="ghost" onClick={() => setLimit((n) => n + 200)}>Show more</Btn></div>
+      )}
+    </Modal>
+  );
+}
+
+function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onOpenLog = null }) {
   const dirIndex = useContext(DirectoryIndexContext);
   const [selectedPic, setSelectedPic] = useState(null);
   useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
@@ -8259,7 +8331,10 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false }) {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
       <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>Team Activity Dashboard</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, flex: 1 }}>Team Activity Dashboard</div>
+          {isOwner && onOpenLog && <Btn size="sm" onClick={() => onOpenLog('')}>Activity log</Btn>}
+        </div>
         <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4, lineHeight: 1.5, maxWidth: 720 }}>
           Read-only coaching view — surfaces who's delivering, who's communicating, and who may need support. Not a performance score. Calibrate thresholds after 4-8 weeks of data.
         </div>
@@ -8449,27 +8524,17 @@ function computePortfolioMetrics(projects, options = {}) {
     };
   });
 
+  // W3-D2: one workload definition (src/workload.js): open = Planned + InProgress,
+  // Submitted counted apart as awaiting approval. People with only actions are left out
+  // of this task chart, as before.
   const workloadByPic = new Map();
-  for (const project of projectList) {
-    for (const pg of project.programs || []) {
-      for (const ws of pg.workstreams || []) {
-        for (const t of ws.tasks || []) {
-          if (!t.pic) continue;
-          if (t.status === 'Dropped' || t.status === 'Completed') continue;
-          if (!workloadByPic.has(t.pic)) {
-            workloadByPic.set(t.pic, { pic: t.pic, perProject: new Map(), totalActive: 0, overdueCount: 0, statusLevel: 'balanced' });
-          }
-          const wl = workloadByPic.get(t.pic);
-          if (!wl.perProject.has(project.id)) {
-            wl.perProject.set(project.id, { project, count: 0, tasks: [] });
-          }
-          wl.perProject.get(project.id).count++;
-          wl.perProject.get(project.id).tasks.push(t);
-          wl.totalActive++;
-          if (isOverdueTask(t, now)) wl.overdueCount++;
-        }
-      }
-    }
+  for (const w of personWorkload(projects, { keyOf: options.keyOf, labelOf: options.labelOf, now }).values()) {
+    if (!w.openTasks && !w.awaitingApproval) continue;
+    workloadByPic.set(w.key, {
+      pic: w.label, key: w.key,
+      perProject: new Map([...w.perProject].map(([pid, pp]) => [pid, { project: pp.project, count: pp.openTasks, tasks: pp.tasks }])),
+      totalActive: w.openTasks, overdueCount: w.overdueTasks, awaitingApproval: w.awaitingApproval, statusLevel: 'balanced',
+    });
   }
   for (const wl of workloadByPic.values()) {
     if (wl.totalActive >= 6 || wl.overdueCount >= 2) wl.statusLevel = 'overloaded';
@@ -8677,7 +8742,7 @@ function WorkloadDistribution({ workload }) {
         {workload.map((wl) => {
           const sc = STATUS_COLOR[wl.statusLevel];
           return (
-            <div key={wl.pic} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div key={wl.key || wl.pic} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ width: 90, fontSize: 12, fontWeight: 500 }}>{wl.pic}</div>
               <div style={{ flex: 1, height: 18, background: TOK.bg, borderRadius: 4, overflow: 'hidden', display: 'flex' }}>
                 {Array.from(wl.perProject.values()).map((pp, i) => (
@@ -8685,7 +8750,8 @@ function WorkloadDistribution({ workload }) {
                     style={{ width: `${100 * pp.count / maxActive}%`, background: sc.fg, opacity: 0.4 + 0.6 * (i % 3 === 0 ? 1 : i % 3 === 1 ? 0.7 : 0.5), borderRight: '1px solid ' + TOK.surface }} />
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: TOK.muted, minWidth: 56 }}>{wl.totalActive} act</div>
+              <div style={{ fontSize: 11, color: TOK.muted, minWidth: 56 }}>{wl.totalActive} open</div>
+              {wl.awaitingApproval > 0 && <div style={{ fontSize: 11, color: TOK.muted }}>{wl.awaitingApproval} awaiting approval</div>}
               <div style={{ fontSize: 10, fontWeight: 500, padding: '2px 8px', borderRadius: 999, color: sc.fg, background: sc.bg }}>
                 {wl.statusLevel}
               </div>
@@ -8795,7 +8861,11 @@ function ApprovalsStrip({ projects, onOpenItem }) {
 }
 
 function PortfolioView({ projects, onProjectClick, onOpenItem = null }) {
-  const data = useMemo(() => computePortfolioMetrics(projects), [projects]);
+  const dirIndex = useContext(DirectoryIndexContext);
+  const data = useMemo(() => computePortfolioMetrics(projects, {
+    keyOf: (raw) => personKey(dirIndex, raw),
+    labelOf: (raw) => (dirIndex ? personLabel(dirIndex, raw) : raw),
+  }), [projects, dirIndex]);
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
       <div style={{ marginBottom: 14 }}>
@@ -9707,17 +9777,17 @@ function getLastActivityForMember(member, projects, dirIndex = null) {
 // v30 Phase 3 — Per-member workload aggregation. Reuses computeMyWork
 // (isOwner=false so deadline_approval items don't leak into member counts).
 function computeTeamOverview(projects, members, dirIndex = null) {
+  const wl = personWorkload(projects, { keyOf: (raw) => personKey(dirIndex, raw) });
   return (members || []).map((m) => {
     const myWork = computeMyWork(m.name, projects, false, null, dirIndex);
-    const tasksOwned = myWork.tasksOwned.today.length + myWork.tasksOwned.week.length + myWork.tasksOwned.later.length;
+    // W3-D2: owned / overdue / awaiting approval from the shared workload definition.
+    const w = wl.get(personKey(dirIndex, m.name)) || { openTasks: 0, awaitingApproval: 0, overdueTasks: 0, overdueActions: 0 };
     const actionItemsOpen = myWork.actionItems.today.length + myWork.actionItems.week.length + myWork.actionItems.later.length;
-    const tasksOverdue = myWork.needsAttention.filter((it) =>
-      it.kind === 'overdue_task' || it.kind === 'overdue_action' || it.kind === 'overdue_subtask'
-    ).length;
     return {
       member: m,
-      tasksOwned,
-      tasksOverdue,
+      tasksOwned: w.openTasks,
+      tasksOverdue: w.overdueTasks + w.overdueActions,
+      awaitingApproval: w.awaitingApproval,
       tasksContributing: myWork.tasksContributing.length,
       actionItemsOpen,
       credit: myWork.credit,
@@ -9729,9 +9799,9 @@ function computeTeamOverview(projects, members, dirIndex = null) {
 // v30 Phase 3 — One row per team member showing workload metrics and
 // last activity. "(you)" badge on self; View-as button hidden for self.
 function MemberOverviewRow({ data, onViewAs, currentAuthor }) {
-  const { member, tasksOwned, tasksOverdue, tasksContributing, actionItemsOpen, credit, lastActivity } = data;
+  const { member, tasksOwned, tasksOverdue, awaitingApproval = 0, tasksContributing, actionItemsOpen, credit, lastActivity } = data;
   const isSelf = member.name === currentAuthor;
-  const empty = tasksOwned === 0 && actionItemsOpen === 0 && tasksContributing === 0 && credit.projected === 0;
+  const empty = tasksOwned === 0 && awaitingApproval === 0 && actionItemsOpen === 0 && tasksContributing === 0 && credit.projected === 0;
   return (
     <div style={{ padding: '12px 14px', border: '1px solid ' + TOK.line, borderRadius: 8, background: TOK.surface, marginBottom: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -9752,13 +9822,14 @@ function MemberOverviewRow({ data, onViewAs, currentAuthor }) {
         <>
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, color: TOK.ink, marginBottom: 4 }}>
             <span>📋 {tasksOwned} owned</span>
+            {awaitingApproval > 0 && <span style={{ color: TOK.muted }}>{awaitingApproval} awaiting approval</span>}
             {tasksOverdue > 0 && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>⚠ {tasksOverdue} overdue</span>}
             <span>🤝 {tasksContributing} contributing</span>
             <span>✅ {actionItemsOpen} actions</span>
           </div>
           {credit.projected > 0 && (
             <div style={{ fontSize: 12, color: TOK.muted }}>
-              📊 {Math.round(credit.earned * 10) / 10} / {Math.round(credit.projected * 10) / 10} cp ({Math.round(credit.pct)}%)
+              📊 {Math.round(credit.earned * 10) / 10} / {Math.round(credit.projected * 10) / 10} cp ({Math.round(credit.pct)}%) (all years)
             </div>
           )}
           {lastActivity && (
@@ -12362,7 +12433,7 @@ function MyWorkView({
 
       {/* 📊 My credit (always collapsed by default) */}
       <MyWorkSection
-        icon="📊" title={`My credit this year (${new Date().getFullYear()})`}
+        icon="📊" title="My credit (all years)"
         defaultOpen={false}>
         {myWork.credit.projected === 0 ? (
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>
@@ -13180,6 +13251,7 @@ export default function App() {
   const currentIdRef = useRef(currentId);
   currentIdRef.current = currentId;
   const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
+  const [activityLogFor, setActivityLogFor] = useState(null); // W3-D2: null = closed, '' = all projects, pid
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
@@ -14947,7 +15019,7 @@ export default function App() {
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
-              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} />}
+              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setRaidScopeProgramId(programId || null); setView('raid'); }} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
@@ -14972,7 +15044,7 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
-              {view === 'activity' && isOwner && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} />}
+              {view === 'activity' && isOwner && <ActivityDashboardView projects={projects} onProjectUpdate={updateProject} isOwner={isOwner} onOpenLog={impersonatingAs ? null : (pid) => setActivityLogFor(pid)} />}
               {view === 'activity' && !isOwner && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
                   Activity view is workspace-owner only.
@@ -15066,6 +15138,9 @@ export default function App() {
         {helpMenu && (
           <PopoverMenu x={helpMenu.x} y={helpMenu.y} onClose={() => setHelpMenu(null)}
             items={[{ label: 'Walkthrough', icon: <HelpCircle size={13} />, onClick: () => walkthroughRef.current?.start() }, { label: 'Glossary', icon: <BookOpen size={13} />, onClick: () => setShowGlossary(true) }]} />
+        )}
+        {activityLogFor !== null && isOwner && !impersonatingAs && (
+          <ActivityLogModal projects={projects} projectIds={meta?.projectIds || []} initialProjectId={activityLogFor} onClose={() => setActivityLogFor(null)} />
         )}
         {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList muted={TOK.muted} /></Modal>}
         {projectMenu && (
