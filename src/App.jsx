@@ -29,7 +29,7 @@ import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2 } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { taskUrl, parseDeepLink } from './deepLink';
@@ -1549,7 +1549,6 @@ async function sgetShared(k) { try { const r = await window.storage.get(k, true)
 async function ssetShared(k, v) { try { const r = await window.storage.set(k, v, true); return r != null; } catch { return false; } }
 async function sgetLocal(k) { try { const r = await window.storage.get(k, false); return r ? r.value : null; } catch { return null; } }
 async function ssetLocal(k, v) { try { await window.storage.set(k, v, false); return true; } catch { return false; } }
-async function sdeleteShared(k) { try { await window.storage.delete(k, true); return true; } catch { return false; } }
 async function sdeleteLocal(k) { try { await window.storage.delete(k, false); return true; } catch { return false; } }
 
 async function saveMeta(m) { return ssetShared(K.meta, JSON.stringify(m)); }
@@ -1567,7 +1566,25 @@ async function saveProject(p) {
     return ['conflict', 'conflict-meta', 'readonly', 'denied', 'refused', 'history'].includes(r.error) ? r.error : 'error';
   } catch { return 'error'; }
 }
-async function deleteProjectStore(id) { await sdeleteShared(K.project(id)); await sdeleteShared(K.activity(id)); }
+// W3-A3 (O2): soft delete; true only when the shim confirms it (a refusal / network error keeps the project).
+async function deleteProjectStore(id) {
+  try {
+    const r = await window.storage.delete(K.project(id), true);
+    return !!(r && r.deleted);
+  } catch { return false; }
+}
+// W3-A3 (O1): create a project directly as v2, then load it back (assembled, with roles).
+async function createProjectStore(tree) {
+  const r = await createProjectV2(tree);
+  if (r.status !== 'ok' && r.status !== 'partial') return { ...r, project: null };
+  return { ...r, project: await loadProject(tree.id) };
+}
+function createProjectMessage(r, verb = 'create the project') {
+  if (r.status === 'unknown-person') return `“${r.person || 'A person'}” is not in the People directory. Add them (⋯ → People directory) and try again — nothing was saved.`;
+  if (r.status === 'denied') return 'Only the workspace Owner can create projects — nothing was saved.';
+  if (r.status === 'partial') return `The project was created, but some items were not saved (${r.reason || 'error'}). Check it before sharing, or delete it and try again.`;
+  return `Couldn’t ${verb} — nothing was saved. Check your connection and try again.`;
+}
 async function loadActivity(id) { const r = await sgetShared(K.activity(id)); if (!r) return []; try { return JSON.parse(r); } catch { return []; } }
 // null = the shim read failed (a missing log reads as '[]').
 async function loadActivityStrict(id) { const r = await sgetShared(K.activity(id)); if (r == null) return null; try { const a = JSON.parse(r); return Array.isArray(a) ? a : null; } catch { return null; } }
@@ -13621,7 +13638,7 @@ export default function App() {
       const msg = res.outcome !== intent.outcome ? replanMessage(res.outcome, meRef.current.nameOf(res.task.closeRequest?.approverUid)) : null;
       if (msg) showToastRef.current(msg);
     }
-    const closeEvents = closeEventsFor(oldTask, res.task, meRef.current.nameOf);
+    const closeEvents = closeEventsFor(oldTask, res.task, meRef.current.nameOf, { picUid: rolesNowFor(projectId)?.tasks?.[oldTask.id]?.picUid ?? null });
     for (const ev of closeEvents) {
       logActivityForProject(projectId, { ...ev, description: ev.description + tag });
     }
@@ -14263,20 +14280,18 @@ export default function App() {
       projectLeadShare: 10,
       contributorRegistry: DEFAULT_DEPARTMENTS.map((nm) => ({ name: nm })),
     };
-    if (await saveProject(p) !== 'ok') {
-      showToast('Couldn’t create the project — nothing was saved. Check your connection and try again.');
-      return;
-    }
+    const created = await createProjectStore(p);
+    if (!created.project) { showToast(createProjectMessage(created)); return; }
     const m2 = { ...meta, projectIds: [...meta.projectIds, p.id], currentProjectId: p.id };
     setMeta(m2); await saveMeta(m2);
-    setProjects((prev) => ({ ...prev, [p.id]: p }));
+    setProjects((prev) => ({ ...prev, [p.id]: created.project }));
     setCurrentId(p.id);
     setActivity([]);
     setShowNewProject(false);
     const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type: 'project_create', description: `Created project "${p.name}"` };
-    await appendActivity(p.id, entry);
+    await appendActivity(p.id, entry, { v2: true });
     setActivity([entry]);
-    showToast(`Created project “${p.name}”`);
+    showToast(created.status === 'ok' ? `Created project “${p.name}”` : createProjectMessage(created));
   };
 
   const handleFileImport = async (file) => {
@@ -14292,20 +14307,18 @@ export default function App() {
         showToast(`A project named "${imported.name}" already exists. Imported as "${finalName}".`);
         imported.name = finalName;
       }
-      if (await saveProject(imported) !== 'ok') {
-        showToast('Couldn’t save the imported project — nothing was added. Check your connection and try again.');
-        return;
-      }
+      const created = await createProjectStore(imported);
+      if (!created.project) { showToast(createProjectMessage(created, 'import the project')); return; }
       const m2 = { ...meta, projectIds: [...meta.projectIds, imported.id], currentProjectId: imported.id };
       setMeta(m2); await saveMeta(m2);
-      setProjects((prev) => ({ ...prev, [imported.id]: imported }));
+      setProjects((prev) => ({ ...prev, [imported.id]: created.project }));
       setCurrentId(imported.id);
       const tasks = collectTasks(imported).length;
       const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type: 'project_import', description: `Imported project "${imported.name}" (${tasks} tasks)` };
-      await appendActivity(imported.id, entry);
+      await appendActivity(imported.id, entry, { v2: true });
       setActivity([entry]);
       setShowImport(false);
-      showToast(`Imported "${imported.name}" · ${tasks} tasks`);
+      showToast(created.status === 'ok' ? `Imported "${imported.name}" · ${tasks} tasks` : createProjectMessage(created));
 
       // Post-import validation: detect unrecognized PICs/contributors (v29)
       const registryNames = new Set((imported.contributorRegistry || []).map((r) => r.name.toLowerCase()));
@@ -14409,9 +14422,13 @@ export default function App() {
   const deleteCurrentProject = async () => {
     if (!project || !meta) return;
     if (meta.projectIds.length === 1) { await dialogs.alert({ title: 'Cannot delete', message: 'This is the only project in the workspace.' }); return; }
-    const ok = await dialogs.confirm({ title: 'Delete project?', message: `Delete project "${project.name}" and all its data (tasks, check-ins, activity)? This cannot be undone.`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete project?', message: `Delete project "${project.name}"? It disappears for everyone. The data is kept: the Owner can bring it back later (Firebase Console, clear deletedAt on the project).`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
-    await deleteProjectStore(project.id);
+    // W3-A3 (O2): keep the project when the delete did not go through.
+    if (!(await deleteProjectStore(project.id))) {
+      showToast(`Couldn’t delete “${project.name}” — nothing changed. Check your connection and try again.`);
+      return;
+    }
     const remaining = meta.projectIds.filter((pid) => pid !== project.id);
     const next = remaining[0];
     const m2 = { ...meta, projectIds: remaining, currentProjectId: next };
@@ -15133,7 +15150,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
     typeof project.creditYear === 'number' ? project.creditYear : new Date().getFullYear()
   );
   const [weightsLocked, setWeightsLocked] = useState(!!project.weightsLocked);
-  const [weightsLockHistory] = useState(Array.isArray(project.weightsLockHistory) ? project.weightsLockHistory : []);
+  const [weightsLockHistory, setWeightsLockHistory] = useState(Array.isArray(project.weightsLockHistory) ? project.weightsLockHistory : []);
   const [showLockHistory, setShowLockHistory] = useState(false);
   const [projectLead, setProjectLead] = useState(project.projectLead || '');
   const [projectLeadShare, setProjectLeadShare] = useState(
@@ -15151,15 +15168,15 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
   const [chatWebhookError, setChatWebhookError] = useState('');
   const [chatTestStatus, setChatTestStatus] = useState(null); // { kind: 'ok'|'err', message: string }
 
-  const commitChatWebhook = () => {
+  // W3-A3 (O12): the webhook is saved with Save only (no longer on blur). null when empty.
+  const webhookToSave = () => {
     const trimmed = chatWebhook.trim();
     if (trimmed && !validateWebhookUrl(trimmed)) {
       setChatWebhookError(`URL must start with ${WEBHOOK_PREFIX}`);
-      return;
+      return undefined;
     }
     setChatWebhookError('');
-    // Persist null when empty so absence of integration is clean
-    onSave({ ...project, googleChatWebhook: trimmed || null });
+    return trimmed || null;
   };
 
   const sendChatTest = async () => {
@@ -15548,14 +15565,9 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
     const finalCp = (!isNaN(cpNum) && cpNum >= 0) ? cpNum : DEFAULT_CREDIT_POINTS;
     const leadShareNum = Number(projectLeadShare);
     const finalLeadShare = (!isNaN(leadShareNum) && leadShareNum >= 0 && leadShareNum <= 100) ? leadShareNum : 10;
-    let lockHist = weightsLockHistory;
-    if (!!project.weightsLocked !== weightsLocked) {
-      lockHist = [...weightsLockHistory, {
-        ts: new Date().toISOString(),
-        action: weightsLocked ? 'lock' : 'unlock',
-        year: creditYear,
-      }];
-    }
+    const webhook = webhookToSave();
+    if (webhook === undefined) return; // invalid URL: error shown, modal stays open
+    // W3-A3 (O3): lock / unlock is already saved by its own confirm; Save keeps that state.
     onSave({
       ...project,
       name: name.trim(),
@@ -15564,10 +15576,11 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
       creditPoints: finalCp,
       creditYear,
       weightsLocked,
-      weightsLockHistory: lockHist,
+      weightsLockHistory,
       projectLead: projectLead.trim() || null,
       projectLeadShare: finalLeadShare,
       contributorRegistry,
+      googleChatWebhook: webhook,
     });
     onClose();
   };
@@ -15667,7 +15680,12 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
               okLabel: weightsLocked ? 'Unlock' : 'Lock',
             });
             if (!ok) return;
-            setWeightsLocked(!weightsLocked);
+            // W3-A3 (O3): saved now, not on the modal's Save (closing with Cancel kept it unsaved).
+            const next = !weightsLocked;
+            const hist = [...weightsLockHistory, { ts: new Date().toISOString(), action: next ? 'lock' : 'unlock', year: creditYear }];
+            setWeightsLocked(next);
+            setWeightsLockHistory(hist);
+            onSave({ ...project, weightsLocked: next, weightsLockHistory: hist });
           }}>
             {weightsLocked ? 'Unlock' : 'Lock'}
           </Btn>
@@ -16072,13 +16090,12 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
       <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid ' + TOK.line }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🗨 Google Chat integration</div>
         <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 10, lineHeight: 1.5 }}>
-          Paste the project's Google Chat space webhook URL. Action update notifications post to that space when "📢 Notify chat" is ticked.
+          Paste the project's Google Chat space webhook URL, then Save. Posts Action updates (when "📢 Notify chat" is ticked) and task Submitted / Rejected.
         </div>
         <input
           type="text"
           value={chatWebhook}
           onChange={(e) => { setChatWebhook(e.target.value); setChatWebhookError(''); setChatTestStatus(null); }}
-          onBlur={commitChatWebhook}
           disabled={!isOwner}
           placeholder={WEBHOOK_PREFIX + '...'}
           style={{

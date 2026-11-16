@@ -112,6 +112,22 @@ export function buildProjectWrite(ex, incoming, { uid, knownRev, force, now, wri
   return { conflict: false, newRev, doc };
 }
 
+/**
+ * W3-A3 (O1): the project doc of a NEW project, created directly as v2 by the Owner.
+ * Project-level fields come from the tree; programs / actions / decisions are written
+ * afterwards as sub-docs through the v2 save path, so the doc keeps them empty.
+ * Restricted by default (spec v2, round 2). Members = the creator (owner) plus
+ * `memberUids` (people the tree assigns, resolved like splitProject) as 'member'.
+ */
+export function newV2ProjectDoc(tree, { uid, now, memberUids = [] }) {
+  const { doc } = buildProjectWrite(null, { ...tree, programs: [], actionItems: [], decisions: [] }, { uid, now, knownRev: undefined });
+  delete doc.writeId;
+  const others = [...new Set(memberUids)].filter((u) => u && u !== uid).sort();
+  const roles = { [uid]: 'owner' };
+  for (const u of others) roles[u] = 'member';
+  return { ...doc, memberIds: [uid, ...others], roles, schemaVersion: 2, programMeta: {}, memberUids: [uid, ...others], visibility: 'restricted' };
+}
+
 // C1: ids whose parallel project load came back empty (null/undefined).
 export function loadFailures(ids, results) {
   return ids.filter((_, i) => !results[i]);

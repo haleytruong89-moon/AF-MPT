@@ -38,9 +38,10 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
-import { classifyReadError, createKeyedQueue, buildProjectWrite, FORCE_WRITE_FLAG } from './persistence';
+import { classifyReadError, createKeyedQueue, buildProjectWrite, newV2ProjectDoc, FORCE_WRITE_FLAG } from './persistence';
 import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loadApprovals, rolesFromLoaded } from './readV2';
 import { planV2Save } from './planV2Save';
+import { splitProject } from './migrateV2';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
 import { activityDocFor, activityEntryFromDoc } from './activityDoc';
@@ -318,6 +319,58 @@ async function saveV2Project(key: string, value: string, pid: string, loaded: V2
 /** Per-user localStorage key for the "currently selected project". */
 function currentProjectKey(uid: string): string {
   return `currentProjectId:${uid}`;
+}
+
+// Plain-JS helpers whose inferred parameter types come from defaults: give the real ones.
+const splitV2 = splitProject as unknown as (p: Record<string, unknown>, o: Record<string, unknown>) => { meta: { memberUids?: string[] } };
+const newV2Doc = newV2ProjectDoc as unknown as (t: Record<string, unknown>, o: { uid: string; now: unknown; memberUids: string[] }) => Record<string, unknown>;
+
+/**
+ * W3-A3 (O1): New project / Import Excel create the project directly as v2 (Owner only).
+ * 1. Plan the whole tree against an empty project first: an unknown person or any other
+ *    refusal stops here, before anything is written.
+ * 2. Create the project doc (schemaVersion 2, restricted, creator only).
+ * 3. Load it as v2 and write programs / work streams / tasks / actions / decisions through
+ *    the normal v2 save path (sub-doc rules need the project doc to exist already).
+ * status: 'ok' | 'denied' | 'error' | 'refused' | 'unknown-person' (person) | 'partial'
+ * (the doc exists but its content did not fully save: reason = the save error).
+ */
+export async function createProjectV2(tree: Record<string, unknown>): Promise<{ status: string; person?: string; reason?: string }> {
+  const user = await getUser();
+  const pid = String(tree.id || '');
+  if (!pid) return { status: 'error' };
+  const key = 'project:' + pid;
+  const [isOwner, dir] = await Promise.all([isOwnerNow(user), directoryForPlan()]);
+  if (!isOwner) return { status: 'denied' };
+  const { __v2: _v2, ...content } = tree;
+  void _v2;
+  // People the tree assigns (resolved through the directory, like p2-migrate) become members.
+  const assigned = (splitV2(content, { wid: WORKSPACE, dirIndex: dir.dirIndex, uidByEmail: dir.uidByEmail })).meta.memberUids || [];
+  const docData = newV2Doc(tree, { uid: user.uid, now: serverTimestamp(), memberUids: assigned });
+  const empty = (): V2Loaded['docs'] => ({ workstreams: new Map(), tasks: new Map(), actions: new Map(), raid: new Map(), decisions: new Map() });
+  const pre = planV2({ meta: { ...docData }, docs: empty() }, content, { uid: user.uid, wid: WORKSPACE, pid, isOwner, ...dir });
+  if (pre.refused) {
+    if (pre.refused === 'unknown-person') return { status: 'unknown-person', person: pre.refusedName };
+    return { status: pre.refused === 'directory-unavailable' ? 'error' : 'refused', reason: pre.refused };
+  }
+  try {
+    await setDoc(PROJECT_REF(pid), docData);
+  } catch (e) {
+    console.warn('[storage] v2 project create failed:', pid, e);
+    return { status: (e as { code?: string })?.code === 'permission-denied' ? 'denied' : 'error' };
+  }
+  try {
+    const snap = await getDoc(PROJECT_REF(pid));
+    const loadedValue = snap.exists() ? await getV2Project(key, pid, snap.data() as Record<string, unknown>) : null;
+    const loaded = v2Loaded.get(pid);
+    if (!loadedValue || !loaded) return { status: 'partial', reason: 'load' };
+    const r = await projectWriteQueue.run(key, () => saveV2Project(key, JSON.stringify(content), pid, loaded, user));
+    if (r && (r as { error?: string }).error) return { status: 'partial', reason: String((r as { error?: string }).error) };
+    return { status: 'ok' };
+  } catch (e) {
+    console.warn('[storage] v2 project content write failed:', pid, e);
+    return { status: 'partial', reason: 'error' };
+  }
 }
 
 /* ─────── Auth context (set by main.tsx after Firebase Auth resolves) ─────── */

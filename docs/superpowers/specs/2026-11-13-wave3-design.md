@@ -13,6 +13,8 @@
 | D3 | Action steps (sub-tasks) are ticked **by the action PIC only** (rules cannot scope an array element). | Hide ✓ for others, show "Ask <PIC> to tick this step", exclude from their badge. Revisit if steps move to their own docs. |
 | D4 | **Backup JSON = Owner only.** PM / members use Export Excel. | Hide the menu item for non-Owners. |
 | D5 | **No visibility button.** Department visibility is set per project by script (preview → HOD approves) when onboarding. | No UI. Add a `p2-visibility` script in W3-B. |
+| Q (16/11) | W3-B: reader comments may carry the blocker flag; no project becomes `department` by default (HOD names each); a Rejected item stays in My Work until resubmitted / closed, max 14 days. W3-C/D: workload open = Planned + In Progress, Submitted counted apart, task / action overdue apart; wording "Waiting for Owner approval"; full activity log in a modal. | Plans updated. FOCUS / project selector (C-3) deferred to a brainstorm with a project-view UI / UX review. |
+| W1-1 (16/11) | **The Owner may close a task they are PIC of** without another approver; no-self-approval applies to PM / Deputy / Sub-PM only. | No rules change (already so). Activity marks it "self-closed (Owner)" (W3-A3). Revisit before a second Owner is added: then the other Owner approves. |
 
 ## 2. W3-A — no false "saved" (first)
 
@@ -69,7 +71,7 @@ Acceptance: for each row of A-2, a member / PM / Sub-PM never sees a control the
 
 - **C-1 Gantt grouping**: Program → Workstream header rows (collapsible, summary bar from earliest start to latest end, % from `rollup`); Submitted / Dropped drawn distinctly.
 - **C-2 Gantt in All projects**: Project → Program → Workstream rows only (no tasks) on one time axis, to see when the department is busy. Outline / Mind map in All projects show a project list to open instead of the placeholder.
-- **C-3 One filter rule**: project selector + FOCUS appear only on project tabs (Plan, Actions, Decisions, RAID, Dashboard); hidden on My Work, Portfolio, Team, Credits, Activity. FOCUS applies to every project tab including Actions / Decisions, tab counts and the header progress line. RAID's separate scope is removed. FOCUS resets wherever the project changes; for a manager it re-presets to their program; at landing a manager goes to the first project where they hold a role.
+- **C-3 One filter rule** — *deferred (HOD 16/11): brainstorm again with a UI / UX review of the project view and FOCUS.* Draft: project selector + FOCUS appear only on project tabs (Plan, Actions, Decisions, RAID, Dashboard); hidden on My Work, Portfolio, Team, Credits, Activity. FOCUS applies to every project tab including Actions / Decisions, tab counts and the header progress line. RAID's separate scope is removed. FOCUS resets wherever the project changes; for a manager it re-presets to their program; at landing a manager goes to the first project where they hold a role.
 - **C-4 Portfolio**: clicking a project opens it (Plan); an **Approvals strip** lists every pending close request, deadline request and RAID activation across projects with waiting days, linking to the place to act (D2).
 
 ## 5. W3-D — remaining operations
