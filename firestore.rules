@@ -882,11 +882,17 @@ service cloud.firestore {
       return ['updates', 'blockerResolutions', 'updatedAt', 'updatedBy', 'version'];
     }
 
+    // W3-B1 (D1): the same branch also lets ANY project reader append one
+    // comment (updates only, any status, the PIC included); a blocker
+    // resolution still needs a contributor who is not the PIC. Keys are tested
+    // first, so a manager's close write leaves here at once (headroom).
     function taskContributorUpdate(wid, pid, ch, rv) {
-      return resource.data.get('contributorUids', null) is list
-        && request.auth.uid in resource.data.contributorUids
-        && resource.data.get('picUid', null) != request.auth.uid
-        && ch.hasOnly(contributorKeys())
+      return ch.hasOnly(contributorKeys())
+        && (ch.hasAny(['blockerResolutions'])
+          ? (resource.data.get('contributorUids', null) is list
+            && request.auth.uid in resource.data.contributorUids
+            && resource.data.get('picUid', null) != request.auth.uid)
+          : ch.hasAny(['updates']))
         && appendOnly(ch, 'updates')
         && rv != 'edit'
         && activeMemberDoc(wid)
@@ -897,10 +903,9 @@ service cloud.firestore {
     // (updates) to any task or action, at any status: active member doc and
     // project membership (department = any active member), only the updates
     // list + stamps change, append-only. The new entry's authorUid == me is
-    // enforced for every writer by newEntryOk in the callers. Tasks: tried
-    // after the manager branch (keeps the manager close paths' expression
-    // headroom; a reader write pays one workstream get there). Actions: after
-    // the PIC branch. get(): members/{me}, project (+ ws for tasks).
+    // enforced for every writer by newEntryOk in the callers. Actions only:
+    // tried after the PIC branch. Tasks use taskContributorUpdate (above),
+    // widened the same way. get(): members/{me}, project = 2.
     function readerCommentKeys() {
       return ['updates', 'updatedAt', 'updatedBy', 'version'];
     }
@@ -993,7 +998,6 @@ service cloud.firestore {
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
         || taskContributorUpdate(wid, pid, ch, rv)
         || (activeMemberDoc(wid) && projectMemberIn(v2Project(wid, pid)) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
-        || readerComment(wid, pid, ch)
         || isWsOwner(wid)
       );
     }
