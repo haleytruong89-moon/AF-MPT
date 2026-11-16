@@ -561,3 +561,15 @@ describe('approvals docs helpers (mitigation_done, C7 / C8)', () => {
       .toEqual([{ uid: 'O2', viaWorkstreamId: null }]);
   });
 });
+
+describe('closeEventsFor self-close marker (W1-1)', () => {
+  const old = { id: 't', name: 'T', status: 'InProgress' };
+  const closed = (by) => ({ ...old, status: 'Completed', closedByUid: by, approvedByUid: by });
+  it('marks a direct close by the PIC', () => {
+    expect(closeEventsFor(old, closed('O'), (u) => u, { picUid: 'O' })[0].description).toBe('Closed "T" as done (self-closed by Owner, no approver)');
+  });
+  it('no marker when someone else closes, or without a picUid', () => {
+    expect(closeEventsFor(old, closed('P'), (u) => u, { picUid: 'O' })[0].description).toBe('Closed "T" as done');
+    expect(closeEventsFor(old, closed('O'))[0].description).toBe('Closed "T" as done');
+  });
+});

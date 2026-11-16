@@ -13,6 +13,7 @@
 | D3 | Action steps (sub-tasks) are ticked **by the action PIC only** (rules cannot scope an array element). | Hide ✓ for others, show "Ask <PIC> to tick this step", exclude from their badge. Revisit if steps move to their own docs. |
 | D4 | **Backup JSON = Owner only.** PM / members use Export Excel. | Hide the menu item for non-Owners. |
 | D5 | **No visibility button.** Department visibility is set per project by script (preview → HOD approves) when onboarding. | No UI. Add a `p2-visibility` script in W3-B. |
+| W1-1 (16/11) | **The Owner may close a task they are PIC of** without another approver; no-self-approval applies to PM / Deputy / Sub-PM only. | No rules change (already so). Activity marks it "self-closed (Owner)" (W3-A3). Revisit before a second Owner is added: then the other Owner approves. |
 
 ## 2. W3-A — no false "saved" (first)
 

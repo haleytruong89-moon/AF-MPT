@@ -346,3 +346,33 @@ describe('W5 activity save-state keys', () => {
     expect(st).toEqual({});
   });
 });
+
+import { newV2ProjectDoc } from '../../src/persistence.js';
+describe('newV2ProjectDoc (W3-A3)', () => {
+  const tree = {
+    id: 'p1', name: 'New', __v2: { x: 1 }, programs: [{ id: 'pg' }], actionItems: [{ id: 'a' }], decisions: [{ id: 'd' }],
+    teamMembers: [{ name: 'A' }], visibility: 'department', memberUids: ['Z'], schemaVersion: 1,
+  };
+  const d = newV2ProjectDoc(tree, { uid: 'U', now: 'NOW' });
+  it('is a restricted v2 doc owned by the creator only', () => {
+    expect(d).toMatchObject({ schemaVersion: 2, programMeta: {}, memberUids: ['U'], visibility: 'restricted', memberIds: ['U'], roles: { U: 'owner' }, createdBy: 'U', createdAt: 'NOW', rev: 1 });
+  });
+  it('keeps project fields, drops tree content and client-only keys', () => {
+    expect(d.name).toBe('New');
+    expect(d.teamMembers).toEqual([{ name: 'A' }]);
+    expect(d.programs).toEqual([]);
+    expect(d.actionItems).toEqual([]);
+    expect(d.decisions).toEqual([]);
+    expect(d).not.toHaveProperty('__v2');
+    expect(d).not.toHaveProperty('id');
+    expect(d).not.toHaveProperty('writeId');
+  });
+});
+describe('newV2ProjectDoc members (W3-A3)', () => {
+  it('adds assigned people as members, creator stays owner and first', () => {
+    const d = newV2ProjectDoc({ id: 'p', name: 'X' }, { uid: 'U', now: 'N', memberUids: ['B', 'A', 'U', 'B', null] });
+    expect(d.memberIds).toEqual(['U', 'A', 'B']);
+    expect(d.memberUids).toEqual(['U', 'A', 'B']);
+    expect(d.roles).toEqual({ U: 'owner', A: 'member', B: 'member' });
+  });
+});

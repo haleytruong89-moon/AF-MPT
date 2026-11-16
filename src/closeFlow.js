@@ -299,7 +299,9 @@ export function reassignClose({ roles, task, me, toUid, now }) {
 const outcomeWord = (s) => (s === 'Dropped' ? 'dropped' : 'done');
 
 /** Activity events (P3-19) for one task change. English descriptions. */
-export function closeEventsFor(oldTask, newTask, nameOf = (u) => u) {
+// W1-1 (HOD 16/11): picUid (optional, from roles) marks a direct close by the task's own
+// PIC (only the Owner may do that) as self-closed, so it is visible without an approver.
+export function closeEventsFor(oldTask, newTask, nameOf = (u) => u, { picUid = null } = {}) {
   if (!oldTask || !newTask) return [];
   const s0 = statusOf(oldTask);
   const s1 = statusOf(newTask);
@@ -330,7 +332,10 @@ export function closeEventsFor(oldTask, newTask, nameOf = (u) => u) {
   if (h?.status === 'Withdrawn') {
     return ev('close_withdrawn', `Withdrew close request for "${name}"`);
   }
-  if (isClosed(s1)) return ev('close_direct', `Closed "${name}" as ${outcomeWord(s1)}`);
+  if (isClosed(s1)) {
+    const self = !!picUid && newTask.closedByUid === picUid;
+    return ev('close_direct', `Closed "${name}" as ${outcomeWord(s1)}${self ? ' (self-closed by Owner, no approver)' : ''}`);
+  }
   if (isClosed(s0) && isOpen(s1)) return ev('close_reopened', `Reopened "${name}"`);
   return [];
 }
