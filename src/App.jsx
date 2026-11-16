@@ -17,7 +17,7 @@ import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
-import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard } from './chatNotify';
+import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard, buildCloseReassignedCard } from './chatNotify';
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey, shouldReloadOnFocus } from './persistence';
 import { mentionsMe } from './mentions.js';
@@ -42,10 +42,10 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, dropRefusalReason, dragHint, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
-import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore, restorePreview, restoreScriptHint } from './treeGuards.js';
+import { taskCountUnder, deleteBlockMessage, splitRestoreByV2, V2_RESTORE_MESSAGE, activityToRestore, restorePreview, restoreScriptHint } from './treeGuards.js';
 import { personHoldings, holdingsText } from './holdings.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
@@ -3288,7 +3288,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 16 }}>⏳</span>
         <div style={{ fontSize: 12, fontWeight: 500, color: '#A8660C' }}>
-          Deadline change request — pending owner review
+          Deadline change request — waiting for Owner approval
         </div>
       </div>
       <div style={{ fontSize: 12.5, color: TOK.ink, lineHeight: 1.5, marginBottom: 4 }}>
@@ -3315,7 +3315,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
           <Btn size="sm" onClick={onCancel}>Cancel my request</Btn>
         ) : (
           <span style={{ fontSize: 11, color: TOK.subtle, fontStyle: 'italic' }}>
-            Only the requester can cancel; only workspace owner can approve/reject.
+            Only the Owner approves deadline changes.
           </span>
         )}
       </div>
@@ -3438,10 +3438,22 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
     setDateNote(null);
     setDraft({ ...draft, [key]: v || null });
   };
-  const datesOutsideWs = () => isV2 && !isOwner && !datesWithinWs(draft.start, draft.end, wsWindow);
-  const dateNoteFor = () => (dateNote
-    ? <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 3 }}>{dateNote}</div>
-    : null);
+  // W3-D3 (P3): only a date change is checked (an old out-of-window task still saves other fields).
+  const datesOutsideWs = () => isV2 && !isOwner && (draft.start !== task.start || draft.end !== task.end)
+    && !datesWithinWs(draft.start, draft.end, wsWindow);
+  const dateNoteFor = () => (
+    <>
+      {dateNote && <div role="alert" style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 3 }}>{dateNote}</div>}
+      {isV2 && !isOwner && (
+        <div style={{ fontSize: 11, color: TOK.muted, marginTop: 3 }}>
+          Work stream dates: {wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – {wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}
+        </div>
+      )}
+      {task.deadlineRequest && draft.end !== task.end && (
+        <div style={{ fontSize: 11, color: TOK.inprogFg, marginTop: 3 }}>A deadline request is still waiting for the Owner.</div>
+      )}
+    </>
+  );
   // A manager may not produce manual mode (PIC removed / 3+ contributors): block it.
   const autoCreditOrBlock = (next, pic, contributors) => {
     if ((next.creditSharesMode || 'auto') !== 'auto') return next;
@@ -6979,7 +6991,7 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   };
   const actDelete = async (kind, pg, ws) => {
     if (kind === 'program') {
-      if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(pg) }); return; }
       const r = rollup(pg);
       const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
@@ -6988,18 +7000,18 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
       if (!cur) return;
       const curPg = findProgram(cur, pg.id);
       if (!curPg) return;
-      if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(curPg) }); return; }
       onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
       onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
     } else {
-      if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(ws) }); return; }
       const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
       if (!ok) return;
       const cur = latest();
       if (!cur) return;
       const curWs = findWorkstream(cur, pg.id, ws.id);
       if (!curWs) return;
-      if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+      if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(curWs) }); return; }
       onProjectUpdate({
         ...cur, programs: cur.programs.map((p) =>
           p.id === pg.id ? { ...p, workstreams: p.workstreams.filter((w) => w.id !== ws.id) } : p
@@ -7216,8 +7228,10 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
 }
 
 /* ═════════ OUTLINE VIEW (editable, drag-drop) ═════════ */
-function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole }) {
+function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, selectedTaskId, onActivity, dialogs, scopeProgramId, isOwner = false, roles = null, me = null, people = [], onChangeRole, showToast = null }) {
   const dirIndex = useContext(DirectoryIndexContext);
+  // W3-D3 (P6): the reason of the last refused drop target, told when the drag ends without a drop.
+  const dropRefusal = useRef(null);
   // Role assignment: pickers only on v2 projects.
   const showRoles = !!(project.__v2 && roles && me);
   // Wave 1 U6 (v2): hide what the rules would refuse. v1 / Owner: all true.
@@ -7276,7 +7290,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     onActivity({ type: 'program_rename', description: `Renamed program "${old}" → "${name}"` });
   };
   const deleteProgram = async (pg) => {
-    if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    if (taskCountUnder(pg) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(pg) }); return; }
     const r = rollup(pg);
     const ok = await dialogs.confirm({ title: 'Delete program?', message: `Delete program "${pg.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
@@ -7285,7 +7299,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     if (!cur) return;
     const curPg = findProgram(cur, pg.id);
     if (!curPg) return;
-    if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    if (taskCountUnder(curPg) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(curPg) }); return; }
     onProjectUpdate({ ...cur, programs: cur.programs.filter((p) => p.id !== pg.id) });
     onActivity({ type: 'program_delete', description: `Deleted program "${pg.name}" (${r.total} tasks)` });
   };
@@ -7315,14 +7329,14 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     onActivity({ type: 'ws_rename', description: `Renamed work stream "${old}" → "${name}"` });
   };
   const deleteWorkstream = async (pg, ws) => {
-    if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    if (taskCountUnder(ws) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(ws) }); return; }
     const ok = await dialogs.confirm({ title: 'Delete work stream?', message: `Delete work stream "${ws.name}"? This cannot be undone.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     const cur = latest();
     if (!cur) return;
     const curWs = findWorkstream(cur, pg.id, ws.id);
     if (!curWs) return;
-    if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: DELETE_HAS_TASKS_MESSAGE }); return; }
+    if (taskCountUnder(curWs) > 0) { await dialogs.alert({ title: "Can't delete", message: deleteBlockMessage(curWs) }); return; }
     const n = (curWs.tasks || []).length;
     onProjectUpdate({
       ...cur, programs: cur.programs.map((p) =>
@@ -7446,6 +7460,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     return { result, programCp, workstreamCp, taskCp: taskCpAgg, programEarned, workspaceEarned, topPics };
   }, [project, dirIndex]);
 
+  const outlineDragHint = dragHint({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null });
   // Wave 2 O2: a drop the rules would refuse is not attempted (never across programs for a non-Owner).
   const dropOk = (kind, targetPgId, targetWsId) => canDropMove({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, kind, sourcePgId: dragInfo?.sourcePgId, targetPgId, targetWsId, taskStart: dragInfo?.start, taskEnd: dragInfo?.end });
   const onDragStartTask = (e, task, pg, ws) => {
@@ -7457,6 +7472,13 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
     setDragInfo({ kind: 'ws', id: ws.id, sourcePgId: pg.id });
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', ws.id);
+  };
+  const ctxFor = (kind, targetPgId, targetWsId) => ({ isOwner, isV2: !!project.__v2, roles, uid: me?.uid || null, kind, sourcePgId: dragInfo?.sourcePgId, targetPgId, targetWsId, taskStart: dragInfo?.start, taskEnd: dragInfo?.end });
+  const noteRefusal = (kind, targetPgId, targetWsId) => { dropRefusal.current = dropRefusalReason(ctxFor(kind, targetPgId, targetWsId)); };
+  const onDragEndAny = (e) => {
+    const r = dropRefusal.current;
+    dropRefusal.current = null;
+    if (r && e.dataTransfer?.dropEffect === 'none' && showToast) showToast(r);
   };
   const onDragOverZone = (e, key) => {
     if (!dragInfo) return;
@@ -7522,8 +7544,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
         <div style={{ flex: 1 }} />
         {projectCaps.programEdit && <Btn size="sm" onClick={addProgram}><FolderPlus size={12} /> Program</Btn>}
         <div style={{ fontSize: 11, color: TOK.muted }}>
-          <Move size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />
-          Drag tasks between work streams · Drag work streams between programs
+          {outlineDragHint && <><Move size={11} style={{ verticalAlign: '-2px', marginRight: 4 }} />{outlineDragHint}</>}
         </div>
       </div>
 
@@ -7573,7 +7594,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
           const pgCaps = capsFor(pg.id, null);
           return (
             <div key={pg.id}
-              onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id && dropOk('ws', pg.id, null)) onDragOverZone(e, 'pg_' + pg.id); }}
+              onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id) { noteRefusal('ws', pg.id, null); if (dropOk('ws', pg.id, null)) onDragOverZone(e, 'pg_' + pg.id); } }}
               onDragLeave={() => setDragOver(null)}
               onDrop={() => dropWsIntoPg(pg)}
               style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(59,109,17,0.15)' : 'none' }}>
@@ -7624,7 +7645,8 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                 return (
                   <div key={ws.id}
                     draggable={wsCaps.wsMove} onDragStart={wsCaps.wsMove ? (e) => onDragStartWs(e, ws, pg) : undefined}
-                    onDragOver={(e) => { if (dragInfo?.kind === 'task' && dragInfo.sourceWsId !== ws.id && dropOk('task', pg.id, ws.id)) onDragOverZone(e, 'ws_' + ws.id); }}
+                    onDragEnd={wsCaps.wsMove ? onDragEndAny : undefined}
+                    onDragOver={(e) => { if (dragInfo?.kind === 'task' && dragInfo.sourceWsId !== ws.id) { noteRefusal('task', pg.id, ws.id); if (dropOk('task', pg.id, ws.id)) onDragOverZone(e, 'ws_' + ws.id); } }}
                     onDragLeave={() => setDragOver(null)}
                     onDrop={() => dropTaskIntoWs(pg, ws)}
                     style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
@@ -7639,7 +7661,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                         return (
                           <RolePicker label="Sub-PM" valueUid={cur} scopeName={ws.name}
                             editable={canEditRole(roles, me, 'lead', pg.id)} people={people} nameOf={me.nameOf} isActive={me.isActive}
-                            blankText="— (PM decides)"
+                            blankText="— (PM decides)" note={isOwner ? null : MEMBERS_ONLY_NOTE}
                             onPick={(toUid) => onChangeRole && onChangeRole({ kind: 'lead', programId: pg.id, wsId: ws.id, fromUid: cur, toUid })} />
                         );
                       })()}
@@ -7671,6 +7693,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                       return (
                         <div key={t.id}
                           draggable={wsCaps.taskMove} onDragStart={wsCaps.taskMove ? (e) => onDragStartTask(e, t, pg, ws) : undefined}
+                          onDragEnd={wsCaps.taskMove ? (e) => { e.stopPropagation(); onDragEndAny(e); } : undefined}
                           onClick={() => onTaskClick(t.id)}
                           style={{
                             padding: '7px 12px 7px 52px', display: 'flex', alignItems: 'center', gap: 8,
@@ -10695,7 +10718,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
         </div>
         {isRisk && level && <RiskLevelBadge likelihood={item.likelihood} impact={item.impact} />}
         <span style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: statusColor.bg, color: statusColor.fg }}>
-          {item.status}
+          {item.status === 'PendingApproval' && !isOwner ? 'Waiting for Owner approval' : item.status}
         </span>
         {trendCfg && <span style={{ fontSize: 12 }} title={trendCfg.label}>{trendCfg.icon}</span>}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
@@ -10703,6 +10726,12 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
 
       {expanded && (
         <div style={{ padding: '12px 14px 14px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
+          {/* W3-D3 (P1): a non-Owner sees who decides. */}
+          {item.status === 'PendingApproval' && !isOwner && (
+            <div style={{ padding: '8px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#7A5D00' }}>
+              Only the Owner activates RAID items.
+            </div>
+          )}
           {/* Approval banner */}
           {item.status === 'PendingApproval' && isOwner && (
             <div style={{ padding: '10px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -13373,6 +13402,7 @@ export default function App() {
               // Opens the action's edit form via ActionItemsView's initialEditId prop.
             }
           }
+          else showToastRef.current("You don't have access to that project, or it was removed."); // W3-D3 (P7)
           // Always clear, even when the project is inaccessible (nothing opens).
           window.history.replaceState({}, '', window.location.pathname);
         }
@@ -13929,6 +13959,15 @@ export default function App() {
           requesterName: nameOf(cr.requestedByUid) || cr.requestedBy || 'Someone',
           approverName: nameOf(cr.approverUid) || 'the approver',
           outcome: cr.outcome, note: cr.note, taskUrl: url,
+        });
+      } else if (closeEvents.some((e) => e.type === 'close_reassigned')) {
+        // W3-D3 (P7): the new approver hears about it.
+        const h = (res.task.closeRequestHistory || [])[0] || {};
+        card = buildCloseReassignedCard({
+          projectName: pname, taskName: res.task.name || oldTask.name || 'task',
+          fromName: nameOf(h.before?.approverUid) || 'the previous approver',
+          toName: nameOf(h.after?.approverUid ?? res.task.closeRequest?.approverUid) || 'the new approver',
+          byName: me.name || nameOf(me.uid) || 'Someone', taskUrl: url,
         });
       } else if (closeEvents.some((e) => e.type === 'close_rejected')) {
         const h = (res.task.closeRequestHistory || [])[0] || {};
@@ -15017,7 +15056,7 @@ export default function App() {
                 />
               )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
               {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
@@ -15369,6 +15408,9 @@ export default function App() {
 
 // Role assignment: the whole project's PM / Deputy / Sub-PM in one table (spec §6.2).
 // Same pickers and permissions as the Outline headers; every reader can open it.
+// W3-D3 (P5): a PM picks only among project members.
+const MEMBERS_ONLY_NOTE = 'Only project members are listed. Ask the Owner to add someone.';
+
 function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose }) {
   // focus ({ programId, wsId? }) comes from a Mind map node menu; "Show all" clears it.
   const [scope, setScope] = useState(focus);
@@ -15388,7 +15430,7 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
   const picker = (kind, r, valueUid, label, blankText, scopeName) => (
     <RolePicker label={label} valueUid={valueUid} scopeName={scopeName}
       editable={canEditRole(roles, me, kind, r.programId)} people={people} nameOf={me.nameOf} isActive={me.isActive}
-      blankText={blankText}
+      blankText={blankText} note={me.isOwner ? null : MEMBERS_ONLY_NOTE}
       onPick={(toUid) => onChangeRole && onChangeRole({ kind, programId: r.programId, ...(kind === 'lead' ? { wsId: r.wsId } : {}), fromUid: valueUid, toUid })} />
   );
   const check = (checked, set, label) => (
@@ -15402,6 +15444,9 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
         <p style={{ margin: 0, fontSize: 13, color: TOK.ink }}>Roles become available after this project is switched to v2.</p>
       ) : (
         <div>
+          {!me.isOwner && (
+            <div style={{ fontSize: 12, color: TOK.muted, marginBottom: 10 }}>{MEMBERS_ONLY_NOTE}</div>
+          )}
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
             {check(blankOnly, setBlankOnly, 'Blank roles only')}
             {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}

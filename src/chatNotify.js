@@ -232,6 +232,26 @@ export function buildCloseSubmittedCard(ctx) {
   return { cardsV2: [{ cardId: `close-submitted-${Date.now()}`, card: { sections: [{ widgets }] } }] };
 }
 
+/** W3-D3 (P7): card for "close request moved to another approver".
+ *  @param ctx { projectName, taskName, fromName, toName, byName, taskUrl }
+ */
+export function buildCloseReassignedCard(ctx) {
+  const { projectName, taskName, fromName, toName, byName, taskUrl } = ctx;
+  const widgets = [
+    {
+      decoratedText: {
+        topLabel: '🔁 APPROVER CHANGED',
+        text: escapeChatText(`${byName} moved the close request for ${taskName} from ${fromName} to ${toName}`),
+        wrapText: true,
+        startIcon: { knownIcon: 'DESCRIPTION' },
+      },
+    },
+    { divider: {} },
+    closeCardFooter(projectName, taskUrl),
+  ];
+  return { cardsV2: [{ cardId: `close-reassigned-${Date.now()}`, card: { sections: [{ widgets }] } }] };
+}
+
 /** Card for "close request rejected".
  *  @param ctx { projectName, taskName, deciderName, requesterName, reason, taskUrl }
  */

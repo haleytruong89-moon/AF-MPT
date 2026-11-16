@@ -267,3 +267,22 @@ export function taskPanelCaps({ isOwner, isV2, roles, uid, taskId, status }) {
   const contrib = !!uid && Array.isArray(info?.contributorUids) && info.contributorUids.includes(uid);
   return { health: false, refs: false, resolveBlocker: contrib, addAction: false, comment: true };
 }
+
+/** W3-D3 (P6): why a drop is refused (null when canDropMove allows it). */
+export function dropRefusalReason(ctx) {
+  if (canDropMove(ctx)) return null;
+  const { roles, uid, kind, sourcePgId, targetPgId, targetWsId, taskStart, taskEnd } = ctx;
+  if (kind === 'ws') return 'Only the Owner moves work streams.';
+  if (sourcePgId !== targetPgId) return 'Tasks can only move within your own program.';
+  if (!isPmOf(roles, sourcePgId, uid)) return 'Only the PM or Deputy of this program moves tasks.';
+  if (!datesWithinWs(taskStart, taskEnd, roles?.workstreams?.[targetWsId])) return "The task's dates are outside that work stream's dates.";
+  return 'Only the PM or Deputy of this program moves tasks.';
+}
+
+export const OWNER_DRAG_HINT = 'Drag tasks between work streams · Drag work streams between programs';
+/** W3-D3 (P6): the Outline drag hint for this person, or null (no drag). */
+export function dragHint({ isOwner, isV2, roles, uid }) {
+  if (isOwner || !isV2) return OWNER_DRAG_HINT;
+  const pm = Object.keys(roles?.programs || {}).some((p) => isPmOf(roles, p, uid));
+  return pm ? 'Drag tasks between work streams in your programs' : null;
+}
