@@ -22,6 +22,7 @@ import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_M
 import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey, shouldReloadOnFocus } from './persistence';
 import { mentionsMe } from './mentions.js';
 import { rejectedCloseItem } from './myWorkItems.js';
+import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
@@ -8746,7 +8747,37 @@ function StressSignals({ signals }) {
   );
 }
 
-function PortfolioView({ projects, onProjectClick }) {
+// W3-C3: everything waiting on the Owner (close requests, deadline changes, RAID activation).
+function ApprovalsStrip({ projects, onOpenItem }) {
+  const items = useMemo(() => ownerQueue(projects, new Date()), [projects]);
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, 8);
+  const nameOf = (it) => (it.kind === 'raid' ? it.item.title : it.task.name) || '(untitled)';
+  return (
+    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, padding: 14 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Waiting for you ({items.length})</div>
+      {items.length === 0 && <div style={{ fontSize: 12.5, color: TOK.muted }}>Nothing is waiting for your approval.</div>}
+      {shown.map((it, i) => (
+        <div key={`${it.kind}-${it.project.id}-${it.kind === 'raid' ? it.item.id : it.task.id}-${i}`}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderTop: i ? '1px solid ' + TOK.line : 'none' }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: TOK.muted, minWidth: 110 }}>{QUEUE_LABEL[it.kind]}</span>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {it.project.name} › {it.program.name} › {nameOf(it)}
+          </span>
+          <span style={{ fontSize: 11, color: it.waitingDays >= 3 ? TOK.overdueFg : TOK.muted, fontWeight: it.waitingDays >= 3 ? 600 : 400, whiteSpace: 'nowrap' }}>
+            Waiting {it.waitingDays} working day{it.waitingDays === 1 ? '' : 's'}
+          </span>
+          <Btn size="sm" onClick={() => onOpenItem(it)}>Open</Btn>
+        </div>
+      ))}
+      {!all && items.length > 8 && (
+        <div style={{ marginTop: 6 }}><Btn size="sm" variant="ghost" onClick={() => setAll(true)}>Show all {items.length}</Btn></div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioView({ projects, onProjectClick, onOpenItem = null }) {
   const data = useMemo(() => computePortfolioMetrics(projects), [projects]);
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 18, background: TOK.bg, fontFamily: FONT_STACK }}>
@@ -8755,6 +8786,7 @@ function PortfolioView({ projects, onProjectClick }) {
         <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>Workspace-owner view across all projects.</div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {onOpenItem && <ApprovalsStrip projects={projects} onOpenItem={onOpenItem} />}
         <HealthHeatmap projectHealth={data.projectHealth} onProjectClick={onProjectClick} />
         <WorkloadDistribution workload={data.workload} />
         <PeakSeasonCalendar calendar={data.calendar} />
@@ -14921,7 +14953,15 @@ export default function App() {
                 </div>
               )}
               {view === 'portfolio' && isOwner && (
-                <PortfolioView projects={projects} onProjectClick={(pid) => switchProject(pid)} />
+                <PortfolioView projects={projects}
+                  onProjectClick={(pid) => { switchProject(pid); setView(readPlanView()); }}
+                  onOpenItem={impersonatingAs ? null : (it) => {
+                    switchProject(it.project.id);
+                    setScopeProgramId(it.program.id);
+                    if (it.kind === 'raid') { setView('raid'); return; }
+                    setView(readPlanView());
+                    setSelectedTaskId(it.task.id);
+                  }} />
               )}
               {view === 'portfolio' && !isOwner && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
