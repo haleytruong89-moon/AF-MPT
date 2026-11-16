@@ -43,7 +43,8 @@ import { approvalBuckets } from './approvalsInbox.js';
 import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
-import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore } from './treeGuards.js';
+import { taskCountUnder, splitRestoreByV2, DELETE_HAS_TASKS_MESSAGE, V2_RESTORE_MESSAGE, activityToRestore, restorePreview, restoreScriptHint } from './treeGuards.js';
+import { personHoldings, holdingsText } from './holdings.js';
 import {
   canEditRole, pickerPeople as rolePickerPeople, validateRoleChange, rolesAfter, reroutePlan, roleChangeEvent,
   scopeNameOf, roleChangeConfirmLines, roleSavedMessage, rerouteFailedMessage, rowsForRoles,
@@ -2147,7 +2148,7 @@ function DialogHost({ dialog, close }) {
   if (dialog.type === 'confirm') {
     return (
       <Modal title={dialog.title || 'Confirm'} onClose={() => close(false)} width={420} zHigh>
-        <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5, color: TOK.ink }}>{dialog.message}</p>
+        <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5, color: TOK.ink, whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>{dialog.message}</p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Btn onClick={() => close(false)}>Cancel</Btn>
           <Btn variant={dialog.danger ? 'danger' : 'primary'} onClick={() => close(true)}>{dialog.okLabel || 'Confirm'}</Btn>
@@ -2158,7 +2159,7 @@ function DialogHost({ dialog, close }) {
   if (dialog.type === 'alert') {
     return (
       <Modal title={dialog.title || 'Notice'} onClose={() => close()} width={420} zHigh>
-        <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5, color: TOK.ink }}>{dialog.message}</p>
+        <p style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.5, color: TOK.ink, whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>{dialog.message}</p>
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <Btn variant="primary" onClick={() => close()}>OK</Btn>
         </div>
@@ -6003,7 +6004,7 @@ function AggregationView({ projects, currentProjectId, teamMembers, dialogs, sho
 }
 
 /* ═════════ MEETING MODE (in-app fullscreen presentation) ═════════ */
-function MeetingMode({ projects, onExit, dateFrom, dateTo }) {
+function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = null }) {
   // Listen for Esc key to exit
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onExit(); };
@@ -6011,7 +6012,13 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onExit]);
 
-  const projList = useMemo(() => Object.values(projects), [projects]);
+  // W3-D1 (O11): the current project by default; toggle to every project.
+  const hasCurrent = !!(currentProjectId && projects[currentProjectId]);
+  const [onlyCurrent, setOnlyCurrent] = useState(hasCurrent);
+  const projList = useMemo(
+    () => (onlyCurrent && hasCurrent ? [projects[currentProjectId]] : Object.values(projects)),
+    [projects, onlyCurrent, hasCurrent, currentProjectId],
+  );
 
   // Range filter on entries
   const inRange = (dateStr) => {
@@ -6037,6 +6044,16 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 11, fontWeight: 500, color: TOK.accent, padding: '3px 10px', background: TOK.healthGreenBg, borderRadius: 999 }}>● MEETING MODE</span>
           <span style={{ fontSize: 13, color: TOK.muted }}>Press <kbd style={{ padding: '2px 6px', background: TOK.bg, border: '1px solid ' + TOK.lineStrong, borderRadius: 4, fontFamily: FONT_STACK, fontSize: 11 }}>Esc</kbd> to exit</span>
+          {hasCurrent && (
+            <div style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 6 }}>
+              {[[true, 'This project'], [false, 'All projects']].map(([v, label]) => (
+                <button key={label} onClick={() => setOnlyCurrent(v)}
+                  style={{ fontFamily: FONT_STACK, fontSize: 11, fontWeight: 500, padding: '4px 10px', borderRadius: 4, border: 'none', cursor: 'pointer', color: TOK.ink, background: onlyCurrent === v ? TOK.surface : 'transparent', boxShadow: onlyCurrent === v ? '0 1px 2px rgba(0,0,0,0.08)' : 'none' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <Btn size="sm" onClick={onExit}><X size={12} /> Exit</Btn>
       </div>
@@ -13436,6 +13453,7 @@ export default function App() {
 
   const clearImpersonation = useCallback(() => {
     setImpersonatingAs(null);
+    setView('team-overview'); // W3-D1 (O6): back where View as started
   }, []);
 
   // action: optional { label, onClick } rendered as a button (e.g. Undo); stays 6s.
@@ -14574,14 +14592,22 @@ export default function App() {
     showToast('Backup downloaded');
   };
   const restoreJson = async (file) => {
-    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: 'This will REPLACE the shared data (tasks, check-ins, activity) of the projects in this backup. Projects that use the new storage are skipped. Continue?', danger: true, okLabel: 'Restore' });
+    // W3-D1 (O7): read the file first, then say what will happen before any confirm.
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { data = null; }
+    const pre = restorePreview(data, projects);
+    if (pre.invalid) { await dialogs.alert({ title: 'Restore failed', message: pre.invalid }); return; }
+    const hint = restoreScriptHint(pre.v2, file.name).join('\n');
+    const v2Names = pre.v2.map((p) => p.name).join(', ');
+    if (pre.v1Names.length === 0) {
+      if (pre.v2.length) await dialogs.alert({ title: 'Restore by script', message: `These projects use the new storage and are restored by script (preview first, nothing is deleted): ${v2Names}.\n\n${hint}` });
+      else await dialogs.alert({ title: 'Restore failed', message: 'This backup has no projects.' });
+      return;
+    }
+    const ok = await dialogs.confirm({ title: 'Restore workspace?', message: `This will REPLACE the shared data (tasks, check-ins, activity) of: ${pre.v1Names.join(', ')}.${pre.v2.length ? ` Projects that use the new storage are skipped: ${v2Names}.` : ''} Continue?`, danger: true, okLabel: 'Restore' });
     if (!ok) return;
     try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      if (!data.meta || !data.projects) throw new Error('Invalid backup file.');
       const { v1Ids, v2Ids } = splitRestoreByV2(data, projects);
-      if (v1Ids.length === 0 && v2Ids.length > 0) { await dialogs.alert({ title: "Can't restore", message: V2_RESTORE_MESSAGE }); return; }
       await saveMeta(data.meta);
       const results = [];
       for (const pid of v1Ids) {
@@ -14597,7 +14623,7 @@ export default function App() {
       }
       if (v2Ids.length) {
         const names = v2Ids.map((pid) => data.projects[pid].name || pid).join(', ');
-        await dialogs.alert({ title: 'Some projects skipped', message: `${V2_RESTORE_MESSAGE} Skipped: ${names}.` });
+        await dialogs.alert({ title: 'Some projects skipped', message: `${V2_RESTORE_MESSAGE} Skipped: ${names}.\n\n${hint}` });
       }
       window.location.reload();
     } catch (err) { await dialogs.alert({ title: 'Restore failed', message: err.message }); }
@@ -14754,7 +14780,7 @@ export default function App() {
                 return (<React.Fragment key={v.id}>
                 {i > 0 && visibleTabs[i - 1].group !== v.group && <span aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', margin: '4px 4px', background: TOK.lineStrong }} />}
                 <button data-tour={'tab-' + v.id} aria-current={active ? 'page' : undefined} onClick={() => {
-                  if (v.id === 'briefing') { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); return; }
+                  if (v.id === 'briefing') { setBriefingDialogIsOwnerMode(isOwner && !impersonatingAs); setShowBriefingDialog(true); return; }
                   if (v.id === 'plan') { setView(readPlanView()); return; }
                   if (v.id === 'raid') setRaidScopeProgramId(null);
                   setView(v.id);
@@ -14835,7 +14861,7 @@ export default function App() {
               </span>
             </div>
             <Btn size="sm" variant="primary" onClick={() => {
-              setBriefingDialogIsOwnerMode(isOwner);
+              setBriefingDialogIsOwnerMode(isOwner && !impersonatingAs);
               setShowBriefingDialog(true);
             }}>
               {isOwner ? 'Generate digest' : 'Generate briefing'}
@@ -15044,7 +15070,12 @@ export default function App() {
         {showGlossary && <Modal title="Glossary" onClose={() => setShowGlossary(false)} width={560}><GlossaryList muted={TOK.muted} /></Modal>}
         {projectMenu && (
           <PopoverMenu x={projectMenu.x} y={projectMenu.y}
-            items={[
+            items={impersonatingAs ? [
+              // W3-D1 (O6): View as is read-only: export only (no Backup, Import, People, Project).
+              { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
+              { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
+              { label: 'Export Excel', icon: <FileSpreadsheet size={13} />, onClick: exportExcel },
+            ] : [
               // Export
               { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
               { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
@@ -15100,6 +15131,7 @@ export default function App() {
             projectId={project.id}
             currentUserId={authUser.uid}
             isWorkspaceOwner={isOwner}
+            isV2={!!project.__v2}
             onClose={() => setShowMembers(false)}
             showToast={showToast}
           />
@@ -15111,6 +15143,11 @@ export default function App() {
             onChanged={reloadDirectoryAndPlan}
             onClose={() => setShowDirectory(false)}
             showToast={showToast}
+            holdingsTextFor={(e) => {
+              const email = String(e.email || '').toLowerCase();
+              const isPerson = (raw) => !!raw && personKey(dirIndex, raw) === email;
+              return holdingsText(personHoldings(projects, e.uid || null, isPerson));
+            }}
           />
         )}
         {showRoles && project && (
@@ -15148,6 +15185,7 @@ export default function App() {
         {meetingMode && (
           <MeetingMode
             projects={projects}
+            currentProjectId={currentId && currentId !== '__all__' ? currentId : null}
             onExit={() => setMeetingMode(false)}
           />
         )}
