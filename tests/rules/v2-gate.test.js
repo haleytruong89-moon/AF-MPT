@@ -226,14 +226,17 @@ describe('P2.2 pre-P2.2 gate rules', () => {
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], checkIns: [by(CON)] }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], updatedBy: ASG.uid }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], version: 3 }));
-    await assertFails(up(VIEWER, `${P1}/tasks/t1`, { updates: [by(VIEWER), { text: 'old' }] }));
+    // W3-B1 (D1): any project reader may append one comment (was denied before).
+    await assertSucceeds(up(VIEWER, `${P1}/tasks/t1`, { updates: [by(VIEWER), { text: 'old' }] }));
     await assertFails(up(DEACT, `${P1}/tasks/t1`, { updates: [by(DEACT), { text: 'old' }] }));
   });
 
   it('G-12 PIC listed as contributor gets no extra rights on a closed task', async () => {
     await seedDoc(`${P1}/tasks/t9`, task({ status: 'Completed' }));
-    await assertFails(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
-    // A contributor (not PIC) may still append on a closed task.
-    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), { text: 'old' }] }));
+    // W3-B1 (D1): the PIC may still comment like any reader; nothing else (status / health).
+    await assertSucceeds(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
+    await assertFails(up(ASG, `${P1}/tasks/t9`, { health: 'Red' }));
+    // A contributor (not PIC) may still append on a closed task (on top of the PIC's comment).
+    await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), by(ASG), { text: 'old' }], version: 3 }));
   });
 });

@@ -376,3 +376,18 @@ describe('newV2ProjectDoc members (W3-A3)', () => {
     expect(d.roles).toEqual({ U: 'owner', A: 'member', B: 'member' });
   });
 });
+
+import { mergeProjectLists } from '../../src/persistence.js';
+describe('mergeProjectLists (W3-B1)', () => {
+  const p = (id, data = {}) => ({ id, data });
+  it('member list first, department extras appended, no duplicates', () => {
+    expect(mergeProjectLists([p('a'), p('b')], [p('b'), p('c')]).map((x) => x.id)).toEqual(['a', 'b', 'c']);
+  });
+  it('skips soft-deleted docs in either list', () => {
+    expect(mergeProjectLists([p('a', { deletedAt: 1 })], [p('a'), p('c', { deletedAt: 'x' })]).map((x) => x.id)).toEqual([]);
+  });
+  it('extra empty or missing', () => {
+    expect(mergeProjectLists([p('a')]).map((x) => x.id)).toEqual(['a']);
+    expect(mergeProjectLists([p('a')], []).map((x) => x.id)).toEqual(['a']);
+  });
+});
