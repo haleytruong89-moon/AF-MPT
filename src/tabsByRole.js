@@ -38,7 +38,7 @@ const T = {
   team: { id: 'team-overview', label: 'Team' },
   briefing: { id: 'briefing', label: 'Briefing' },
   credits: { id: 'credit-report', label: 'Credits' },
-  activity: { id: 'activity', label: 'Activity' },
+  activity: { id: 'activity', label: 'Coaching' }, // W3-D2: id kept so saved overrides still work
 };
 
 const LAYOUT = {
