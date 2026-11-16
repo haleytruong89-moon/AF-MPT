@@ -101,6 +101,12 @@ longSeed.closeRequestHistory = Array.from({ length: 20 }, (_, i) => ({
   decidedAt: '2026-10-01T00:00:00Z', reason: i % 2 ? `reason ${i}` : '',
 }));
 
+// W3-B1: same task, VIEWER is no longer a contributor; 40 updates.
+const readerSeed = realTask({
+  contributors: [], contributorUids: [],
+  updates: Array.from({ length: 40 }, (_, i) => upd(i % 2 ? ASG : PM, `Note ${i}`, { id: `u_r_${i}` })),
+});
+
 // Each scenario: seed doc, actor, and the new full doc (before stamping).
 export const scenarios = [
   {
@@ -231,6 +237,13 @@ export const scenarios = [
       closeRequestHistory: [hist('Approved', OWNER), ...base.closeRequestHistory],
       updates: withUpd(base, OWNER, 'Close request approved'),
     },
+  },
+  // W3-B1 (D1): a reader with no role on the task (not PIC, not contributor,
+  // not a manager) appends one comment to a task with 40 updates.
+  {
+    name: 'Reader comment (no role)',
+    seed: readerSeed, actor: VIEWER,
+    next: { ...readerSeed, updates: withUpd(readerSeed, VIEWER, 'Is the SG confirmation still missing?') },
   },
 ];
 

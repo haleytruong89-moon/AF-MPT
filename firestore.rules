@@ -209,9 +209,16 @@ service cloud.firestore {
       // members). v1 docs unchanged. The memberIds list query still passes
       // on the first branch. get(): v2 branch = workspace, members/{me},
       // project = 3.
+      // W3-B1 (D5): a department-visible v2 project is listable by any active
+      // member. This branch reads only resource.data and the fixed members
+      // path, so a list query filtered on schemaVersion == 2 and visibility ==
+      // 'department' can be proven (canReadProject gets the project by pid).
       allow read: if isSmartOSC() && (
         isMember(resource.data)
         || (resource.data.get('schemaVersion', 1) == 2 && canReadProject('main', pid))
+        || (resource.data.get('schemaVersion', 1) == 2
+          && resource.data.get('visibility', 'restricted') == 'department'
+          && isActiveMember('main'))
       );
 
       // CREATE — creator must put themselves as owner; required fields enforced.
@@ -886,6 +893,25 @@ service cloud.firestore {
         && projectMemberIn(v2Project(wid, pid));
     }
 
+    // W3-B1 (HOD D1, 13/11): any reader of the project may append ONE comment
+    // (updates) to any task or action, at any status: active member doc and
+    // project membership (department = any active member), only the updates
+    // list + stamps change, append-only. The new entry's authorUid == me is
+    // enforced for every writer by newEntryOk in the callers. Tried after the
+    // Assignee / contributor / action-PIC branches, before the manager branch
+    // (no workstream reads on this path). get(): members/{me}, project = 2.
+    function readerCommentKeys() {
+      return ['updates', 'updatedAt', 'updatedBy', 'version'];
+    }
+
+    function readerComment(wid, pid, ch) {
+      return ch.hasOnly(readerCommentKeys())
+        && ch.hasAny(['updates'])
+        && appendOnly(ch, 'updates')
+        && activeMemberDoc(wid)
+        && projectMemberIn(v2Project(wid, pid));
+    }
+
     // Active member without re-running isSmartOSC (the allow rule did).
     // Follow-up trim T2: get() alone (no exists() first); a missing members
     // doc is an evaluation error, i.e. this branch is denied. Used by the
@@ -965,6 +991,7 @@ service cloud.firestore {
         inList(v2Workspace(wid).get('ownerUids', []), request.auth.uid)
         || taskAssigneeUpdate(wid, pid, ch, s0, s1, cl, rv)
         || taskContributorUpdate(wid, pid, ch, rv)
+        || readerComment(wid, pid, ch)
         || (activeMemberDoc(wid) && projectMemberIn(v2Project(wid, pid)) && taskManagerUpdate(wid, pid, ch, s0, s1, cl, v2Project(wid, pid)))
         || isWsOwner(wid)
       );
@@ -1058,6 +1085,7 @@ service cloud.firestore {
       return newEntryOk(ch, 'updates') && (
         isWsOwner(wid)
         || actionPicUpdate(wid, pid, ch)
+        || readerComment(wid, pid, ch)
         || (actionManager(wid, pid, resource.data)
           && (!ch.hasAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
       );

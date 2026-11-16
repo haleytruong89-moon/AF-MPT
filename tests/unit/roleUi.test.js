@@ -331,17 +331,17 @@ describe('W3-A2 capability helpers', () => {
     expect(canTickStep({ ...v2, uid: 'C', action: a })).toBe(false);
   });
   it('taskPanelCaps by role and status', () => {
-    const all = { health: true, refs: true, resolveBlocker: true, addAction: true };
+    const all = { health: true, refs: true, resolveBlocker: true, addAction: true, comment: true };
     const c = (uid, taskId, status, over = {}) => taskPanelCaps({ ...v2, roles: rolesB, uid, taskId, status, ...over });
     expect(c('O', 'tA', 'Planned', { isOwner: true })).toEqual(all);
     expect(c('Z', 'tA', 'Planned', { isV2: false })).toEqual(all);
     expect(c('L', 'tA', 'Completed')).toEqual(all);
     expect(c('P2', 'tB', 'InProgress')).toEqual(all);
-    expect(c('A', 'tA', 'InProgress')).toEqual({ health: true, refs: true, resolveBlocker: true, addAction: false });
+    expect(c('A', 'tA', 'InProgress')).toEqual({ health: true, refs: true, resolveBlocker: true, addAction: false, comment: true });
     expect(c('A', 'tA', 'Submitted').health).toBe(true);
-    expect(c('A', 'tA', 'Completed')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false });
-    expect(c('C', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: true, addAction: false });
-    expect(c('L', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false });
+    expect(c('A', 'tA', 'Completed')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false, comment: true });
+    expect(c('C', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: true, addAction: false, comment: true });
+    expect(c('L', 'tB', 'InProgress')).toEqual({ health: false, refs: false, resolveBlocker: false, addAction: false, comment: true });
   });
   it('actionDeleteMode now resolves the ws through the related task', () => {
     expect(actionDeleteMode({ ...v2, uid: 'L', action: { relatedTaskId: 'tA', status: 'Pending' } })).toBe('cancel');

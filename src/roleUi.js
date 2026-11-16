@@ -230,15 +230,15 @@ export function canTickStep(ctx) {
  * Task panel controls (rules taskUpdateWith): Owner / v1 / PM / Deputy / Sub-PM
  * of the task: all. PIC while Planned / InProgress / Submitted: health,
  * references, resolve a blocker. Contributor: resolve a blocker only.
- * addAction = a manager of the task (or Owner).
+ * addAction = a manager of the task (or Owner). comment = every project reader (D1, W3-B1).
  */
 export function taskPanelCaps({ isOwner, isV2, roles, uid, taskId, status }) {
-  const all = { health: true, refs: true, resolveBlocker: true, addAction: true };
+  const all = { health: true, refs: true, resolveBlocker: true, addAction: true, comment: true };
   if (isOwner || !isV2) return all;
   if (managerLevel(roles, taskId, uid)) return all;
   const info = roles?.tasks && hasOwn(roles.tasks, taskId) ? roles.tasks[taskId] : null;
   const open = ['Planned', 'InProgress', 'Submitted'].includes(status || 'Planned');
-  if (uid && info?.picUid === uid && open) return { health: true, refs: true, resolveBlocker: true, addAction: false };
+  if (uid && info?.picUid === uid && open) return { health: true, refs: true, resolveBlocker: true, addAction: false, comment: true };
   const contrib = !!uid && Array.isArray(info?.contributorUids) && info.contributorUids.includes(uid);
-  return { health: false, refs: false, resolveBlocker: contrib, addAction: false };
+  return { health: false, refs: false, resolveBlocker: contrib, addAction: false, comment: true };
 }

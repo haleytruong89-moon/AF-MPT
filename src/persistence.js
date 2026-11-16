@@ -168,3 +168,20 @@ export const projectIdOfKey = (key) => (isActivityKey(key) ? key.slice(ACTIVITY_
 let unsavedWorkSignal = false;
 export function setUnsavedWorkSignal(v) { unsavedWorkSignal = !!v; }
 export function isUnsavedWorkPending() { return unsavedWorkSignal; }
+
+/**
+ * W3-B1 (D5): projects a user can list = their memberIds query, then the
+ * department-visible v2 query. Each list: [{ id, data }]. Keeps the first
+ * occurrence of an id, in order, and skips soft-deleted docs.
+ */
+export function mergeProjectLists(primary, extra = []) {
+  const seen = new Set();
+  const out = [];
+  for (const p of [...(primary || []), ...(extra || [])]) {
+    if (!p || seen.has(p.id)) continue;
+    seen.add(p.id);
+    if (p.data?.deletedAt) continue;
+    out.push(p);
+  }
+  return out;
+}

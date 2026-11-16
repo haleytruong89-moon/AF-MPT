@@ -38,7 +38,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
-import { classifyReadError, createKeyedQueue, buildProjectWrite, newV2ProjectDoc, FORCE_WRITE_FLAG } from './persistence';
+import { classifyReadError, createKeyedQueue, buildProjectWrite, newV2ProjectDoc, mergeProjectLists, FORCE_WRITE_FLAG } from './persistence';
 import { assembleFromSnapshots, appValueFromV1, appValueFromV2, loadV2Lists, loadApprovals, rolesFromLoaded } from './readV2';
 import { planV2Save } from './planV2Save';
 import { splitProject } from './migrateV2';
@@ -321,6 +321,22 @@ function currentProjectKey(uid: string): string {
   return `currentProjectId:${uid}`;
 }
 
+// W3-B1 (D5): the projects a user can open = memberIds query + department-visible v2
+// projects. The second query fails soft (rules not published yet, offline...): the
+// member list alone is returned, as before.
+type ProjectDoc = { id: string; data: Record<string, unknown> };
+async function listProjectDocs(uid: string): Promise<ProjectDoc[]> {
+  const toList = (snap: Awaited<ReturnType<typeof getDocs>>) => snap.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }));
+  const mine = toList(await getDocs(query(PROJECTS_COL(), where('memberIds', 'array-contains', uid))));
+  let dept: ProjectDoc[] = [];
+  try {
+    dept = toList(await getDocs(query(PROJECTS_COL(), where('schemaVersion', '==', 2), where('visibility', '==', 'department'))));
+  } catch (e) {
+    console.warn('[storage] department list failed', e);
+  }
+  return mergeProjectLists(mine, dept) as ProjectDoc[];
+}
+
 // Plain-JS helpers whose inferred parameter types come from defaults: give the real ones.
 const splitV2 = splitProject as unknown as (p: Record<string, unknown>, o: Record<string, unknown>) => { meta: { memberUids?: string[] } };
 const newV2Doc = newV2ProjectDoc as unknown as (t: Record<string, unknown>, o: { uid: string; now: unknown; memberUids: string[] }) => Record<string, unknown>;
@@ -463,16 +479,12 @@ window.storage = {
         if (!metaSnap.exists()) return null;
         const baseMeta = metaSnap.data() || {};
         wsMetaCache = baseMeta;
-        const q = query(PROJECTS_COL(), where('memberIds', 'array-contains', user.uid));
-        const projSnap = await getDocs(q);
         const projectIds: string[] = [];
         const names: Record<string, string> = {};
-        projSnap.forEach((d) => {
-          const dd = d.data() as Record<string, unknown>;
-          if (dd.deletedAt) return;
-          projectIds.push(d.id);
-          if (typeof dd.name === 'string') names[d.id] = dd.name;
-        });
+        for (const { id, data: dd } of await listProjectDocs(user.uid)) {
+          projectIds.push(id);
+          if (typeof dd.name === 'string') names[id] = dd.name;
+        }
         // currentProjectId is per-user (not workspace-shared) — stored in
         // localStorage so user A's project switch doesn't affect user B.
         // Fall back to the first accessible project if the cached value is
@@ -794,12 +806,7 @@ window.storage = {
         prefix === 'project' ||
         prefix.startsWith('project')
       ) {
-        const q = query(PROJECTS_COL(), where('memberIds', 'array-contains', user.uid));
-        const snap = await getDocs(q);
-        const keys: string[] = [];
-        snap.forEach((d) => {
-          if (!d.data().deletedAt) keys.push('project:' + d.id);
-        });
+        const keys = (await listProjectDocs(user.uid)).map(({ id }) => 'project:' + id);
         return { keys, prefix, shared: true };
       }
       return { keys: [], prefix, shared: true };

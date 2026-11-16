@@ -226,7 +226,8 @@ describe('P2.2 pre-P2.2 gate rules', () => {
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], checkIns: [by(CON)] }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], updatedBy: ASG.uid }));
     await assertFails(up(CON, `${P1}/tasks/t1`, { updates: [by(CON), { text: 'old' }], version: 3 }));
-    await assertFails(up(VIEWER, `${P1}/tasks/t1`, { updates: [by(VIEWER), { text: 'old' }] }));
+    // W3-B1 (D1): any project reader may append one comment (was denied before).
+    await assertSucceeds(up(VIEWER, `${P1}/tasks/t1`, { updates: [by(VIEWER), { text: 'old' }] }));
     await assertFails(up(DEACT, `${P1}/tasks/t1`, { updates: [by(DEACT), { text: 'old' }] }));
   });
 
