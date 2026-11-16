@@ -233,7 +233,9 @@ describe('P2.2 pre-P2.2 gate rules', () => {
 
   it('G-12 PIC listed as contributor gets no extra rights on a closed task', async () => {
     await seedDoc(`${P1}/tasks/t9`, task({ status: 'Completed' }));
-    await assertFails(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
+    // W3-B1 (D1): the PIC may still comment like any reader; nothing else (status / health).
+    await assertSucceeds(up(ASG, `${P1}/tasks/t9`, { updates: [by(ASG), { text: 'old' }] }));
+    await assertFails(up(ASG, `${P1}/tasks/t9`, { health: 'Red' }));
     // A contributor (not PIC) may still append on a closed task.
     await assertSucceeds(up(CON, `${P1}/tasks/t9`, { updates: [by(CON), { text: 'old' }] }));
   });
