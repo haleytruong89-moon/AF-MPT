@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
-import { GanttView } from './components/GanttView';
+import { GanttView, AllProjectsGantt } from './components/GanttView';
 import { MembersModal } from './components/MembersModal';
 import { GlossaryList } from './components/Glossary';
 import { DirectoryModal } from './components/DirectoryModal';
@@ -7086,6 +7086,36 @@ function MindMapView({ project, onTaskClick, selectedTaskId, scopeProgramId, onP
   );
 }
 
+// W3-C1: All-projects mode on a project view: pick a project (keeps the current view).
+function ProjectList({ projects, projectIds, uid, onOpen, footer = null }) {
+  const list = (projectIds || []).filter((pid) => projects?.[pid]);
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: '24px 16px', display: 'flex', justifyContent: 'center' }}>
+      <div style={{ width: '100%', maxWidth: 640 }}>
+        <h2 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600, color: TOK.ink }}>Choose a project</h2>
+        {list.length === 0 && <div style={{ color: TOK.muted, fontSize: 13 }}>No projects yet.</div>}
+        {list.map((pid) => {
+          const p = projects[pid];
+          const r = rollup(p);
+          const role = p.__v2 ? myRoleSummary(p.__v2.roles || null, uid, p) : null;
+          return (
+            <button key={pid} onClick={() => onOpen(pid)}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: 6, border: '1px solid ' + TOK.line, borderRadius: 8, background: TOK.surface, cursor: 'pointer', fontFamily: FONT_STACK }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+                {role?.label && <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>Your role: {role.label}</div>}
+              </div>
+              <span style={{ fontSize: 12, color: TOK.ink, fontWeight: 500 }}>{r.pct}%</span>
+              <span style={{ fontSize: 11, color: TOK.muted }}>{r.done}/{r.total}</span>
+            </button>
+          );
+        })}
+        {footer && <div style={{ marginTop: 12 }}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
 function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpenMenu, roleText = null }) {
   const isTask = n.kind === 'task';
   const isSelected = isTask && n.data.id === selectedTaskId;
@@ -7100,6 +7130,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
     else if (isOverdue(t)) { bg = TOK.overdueBg; border = TOK.overdueFg; fg = TOK.overdueFg; }
     else if (t.status === 'Completed') { bg = TOK.doneBg; border = TOK.doneFg; fg = TOK.doneFg; }
     else if (t.status === 'InProgress') { bg = TOK.inprogBg; border = TOK.inprogFg; fg = TOK.inprogFg; }
+    else if (t.status === 'Submitted') { bg = '#FAEEDA'; border = '#B7791F'; fg = '#B7791F'; } // W3-C1: same pair as the Gantt
     else { bg = TOK.plannedBg; border = TOK.plannedFg; fg = TOK.plannedFg; }
   }
 
@@ -14918,13 +14949,12 @@ export default function App() {
                   Team overview is workspace-owner only.
                 </div>
               )}
-              {isAllProjectsMode && (view === 'mindmap' || view === 'outline' || view === 'dashboard' || view === 'gantt') && (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13, gap: 10 }}>
-                  <div>🌐 This view is project-specific.</div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {isOwner && <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn>}
-                  </div>
-                </div>
+              {isAllProjectsMode && view === 'gantt' && (
+                <AllProjectsGantt projects={projects} projectIds={meta?.projectIds || []} onOpenProject={(pid) => switchProject(pid)} />
+              )}
+              {isAllProjectsMode && (view === 'mindmap' || view === 'outline' || view === 'dashboard') && (
+                <ProjectList projects={projects} projectIds={meta?.projectIds || []} uid={meValue?.uid || null} onOpen={(pid) => switchProject(pid)}
+                  footer={isOwner ? <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn> : null} />
               )}
               {!project && !isAllProjectsMode && view !== 'aggregation' && view !== 'activity' && view !== 'portfolio' && view !== 'credit-report' && view !== 'my-work' && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: TOK.muted, fontSize: 13 }}>No project selected.</div>
