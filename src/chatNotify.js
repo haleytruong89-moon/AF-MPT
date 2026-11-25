@@ -232,6 +232,26 @@ export function buildCloseSubmittedCard(ctx) {
   return { cardsV2: [{ cardId: `close-submitted-${Date.now()}`, card: { sections: [{ widgets }] } }] };
 }
 
+/** HOD 25/11 Q4: card for a new blocker on a task.
+ *  @param ctx { projectName, taskName, authorName, text, taskUrl }
+ */
+export function buildBlockerCard(ctx) {
+  const { projectName, taskName, authorName, text, taskUrl } = ctx;
+  const widgets = [
+    {
+      decoratedText: {
+        topLabel: '🚩 BLOCKER',
+        text: escapeChatText(`${authorName} flagged a blocker on ${taskName}: ${text}`),
+        wrapText: true,
+        startIcon: { knownIcon: 'DESCRIPTION' },
+      },
+    },
+    { divider: {} },
+    closeCardFooter(projectName, taskUrl),
+  ];
+  return { cardsV2: [{ cardId: `blocker-${Date.now()}`, card: { sections: [{ widgets }] } }] };
+}
+
 /** W3-D3 (P7): card for "close request moved to another approver".
  *  @param ctx { projectName, taskName, fromName, toName, byName, taskUrl }
  */

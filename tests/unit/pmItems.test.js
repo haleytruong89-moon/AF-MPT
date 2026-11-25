@@ -43,3 +43,14 @@ describe('W3-D3 reassigned card', () => {
     expect(w[2].decoratedText.button.onClick.openLink.url).toBe('https://x/t');
   });
 });
+
+describe('HOD 25/11 Q4 blocker card', () => {
+  it('BC-1 names the author, task and text; open-task button', async () => {
+    const { buildBlockerCard } = await import('../../src/chatNotify.js');
+    const c = buildBlockerCard({ projectName: 'Ops', taskName: 'VAT', authorName: 'Lan', text: 'waiting for bank', taskUrl: 'https://x/t' });
+    const w = c.cardsV2[0].card.sections[0].widgets;
+    expect(w[0].decoratedText.topLabel).toBe('🚩 BLOCKER');
+    expect(w[0].decoratedText.text).toBe('Lan flagged a blocker on VAT: waiting for bank');
+    expect(w[2].decoratedText.button.onClick.openLink.url).toBe('https://x/t');
+  });
+});
