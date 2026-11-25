@@ -169,3 +169,20 @@ export function mergeReports(reports) {
   }
   return { totalCp, perPic, perProject };
 }
+
+/**
+ * A member's frozen person doc -> the myCreditByYear shape (My record):
+ * [{ project: { id, name }, locked: true, rows, projected, earned }], biggest first.
+ */
+export function myCreditFromSnapshot(personDoc) {
+  const byProject = new Map();
+  for (const r of arr(personDoc?.rows)) {
+    if (!byProject.has(r.pid)) byProject.set(r.pid, { project: { id: r.pid, name: r.projectName }, locked: true, frozen: true, rows: [] });
+    byProject.get(r.pid).rows.push({ taskId: r.taskId, taskName: r.lead ? (r.taskName || 'Project lead') : r.taskName, sharePct: r.share ?? 100, projected: r.cp, earned: r.cp, credited: true });
+  }
+  const out = [...byProject.values()].map((c) => {
+    const t = Math.round(c.rows.reduce((s, x) => s + x.earned, 0) * 10) / 10;
+    return { ...c, projected: t, earned: t };
+  });
+  return out.sort((a, b) => b.earned - a.earned);
+}
