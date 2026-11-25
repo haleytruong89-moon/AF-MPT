@@ -23,10 +23,11 @@ import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, fa
 import { mentionsMe } from './mentions.js';
 import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
+import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope } from './scope.js';
 import { personWorkload } from './workload.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
-import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView } from './uiPrefs';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { taskWithStatus } from './taskOps';
@@ -4624,7 +4625,7 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
   );
 }
 
-function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, initialEditId, isOwner = false, uid = null }) {
+function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, initialEditId, isOwner = false, uid = null, scopeProgramId = null }) {
   const [showForm, setShowForm] = useState(false);
   // Wave 2 R5: v2 edit only within one's program (stored claim); delete Owner-only. v1 unchanged.
   const isV2 = !!project.__v2;
@@ -4659,11 +4660,13 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return decisions
+      .filter((d) => decisionInScope(project, project.__v2?.roles || null, d, scopeProgramId))
       .filter((d) => filterStatus === 'all' || d.followUpStatus === filterStatus)
       .filter((d) => filterTaskId === 'all' || (d.relatedTaskIds || []).includes(filterTaskId))
       .filter((d) => !q || (d.text || '').toLowerCase().includes(q) || (d.context || '').toLowerCase().includes(q) || (d.decidedBy || []).some((p) => p.toLowerCase().includes(q)))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
-  }, [decisions, filterStatus, filterTaskId, query]);
+  }, [decisions, filterStatus, filterTaskId, query, project, scopeProgramId]);
+  const outOfScope = scopeProgramId ? decisions.filter((d) => !decisionInScope(project, project.__v2?.roles || null, d, scopeProgramId)).length : 0;
 
   const saveDecision = (d) => {
     const next = editing
@@ -4694,7 +4697,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
           <div>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>Decisions</h2>
             <div style={{ fontSize: 12, color: TOK.muted, marginTop: 2 }}>
-              {decisions.length} total · {filtered.length} matching filters
+              {decisions.length} total · {filtered.length} matching filters{outOfScope > 0 ? ` · ${outOfScope} in other programs (Scope: All programs to see them)` : ''}
             </div>
           </div>
           {canCreate && <Btn variant="primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus size={12} /> New decision</Btn>}
@@ -5235,7 +5238,7 @@ function buildPicEmailHtml(picName, list, project, author) {
 </div>`;
 }
 
-function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid }) {
+function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialogs, onActivity, showToast, initialEditId, onApplyAction, onNavigateRaid, scopeProgramId = null }) {
   const me = useContext(MeContext);
   const dirIndex = useContext(DirectoryIndexContext);
   const [showForm, setShowForm] = useState(false);
@@ -5275,6 +5278,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return actions
+      .filter((a) => actionInScope(project, a, scopeProgramId))
       .filter((a) => filterPic === 'all' || a.pic === filterPic)
       .filter((a) => filterStatus === 'all' || a.status === filterStatus)
       .filter((a) => filterPriority === 'all' || a.priority === filterPriority)
@@ -5288,7 +5292,8 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
         if (a.dueDate && b.dueDate) return parseDate(a.dueDate) - parseDate(b.dueDate);
         return 0;
       });
-  }, [actions, filterPic, filterStatus, filterPriority, query]);
+  }, [actions, filterPic, filterStatus, filterPriority, query, project, scopeProgramId]);
+  const outOfScope = scopeProgramId ? actions.filter((a) => !actionInScope(project, a, scopeProgramId)).length : 0;
 
   const groupedByPic = useMemo(() => {
     const g = new Map();
@@ -5486,7 +5491,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           <div>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>Action items</h2>
             <div style={{ fontSize: 12, color: TOK.muted, marginTop: 2 }}>
-              {actions.length} total · {filtered.length} matching{selected.size > 0 ? ` · ${selected.size} selected` : ''}
+              {actions.length} total · {filtered.length} matching{outOfScope > 0 ? ` · ${outOfScope} in other programs or with no task (Scope: All programs to see them)` : ''}{selected.size > 0 ? ` · ${selected.size} selected` : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -13371,7 +13376,6 @@ export default function App() {
   // v30 RAID Phase 3 — When navigating to the RAID tab from another view
   // (e.g. via TaskDetail's "View all →"), this state pre-selects the program.
   // Reset to null when the user manually clicks the RAID tab in the strip.
-  const [raidScopeProgramId, setRaidScopeProgramId] = useState(null);
   const [projectMenu, setProjectMenu] = useState(null);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [showRoles, setShowRoles] = useState(false);
@@ -13512,6 +13516,14 @@ export default function App() {
   const isOwner = isWorkspaceOwner(meta, authUser?.uid, verifiedEmail);
   // P4: UI tier decides visible tabs and landing view (rules stay the authority).
   const tier = useMemo(() => uiTier({ isOwner, projects, uid: authUser?.uid || null }), [isOwner, projects, authUser?.uid]);
+  // Audit 25/11 wave 2 (R3): scope when a project is opened. Managers default to their program;
+  // everyone gets back the choice they made last time for that project ('' = all).
+  const scopeFor = useCallback((pid) => {
+    const p = projects?.[pid];
+    const remembered = readScope(pid);
+    if (tier === 'manager') return initialScope({ project: p, uid: authUser?.uid || null, remembered });
+    return remembered ? validScope(p, remembered) : null;
+  }, [projects, tier, authUser?.uid]);
   // Label only: "You" when the viewer is the workspaceOwner email, or the only ownerUids entry; otherwise show the stored email.
   const ownerIsMe = isOwner && (!meta?.workspaceOwner
     || (verifiedEmail && String(meta.workspaceOwner).trim().toLowerCase() === String(verifiedEmail).trim().toLowerCase())
@@ -13563,9 +13575,10 @@ export default function App() {
   useEffect(() => {
     if (view !== null || !meta || !author || loading) return;
     const land = landingFor({ tier, override: userPrefs?.defaultViewOverride || null, planView: readPlanView(), project: projects?.[currentId] || null, uid: authUser?.uid || null });
-    if (land.scopeProgramId) setScopeProgramId(land.scopeProgramId);
+    const s = scopeFor(currentId);
+    setScopeProgramId(s ?? land.scopeProgramId ?? null);
     setView(land.view);
-  }, [meta, author, view, userPrefs, tier, loading, projects, currentId, authUser?.uid]);
+  }, [meta, author, view, userPrefs, tier, loading, projects, currentId, authUser?.uid, scopeFor]); // runs once: guarded by view !== null
 
   // v30.A.1 — modal state for creating an action from My Work + state
   // for routing "→ Open" from My Work to a specific action's Edit form.
@@ -14699,7 +14712,7 @@ export default function App() {
     if (!id || !meta) return;
     setCurrentId(id);
     setSelectedTaskId(null);
-    setScopeProgramId(null);
+    setScopeProgramId(scopeFor(id)); // audit 25/11 wave 2 (R3): remembered choice, else my program
     setActivity([]);
     setActivityLoadedId(null);
     rememberCurrentProject(id);
@@ -14978,7 +14991,11 @@ export default function App() {
     );
   }
 
-  const r = project ? rollup(project) : null;
+  // Audit 25/11 wave 2 (R2): the header numbers follow the scope.
+  const scope = isAllProjectsMode ? null : validScope(project, scopeProgramId);
+  const r = project ? rollup(scopedProject(project, scope)) : null;
+  const crossView = isCrossProjectView(view);
+  const tabCounts = project ? scopedCounts(project, project.__v2?.roles || null, scope) : { actions: 0, decisions: 0 };
 
   return (
     <DirectoryIndexContext.Provider value={dirIndex}><MeContext.Provider value={meValue}>
@@ -15006,13 +15023,15 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ fontSize: 14, fontWeight: 500 }}>Project Tracker</div>
             <ChevronRight size={12} color={TOK.muted} />
-            <select value={currentId || ''} onChange={(e) => switchProject(e.target.value)}
+            {/* Audit 25/11 wave 2 (R1): pages that show every project have no project selector. */}
+            {crossView && <span style={{ fontSize: 13, color: TOK.muted }}>All my projects</span>}
+            {!crossView && <select value={currentId || ''} onChange={(e) => switchProject(e.target.value)}
               style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '6px 24px 6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, cursor: 'pointer', fontWeight: 500 }}>
               <option value="__all__">🌐 All projects</option>
               <option disabled>──────────</option>
               {meta.projectIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
-            </select>
-            {project && project.__v2 && (() => {
+            </select>}
+            {!crossView && project && project.__v2 && (() => {
               // Wave 1 U6: my highest role on this (v2) project; tooltip lists all.
               const rs = myRoleSummary(project.__v2.roles || null, meValue?.uid || null, project);
               const viewOnly = rs.label === 'View only';
@@ -15029,11 +15048,11 @@ export default function App() {
             <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
           </div>
 
-          {/* Scope / focus selector */}
-          {project && (project.programs || []).length > 0 && (
+          {/* Scope selector (audit 25/11 wave 2: only on tabs it filters; remembered per project) */}
+          {project && scopeAppliesTo(view) && (project.programs || []).length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', borderLeft: '1px solid ' + TOK.line }}>
-              <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>FOCUS</span>
-              <select value={scopeProgramId || ''} onChange={(e) => setScopeProgramId(e.target.value || null)}
+              <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>Scope</span>
+              <select value={scope || ''} onChange={(e) => { setScopeProgramId(e.target.value || null); writeScope(currentId, e.target.value || ''); }}
                 style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 22px 5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, cursor: 'pointer' }}>
                 <option value="">All programs</option>
                 {(project.programs || []).map((pg) => <option key={pg.id} value={pg.id}>{pg.name}</option>)}
@@ -15041,7 +15060,7 @@ export default function App() {
             </div>
           )}
 
-          {project && r && (
+          {project && r && !crossView && (
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '0 12px', borderLeft: '1px solid ' + TOK.line }}>
               <div style={{ fontSize: 11, color: TOK.muted }}>
                 <span style={{ color: TOK.accent, fontWeight: 500, fontSize: 13 }}>{r.pct}%</span> · {r.done}/{r.total} complete
@@ -15067,7 +15086,7 @@ export default function App() {
               // P4: tabs by UI tier; Plan covers Mind map / Outline / Gantt.
               const allTabs = tabsFor(tier).map((t) => ({
                 ...t,
-                count: t.id === 'decisions' ? (project?.decisions?.length || 0) : t.id === 'actions' ? (project?.actionItems?.length || 0) : 0,
+                count: !project ? 0 : t.id === 'decisions' ? tabCounts.decisions : t.id === 'actions' ? tabCounts.actions : 0,
                 ownerOnly: ['portfolio', 'team-overview', 'credit-report', 'activity'].includes(t.id),
               }));
               // v30 Phase 3 — during impersonation, only My Work tab is visible.
@@ -15079,7 +15098,6 @@ export default function App() {
                 <button data-tour={'tab-' + v.id} aria-current={active ? 'page' : undefined} onClick={() => {
                   if (v.id === 'briefing') { setBriefingDialogIsOwnerMode(isOwner && !impersonatingAs); setShowBriefingDialog(true); return; }
                   if (v.id === 'plan') { setView(readPlanView()); return; }
-                  if (v.id === 'raid') setRaidScopeProgramId(null);
                   setView(v.id);
                 }} style={{
                   fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
@@ -15215,7 +15233,7 @@ export default function App() {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
                     }
-                    setRaidScopeProgramId(programId || null);
+                    setScopeProgramId(programId || null);
                     setView('raid');
                   }}
                   onCreateAction={impersonatingAs ? null : (projectId, relatedTaskId) => setActionCreate({
@@ -15241,12 +15259,12 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
-              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
-              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
-              {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
-              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} showActivity={isOwner && !impersonatingAs} />}
-              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
-              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setRaidScopeProgramId(programId || null); setView('raid'); }} />}
+              {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scope} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
+              {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scope} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
+              {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scope} />}
+              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scope} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} showActivity={isOwner && !impersonatingAs} />}
+              {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} scopeProgramId={scope} />}
+              {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setScopeProgramId(programId || null); setView('raid'); }} scopeProgramId={scope} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
               {isAllProjectsMode && view === 'actions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="actions" />}
               {view === 'aggregation' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} />}
@@ -15258,7 +15276,7 @@ export default function App() {
                   isOwner={isOwner && !impersonatingAs}
                   uid={meValue?.uid || null}
                   teamMembers={teamMembers}
-                  scopeProgramId={raidScopeProgramId || scopeProgramId}
+                  scopeProgramId={scope}
                   onApplyRaidUpdate={(item, projectId, programId, source) =>
                     applyRaidUpdate(item, projectId, programId, source || 'raid')
                   }
@@ -15333,7 +15351,7 @@ export default function App() {
               isOwner={isOwner}
               onActivity={logActivity}
               onNavigateRaid={(programId) => {
-                setRaidScopeProgramId(programId);
+                setScopeProgramId(programId);
                 setView('raid');
               }} />
           )}
