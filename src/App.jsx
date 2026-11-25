@@ -32,9 +32,10 @@ import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
-import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose } from './closeFlow';
+import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers } from './closeFlow';
+import { planReplace, applyReplace, planIsEmpty } from './replacePerson.js';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject, addMemberV2, removeMemberV2 } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { taskUrl, parseDeepLink } from './deepLink';
@@ -13280,7 +13281,8 @@ export default function App() {
   const currentIdRef = useRef(currentId);
   currentIdRef.current = currentId;
   const [view, setView] = useState(null); // resolved by effect once meta+author load (v30)
-  const [activityLogFor, setActivityLogFor] = useState(null); // W3-D2: null = closed, '' = all projects, pid
+  const [activityLogFor, setActivityLogFor] = useState(null);
+  const [showReplacePerson, setShowReplacePerson] = useState(false); // W3-D2: null = closed, '' = all projects, pid
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [toast, setToast] = useState(null);
   const [activity, setActivity] = useState([]);
@@ -14007,13 +14009,15 @@ export default function App() {
   // move to the new approver with a save of the last-saved tree + those tasks only
   // (like runV2CloseNow). `preMoves` (shown in the confirm) is recomputed on the
   // saved tree after the role write.
-  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid, state = {} }) => {
+  // quiet (Replace person): no toast; the result says what happened.
+  const changeRoleNow = useCallback(async ({ projectId, change, before, preMoves, addMemberUid, state = {}, quiet = false }) => {
     const nameOf = meRef.current.nameOf;
+    const say = (msg) => { if (!quiet) showToastRef.current(msg); };
     // A failed flush is ignored on purpose: the role write carries no tree data; the edit stays in memory and the banner shows it.
     await flushProjectSave(projectId);
     const status = await changeRoleV2(projectId, change, addMemberUid ? { addMemberUid } : {});
-    if (status === 'changed') { showToastRef.current('Someone changed this role. Reload to see it.'); return; }
-    if (status !== 'ok') { showToastRef.current(`Role not saved (${status}). Reload and try again.`); return; }
+    if (status === 'changed') { say('Someone changed this role. Reload to see it.'); return { status, failed: 0 }; }
+    if (status !== 'ok') { say(`Role not saved (${status}). Reload and try again.`); return { status, failed: 0 }; }
     state.roleSaved = true;
     refreshV2Roles(projectId);
     logActivityForProject(projectId, roleChangeEvent(change, nameOf, scopeNameOf(projectsRef.current[projectId], change)));
@@ -14023,7 +14027,7 @@ export default function App() {
     const moves = saved && after
       ? reroutePlan({ before, after, change, tasks: collectTasks(saved), isActive: meRef.current.isActive })
       : preMoves;
-    if (!moves.length) { showToastRef.current(roleSavedMessage(change.toUid, nameOf)); return; }
+    if (!moves.length) { say(roleSavedMessage(change.toUid, nameOf)); return { status: 'ok', failed: 0 }; }
     const failed = [];
     const done = [];
     let tree = saved;
@@ -14059,10 +14063,11 @@ export default function App() {
     }
     if (failed.length) {
       console.warn('[roles] pending requests not moved:', failed);
-      showToastRef.current(rerouteFailedMessage(failed, nameOf));
+      say(rerouteFailedMessage(failed, nameOf));
     } else {
-      showToastRef.current(roleSavedMessage(change.toUid, nameOf));
+      say(roleSavedMessage(change.toUid, nameOf));
     }
+    return { status: 'ok', failed: failed.length };
   }, [rolesNowFor, flushProjectSave, refreshV2Roles, logActivityForProject, setTaskNow]);
   const changeRole = useCallback(async (projectId, change) => {
     const me = meRef.current;
@@ -14104,6 +14109,100 @@ export default function App() {
     closeChain.current[projectId] = run;
     return run;
   }, [rolesNowFor, changeRoleNow, dialogs, bumpPending]);
+
+  // Replace person (role assignment spec §8, Owner, v2). Runs in the project's close chain:
+  // member → roles (changeRoleNow: role write + reroute + role_changed) → tree edit through
+  // the normal save → close requests still on the old person → optional member removal →
+  // one person_replaced event. Every step only touches what is still on the old person,
+  // so running it again picks up what failed.
+  const replacePersonNow = useCallback(async ({ projectId, from, to, removeFrom }) => {
+    const nameOf = meRef.current.nameOf;
+    const fromEmail = String(from.email || '').toLowerCase();
+    const isFrom = (raw) => !!raw && personKey(dirIndex, raw) === fromEmail;
+    const r = { roles: 0, rolesFailed: 0, tasks: 0, actions: 0, approvals: 0, approvalsFailed: 0, removed: false, saveFailed: false };
+    await flushProjectSave(projectId);
+    if (!v2MemberUidsNow(projectId).includes(to.uid)) {
+      const st = await addMemberV2(projectId, to.uid);
+      if (st !== 'ok') { showToastRef.current(`Couldn't add ${to.displayName} to the project (${st}). Nothing was moved.`); return; }
+    }
+    const plan = planReplace({ project: projectsRef.current[projectId], roles: rolesNowFor(projectId), fromUid: from.uid, isFrom, toUid: to.uid });
+    for (const role of plan.roles) {
+      const change = { kind: role.kind, programId: role.programId, ...(role.kind === 'lead' ? { wsId: role.wsId } : {}), fromUid: from.uid, toUid: to.uid };
+      const res = await changeRoleNow({ projectId, change, before: rolesNowFor(projectId), preMoves: [], addMemberUid: null, quiet: true });
+      if (res && res.status === 'ok') r.roles++; else r.rolesFailed++;
+    }
+    // Open tasks / actions: re-planned on the current tree (roles may have moved requests).
+    const cur = projectsRef.current[projectId];
+    const work = planReplace({ project: cur, roles: rolesNowFor(projectId), fromUid: from.uid, isFrom, toUid: to.uid });
+    if (work.tasks.length || work.actions.length) {
+      updateProject(applyReplace(cur, work, { isFrom, toName: to.displayName }));
+      const st = await flushProjectSave(projectId);
+      if (st == null || st === 'ok') { r.tasks = work.tasks.length; r.actions = work.actions.length; } else r.saveFailed = true;
+    }
+    // Close requests still waiting on the old person (not moved by a role change).
+    let saved = v2SavedTree(projectId);
+    const after = rolesNowFor(projectId);
+    if (saved && after) {
+      const me = { uid: meRef.current.uid, name: meRef.current.name };
+      const now = new Date().toISOString();
+      const done = [];
+      for (const g of saved.programs || []) for (const w of g.workstreams || []) for (const t of w.tasks || []) {
+        if (t.status !== 'Submitted' || t.closeRequest?.approverUid !== from.uid) continue;
+        const next = eligibleApprovers(after, t.id, t.closeRequest.requestedByUid).find((u) => u !== from.uid && meRef.current.isActive(u));
+        const moved = next ? reassignClose({ roles: after, task: t, me, toUid: next, now }) : null;
+        if (!moved) { r.approvalsFailed++; continue; }
+        done.push({ old: t, t: moved });
+      }
+      if (done.length) {
+        for (const d of done) saved = replaceTask(saved, d.t.id, d.t);
+        const st = await saveProject(saved);
+        setSaveState((prev) => nextSaveState(prev, projectId, st, saved.name || 'project'));
+        refreshV2Roles(projectId);
+        if (st === 'ok') {
+          r.approvals = done.length;
+          for (const { old, t } of done) {
+            const live = projectsRef.current[projectId] && findTaskInProject(projectsRef.current[projectId], t.id)?.task;
+            setTaskNow(projectId, t.id, live ? { ...live, closeRequest: t.closeRequest, closeRequestHistory: t.closeRequestHistory } : t);
+            for (const ev of closeEventsFor(old, t, nameOf)) logActivityForProject(projectId, { ...ev, description: ev.description + ' (person replaced)' });
+          }
+        } else r.approvalsFailed += done.length;
+      }
+    }
+    if (removeFrom) r.removed = (await removeMemberV2(projectId, from.uid)) === 'ok';
+    logActivityForProject(projectId, {
+      type: 'person_replaced',
+      description: `Person replaced: ${from.displayName} → ${to.displayName} (${r.roles} role(s), ${r.tasks} task(s), ${r.actions} action(s), ${r.approvals} pending request(s)${r.removed ? '; removed from members' : ''})`,
+      before: { uid: from.uid }, after: { uid: to.uid },
+    });
+    const problems = [
+      r.rolesFailed ? `${r.rolesFailed} role(s) not moved` : '',
+      r.saveFailed ? 'tasks / actions not saved' : '',
+      r.approvalsFailed ? `${r.approvalsFailed} pending request(s) not moved` : '',
+      removeFrom && !r.removed ? `${from.displayName} is still a member` : '',
+    ].filter(Boolean);
+    showToastRef.current(problems.length
+      ? `Partly done: ${problems.join(', ')}. Run Replace person again to move the rest.`
+      : `Done. ${to.displayName} should reload AF-MPT to get the new permissions.`);
+  }, [dirIndex, flushProjectSave, rolesNowFor, changeRoleNow, updateProject, refreshV2Roles, setTaskNow, logActivityForProject]);
+  const replacePerson = useCallback((projectId, args) => {
+    const me = meRef.current;
+    if (me.readOnly || !me.isOwner) { showToastRef.current(READ_ONLY_MESSAGE); return null; }
+    closeBusy.current[projectId] = (closeBusy.current[projectId] || 0) + 1;
+    bumpPending(1);
+    const run = (closeChain.current[projectId] || Promise.resolve())
+      .then(() => replacePersonNow({ projectId, ...args }))
+      .catch((e) => {
+        console.error('[replace person] failed:', e);
+        showToastRef.current('Replace person stopped with an error. Reload, check the project, and run it again to move the rest.');
+      })
+      .finally(() => {
+        closeBusy.current[projectId] -= 1;
+        if (!closeBusy.current[projectId]) delete closeBusy.current[projectId];
+        bumpPending(-1);
+      });
+    closeChain.current[projectId] = run;
+    return run;
+  }, [replacePersonNow, bumpPending]);
 
   // v30 — Apply a task update to any project (not just `currentId`) and emit
   // diff-based activity log entries to that project's log. `source` is an
@@ -15273,7 +15372,12 @@ export default function App() {
             onChangeRole={(c) => changeRole(project.id, c)}
             focus={typeof showRoles === 'object' ? showRoles : null}
             onClose={() => setShowRoles(false)}
+            onReplacePerson={isOwner && !impersonatingAs && project.__v2 ? () => { setShowRoles(false); setShowReplacePerson(true); } : null}
           />
+        )}
+        {showReplacePerson && project?.__v2 && isOwner && !impersonatingAs && (
+          <ReplacePersonModal project={project} roles={project.__v2.roles || null} dirEntries={dirEntries} dirIndex={dirIndex}
+            onApply={(args) => replacePerson(project.id, args)} onClose={() => setShowReplacePerson(false)} />
         )}
         {showProjectSettings && project && (
           <ProjectSettingsModal
@@ -15408,10 +15512,74 @@ export default function App() {
 
 // Role assignment: the whole project's PM / Deputy / Sub-PM in one table (spec §6.2).
 // Same pickers and permissions as the Outline headers; every reader can open it.
+// Replace person (spec §8): pick from → to, preview what moves and what stays, apply.
+function ReplacePersonModal({ project, roles, dirEntries, dirIndex, onApply, onClose }) {
+  const withUid = useMemo(() => (dirEntries || []).filter((e) => e && e.uid)
+    .slice().sort((a, b) => String(a.displayName || a.email).localeCompare(String(b.displayName || b.email))), [dirEntries]);
+  const [fromUid, setFromUid] = useState('');
+  const [toUid, setToUid] = useState('');
+  const [removeFrom, setRemoveFrom] = useState(false);
+  const from = withUid.find((e) => e.uid === fromUid) || null;
+  const to = withUid.find((e) => e.uid === toUid) || null;
+  const plan = useMemo(() => {
+    if (!from || !to) return null;
+    const email = String(from.email || '').toLowerCase();
+    return planReplace({ project, roles, fromUid: from.uid, isFrom: (raw) => !!raw && personKey(dirIndex, raw) === email, toUid: to.uid });
+  }, [project, roles, from, to, dirIndex]);
+  const label = (e) => `${e.displayName || e.email}${e.status === 'deactivated' ? ' (inactive)' : ''}`;
+  const sel = { fontFamily: FONT_STACK, fontSize: 13, padding: '6px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, minWidth: 220 };
+  const kindLabel = { pm: 'PM of', deputy: 'Deputy of', lead: 'Sub-PM of' };
+  const section = (title, items) => (items.length ? (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{title} ({items.length})</div>
+      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>{items.map((t, i) => <li key={i}>{t}</li>)}</ul>
+    </div>
+  ) : null);
+  return (
+    <Modal title="Replace person" onClose={onClose} width={620}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select value={fromUid} onChange={(e) => { setFromUid(e.target.value); if (e.target.value === toUid) setToUid(''); }} style={sel} aria-label="Replace">
+          <option value="">Replace…</option>
+          {withUid.map((e) => <option key={e.uid} value={e.uid}>{label(e)}</option>)}
+        </select>
+        <span style={{ color: TOK.muted }}>→</span>
+        <select value={toUid} onChange={(e) => setToUid(e.target.value)} style={sel} aria-label="With" disabled={!fromUid}>
+          <option value="">With…</option>
+          {withUid.filter((e) => e.status !== 'deactivated' && e.uid !== fromUid).map((e) => <option key={e.uid} value={e.uid}>{label(e)}</option>)}
+        </select>
+      </div>
+      {plan && (
+        <div style={{ marginTop: 6 }}>
+          {planIsEmpty(plan) && <div style={{ marginTop: 10, fontSize: 12.5, color: TOK.muted }}>Nothing open is assigned to {label(from)} in this project.</div>}
+          {section('Roles that move', plan.roles.map((r) => `${kindLabel[r.kind]} ${r.scopeName}`))}
+          {section('Open tasks that move', plan.tasks.map((t) => `${t.name}${t.pic ? ' (PIC)' : ' (contributor)'}`))}
+          {section('Open actions that move', plan.actions.map((a) => a.title || '(untitled action)'))}
+          {section('Close requests waiting on them that move to the next approver', plan.approvals.map((a) => a.name))}
+          {section('Not moved', [
+            ...plan.blocked.map((b) => `${kindLabel[b.kind]} ${b.scopeName}: ${b.reason}`),
+            ...plan.kept.submitted.map((t) => `${t.name}: waiting for approval (decide or withdraw first)`),
+            ...(plan.kept.closed ? [`${plan.kept.closed} completed / dropped task(s): credit history stays`] : []),
+            'RAID items, decisions and activity keep their author',
+          ])}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 12, fontSize: 12.5 }}>
+            <input type="checkbox" checked={removeFrom} onChange={(e) => setRemoveFrom(e.target.checked)} />
+            Also remove {from.displayName || from.email} from project members
+          </label>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+        <Btn onClick={onClose}>Cancel</Btn>
+        <Btn variant="primary" disabled={!plan || (planIsEmpty(plan) && !removeFrom)}
+          onClick={() => { onApply({ from, to, removeFrom }); onClose(); }}>Replace</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 // W3-D3 (P5): a PM picks only among project members.
 const MEMBERS_ONLY_NOTE = 'Only project members are listed. Ask the Owner to add someone.';
 
-function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose }) {
+function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose, onReplacePerson = null }) {
   // focus ({ programId, wsId? }) comes from a Mind map node menu; "Show all" clears it.
   const [scope, setScope] = useState(focus);
   const [blankOnly, setBlankOnly] = useState(false);
@@ -15451,6 +15619,7 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
             {check(blankOnly, setBlankOnly, 'Blank roles only')}
             {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}
             {scope && <Btn size="sm" variant="ghost" onClick={() => setScope(null)}>Show all</Btn>}
+            {onReplacePerson && <Btn size="sm" onClick={onReplacePerson}>Replace person…</Btn>}
           </div>
           {shown.length === 0 ? (
             <p style={{ margin: 0, fontSize: 12, color: TOK.muted }}>No roles match these filters.</p>

@@ -35,6 +35,8 @@ import {
   orderBy,
   limit,
   arrayUnion,
+  arrayRemove,
+  updateDoc,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { metaForWrite, isWorkspaceOwnerEmail, ownerUidsAfterRead } from './ownership';
@@ -252,6 +254,54 @@ export async function changeRoleV2(
       }
     }
     return res.status as 'ok' | 'changed' | 'conflict' | 'denied' | 'error';
+  });
+}
+
+/**
+ * Replace person (spec §8): add / remove one project member on a v2 project (Owner).
+ * Same patch shape as executeRoleChange (add) and data.ts removeProjectMember (remove),
+ * in the project write queue; the loaded cache follows on success.
+ */
+export async function addMemberV2(pid: string, uid: string): Promise<'ok' | 'denied' | 'error'> {
+  await getUser();
+  bumpWriteEpoch(pid);
+  return await projectWriteQueue.run(`project:${pid}`, async () => {
+    try {
+      const loaded = v2Loaded.get(pid);
+      const cur = loaded && Array.isArray(loaded.meta.memberUids) ? (loaded.meta.memberUids as string[]) : [];
+      if (cur.includes(uid)) return 'ok';
+      const rolesMap = (loaded?.meta.roles ?? {}) as Record<string, unknown>;
+      await updateDoc(PROJECT_REF(pid), {
+        memberUids: arrayUnion(uid), memberIds: arrayUnion(uid),
+        ...(uid in rolesMap ? {} : { [`roles.${uid}`]: 'member' }),
+        updatedAt: serverTimestamp(),
+      });
+      if (loaded) loaded.meta = { ...loaded.meta, memberUids: [...cur, uid] };
+      return 'ok';
+    } catch (e) {
+      console.warn('[storage] add member failed:', pid, e);
+      return (e as { code?: string })?.code === 'permission-denied' ? 'denied' : 'error';
+    }
+  });
+}
+export async function removeMemberV2(pid: string, uid: string): Promise<'ok' | 'denied' | 'error'> {
+  await getUser();
+  bumpWriteEpoch(pid);
+  return await projectWriteQueue.run(`project:${pid}`, async () => {
+    try {
+      await updateDoc(PROJECT_REF(pid), {
+        memberUids: arrayRemove(uid), memberIds: arrayRemove(uid), [`roles.${uid}`]: deleteField(),
+        updatedAt: serverTimestamp(),
+      });
+      const loaded = v2Loaded.get(pid);
+      if (loaded && Array.isArray(loaded.meta.memberUids)) {
+        loaded.meta = { ...loaded.meta, memberUids: (loaded.meta.memberUids as string[]).filter((u) => u !== uid) };
+      }
+      return 'ok';
+    } catch (e) {
+      console.warn('[storage] remove member failed:', pid, e);
+      return (e as { code?: string })?.code === 'permission-denied' ? 'denied' : 'error';
+    }
   });
 }
 
