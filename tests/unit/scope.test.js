@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope } from '../../src/scope.js';
+import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from '../../src/scope.js';
 
 // Audit 25/11 wave 2: one scope rule.
 const project = {
@@ -53,7 +53,31 @@ describe('wave 2 scope', () => {
     expect(initialScope({ project, uid: 'u_pm', remembered: '' })).toBeNull();
     expect(initialScope({ project, uid: 'u_pm', remembered: null })).toBe('g2');
     expect(initialScope({ project, uid: 'u_pm', remembered: 'gone' })).toBe('g2');
-    expect(initialScope({ project, uid: 'u_sub', remembered: null })).toBe('g1');
+    expect(initialScope({ project, uid: 'u_sub', remembered: null })).toBe('ws:w1'); // R6: a Sub-PM lands on their work stream
     expect(initialScope({ project, uid: 'u_member', remembered: null })).toBeNull();
+  });
+});
+
+describe('wave 2 part 2: work-stream scope (R6) and landing (R4)', () => {
+  it('SC-7 a work-stream scope narrows to that work stream; stale ws reads as all', () => {
+    expect(validScope(project, 'ws:w1')).toBe('ws:w1');
+    expect(validScope(project, 'ws:gone')).toBeNull();
+    expect(scopeParts(project, 'ws:w2')).toEqual({ programId: 'g2', wsId: 'w2' });
+    const sp = scopedProject(project, 'ws:w1');
+    expect(sp.programs.map((p) => [p.id, p.workstreams.map((w) => w.id)])).toEqual([['g1', ['w1']]]);
+  });
+  it('SC-8 actions by work stream; decisions by its program', () => {
+    expect(project.actionItems.filter((a) => actionInScope(project, a, 'ws:w1')).map((a) => a.id)).toEqual(['a1', 'a4']);
+    expect(project.decisions.filter((d) => decisionInScope(project, roles, d, 'ws:w1')).map((d) => d.id)).toEqual(['d2', 'd3']);
+  });
+  it('SC-9 options add my work streams; a Sub-PM lands on their work stream', () => {
+    expect(scopeOptions(project, 'u_sub').map((o) => o.value)).toEqual(['', 'g1', 'g2', 'ws:w1']);
+    expect(scopeOptions(project, 'u_pm').map((o) => o.value)).toEqual(['', 'g1', 'g2']);
+    expect(initialScope({ project, uid: 'u_sub', remembered: null })).toBe('ws:w1');
+    expect(initialScope({ project, uid: 'u_pm', remembered: null })).toBe('g2');
+  });
+  it('SC-10 managesIn', () => {
+    expect(managesIn(project, 'u_sub')).toBe(true);
+    expect(managesIn(project, 'u_member')).toBe(false);
   });
 });

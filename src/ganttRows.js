@@ -61,9 +61,9 @@ const groupRow = (kind, key, depth, label, node, extra, collapsed) => ({
  * One project's Gantt rows. collapsed = Set of 'pg:<id>' / 'ws:<id>' keys; children of a
  * collapsed key are omitted. A scope id not found in the project = no scope.
  * @param {any} project
- * @param {{ scopeProgramId?: string | null, collapsed?: Set<string> }} [opts]
+ * @param {{ scopeProgramId?: string | null, scopeWsId?: string | null, collapsed?: Set<string> }} [opts]
  */
-export function buildGanttRows(project, { scopeProgramId = null, collapsed = new Set() } = {}) {
+export function buildGanttRows(project, { scopeProgramId = null, scopeWsId = null, collapsed = new Set() } = {}) {
   const programs = arr(project?.programs);
   const scope = scopeProgramId && programs.some((p) => p.id === scopeProgramId) ? scopeProgramId : null;
   const rows = [];
@@ -73,6 +73,7 @@ export function buildGanttRows(project, { scopeProgramId = null, collapsed = new
     rows.push(groupRow('program', pgKey, 0, pg.name || '(program)', pg, { programId: pg.id }, collapsed));
     if (collapsed.has(pgKey)) continue;
     for (const ws of arr(pg.workstreams)) {
+      if (scopeWsId && ws.id !== scopeWsId) continue; // audit 25/11 R6: work-stream scope
       const wsKey = `ws:${ws.id}`;
       rows.push(groupRow('workstream', wsKey, 1, ws.name || '(work stream)', ws, { programId: pg.id, workstreamId: ws.id }, collapsed));
       if (collapsed.has(wsKey)) continue;
