@@ -39,7 +39,7 @@ export const STEPS: Step[] = [
     target: 'tab-my-work',
     placement: 'bottom',
     title: 'My Work',
-    body: 'Start here every day. Your tasks are grouped by Today, Week and Later, across all projects.',
+    body: 'Start here every day. Your tasks, mentions and requests, one card per project; switch to By urgency for Today, Week and Later across all projects.',
     primaryCta: 'Next',
   },
   {
@@ -79,7 +79,7 @@ export const STEPS: Step[] = [
     target: 'project-menu',
     placement: 'bottom',
     title: 'Assigning roles',
-    body: 'The ⋯ menu holds Meeting mode, Minutes, Excel and Backup, plus Members, Roles… and Project settings. Choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
+    body: 'The ⋯ More menu holds Meeting mode, Minutes and Excel (Backup for the Owner), plus Members, Roles… and Project settings. Choose Roles… to see or assign PM, Deputy and Sub-PM (Owner, PM or Deputy).',
     primaryCta: 'Next',
   },
   {

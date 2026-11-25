@@ -32,7 +32,7 @@ import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
-import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers } from './closeFlow';
+import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers, canCloseDirectly } from './closeFlow';
 import { planReplace, applyReplace, planIsEmpty } from './replacePerson.js';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
 import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject, addMemberV2, removeMemberV2 } from './storage-shim';
@@ -2653,7 +2653,7 @@ function ReferencesSection({ task, onUpdate, author, readOnly = false }) {
         <div style={{ marginTop: 4 }}>
           {refs.length === 0 && !adding && (
             <div style={{ fontSize: 12, color: TOK.subtle, padding: '8px 4px', fontStyle: 'italic' }}>
-              {readOnly ? 'No references yet.' : 'No references yet. Add Google Docs, Sheets, or any link related to this milestone.'}
+              {readOnly ? 'No references yet.' : 'No references yet. Add Google Docs, Sheets, or any link related to this task.'}
             </div>
           )}
           {refs.map((r) => (
@@ -4091,7 +4091,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               <div style={{ marginTop: showDecisionForm ? 0 : 12 }}>
                 {linkedDecisions.length === 0 && !showDecisionForm && (
                   <div style={{ fontSize: 12, color: TOK.subtle, padding: '20px 0', textAlign: 'center' }}>
-                    No decisions linked to this milestone yet.
+                    No decisions linked to this task yet.
                   </div>
                 )}
                 {linkedDecisions.map((d) => (
@@ -4129,7 +4129,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               <div style={{ marginTop: showActionForm ? 0 : 12 }}>
                 {linkedActions.length === 0 && !showActionForm && (
                   <div style={{ fontSize: 12, color: TOK.subtle, padding: '20px 0', textAlign: 'center' }}>
-                    No actions linked to this milestone yet.
+                    No actions linked to this task yet.
                   </div>
                 )}
                 {linkedActions.map((a) => (
@@ -4435,9 +4435,9 @@ function DecisionForm({ initial, project, teamMembers, author, defaultRelatedTas
       <Textarea value={context} onChange={setContext} placeholder="Why this decision? Background, alternatives considered…" rows={2} />
 
       <div style={{ height: 12 }} />
-      <FieldLabel>Related milestones (optional)</FieldLabel>
+      <FieldLabel>Related tasks (optional)</FieldLabel>
       <div style={{ maxHeight: 140, overflowY: 'auto', border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface }}>
-        {taskOptions.length === 0 && <div style={{ padding: 10, fontSize: 11, color: TOK.subtle }}>No milestones in this project yet.</div>}
+        {taskOptions.length === 0 && <div style={{ padding: 10, fontSize: 11, color: TOK.subtle }}>No tasks in this project yet.</div>}
         {taskOptions.map((t) => {
           const active = relatedTaskIds.includes(t.id);
           return (
@@ -4580,7 +4580,7 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
         <div style={{ display: 'flex', gap: 12, fontSize: 11, color: TOK.muted, alignItems: 'center', flexWrap: 'wrap' }}>
           <span>📅 {fmtDate(decision.date)}</span>
           <span>👥 {(decision.decidedBy || []).join(', ') || '—'}</span>
-          {related.length > 0 && <span>🎯 {related.length} milestone{related.length === 1 ? '' : 's'}</span>}
+          {related.length > 0 && <span>🎯 {related.length} task{related.length === 1 ? '' : 's'}</span>}
           {decision.meetingRef && <span style={{ background: TOK.bg, padding: '1px 6px', borderRadius: 4 }}>{decision.meetingRef}</span>}
           <span style={{ marginLeft: 'auto', fontSize: 10, color: TOK.subtle }}>by {decision.author}</span>
         </div>
@@ -4701,7 +4701,7 @@ function DecisionsView({ project, onProjectUpdate, teamMembers, author, dialogs,
           </select>
           <select value={filterTaskId} onChange={(e) => setFilterTaskId(e.target.value)}
             style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, maxWidth: 280 }}>
-            <option value="all">All milestones</option>
+            <option value="all">All tasks</option>
             {taskOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
         </div>
@@ -4875,12 +4875,17 @@ function ActionItemForm({ initial, project, teamMembers, author, defaultRelatedT
 
       <div style={{ height: 12 }} />
       <fieldset disabled={locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-      <FieldLabel>{needsTask ? 'Related milestone *' : 'Related milestone (optional)'}</FieldLabel>
+      <FieldLabel>{needsTask ? 'Related task *' : 'Related task (optional)'}</FieldLabel>
       <select value={relatedTaskId || ''} onChange={(e) => setRelatedTaskId(e.target.value)}
         style={{ width: '100%', fontFamily: FONT_STACK, fontSize: 13, padding: '8px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink }}>
-        <option value="">{needsTask ? '— Choose a milestone in your work stream —' : '— None —'}</option>
+        <option value="">{needsTask ? '— Choose a task in your work stream —' : '— None —'}</option>
         {taskOptions.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
       </select>
+      {needsTask && (
+        <div style={{ fontSize: 11, color: TOK.muted, marginTop: 4 }}>
+          Actions belong to a task in a work stream you manage. For anything else, ask the Owner.
+        </div>
+      )}
       </fieldset>
 
       {/* v30.A.1 — Comment thread (Edit mode only; new actions have no comments yet) */}
@@ -6123,7 +6128,7 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                     <div style={{ height: '100%', width: `${r.pct}%`, background: r.pct >= 75 ? TOK.doneFg : r.pct >= 25 ? TOK.inprogFg : TOK.plannedFg }} />
                   </div>
                   <div style={{ display: 'flex', gap: 16, fontSize: 13, color: TOK.muted, marginTop: 8 }}>
-                    <span>{r.done}/{r.total} milestones complete</span>
+                    <span>{r.done}/{r.total} tasks complete</span>
                     {r.inprog > 0 && <span>{r.inprog} in progress</span>}
                     {r.overdue > 0 && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>⚠ {r.overdue} overdue</span>}
                     {r.dropped > 0 && <span>{r.dropped} dropped</span>}
@@ -6297,7 +6302,7 @@ function generateMeetingMinutes({ projects, dateFrom, dateTo, selectedProjectIds
     const statusEmoji = r.overdue > 0 ? '🔴' : r.pct >= 75 ? '🟢' : r.pct >= 25 ? '🟡' : '⚪';
     lines.push(`## ${statusEmoji} ${p.name}`);
     lines.push('');
-    const statusBits = [`${r.pct}% complete`, `${r.done}/${r.total} milestones`];
+    const statusBits = [`${r.pct}% complete`, `${r.done}/${r.total} tasks`];
     if (r.overdue > 0) statusBits.push(`⚠ ${r.overdue} overdue`);
     if (r.dropped > 0) statusBits.push(`${r.dropped} dropped`);
     lines.push(`**Status:** ${statusBits.join(' · ')}`);
@@ -6515,7 +6520,7 @@ function generateMeetingMinutesHtml({ projects, dateFrom, dateTo, selectedProjec
     const r = rollup(p);
     const statusEmoji = r.overdue > 0 ? '🔴' : r.pct >= 75 ? '🟢' : r.pct >= 25 ? '🟡' : '⚪';
     parts.push(`<h2 style="font-size: 18px; font-weight: 600; margin: 0 0 8px;">${statusEmoji} ${escapeHtml(p.name)}</h2>`);
-    const statusBits = [`${r.pct}% complete`, `${r.done}/${r.total} milestones`];
+    const statusBits = [`${r.pct}% complete`, `${r.done}/${r.total} tasks`];
     if (r.overdue > 0) statusBits.push(`⚠ ${r.overdue} overdue`);
     if (r.dropped > 0) statusBits.push(`${r.dropped} dropped`);
     parts.push(`<p style="margin: 0 0 16px;"><strong>Status:</strong> ${escapeHtml(statusBits.join(' · '))}</p>`);
@@ -6721,7 +6726,7 @@ function MeetingExportDialog({ projects, onClose, dialogs, showToast, author, te
             ))}
           </div>
           <div style={{ marginTop: 6, fontSize: 11, color: TOK.subtle, lineHeight: 1.5 }}>
-            Updates, decisions, and action items created within the date range will be included, grouped by project and milestone.
+            Updates, decisions, and action items created within the date range will be included, grouped by project and task.
           </div>
 
           <div style={{ marginTop: 18, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -8638,7 +8643,7 @@ function computePortfolioMetrics(projects, options = {}) {
       signals.push({
         severity: 'high',
         kind: 'project_overdue',
-        message: `${ph.project.name}: ${ph.overdue} of ${ph.total} milestones overdue (${Math.round(100 * ph.overdue / ph.total)}%)`,
+        message: `${ph.project.name}: ${ph.overdue} of ${ph.total} tasks overdue (${Math.round(100 * ph.overdue / ph.total)}%)`,
         suggestion: 'Project may need re-planning',
       });
     }
@@ -9253,12 +9258,20 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
             )}
           </div>
           {isUnlinkedForMe(me, project, { taskId: task.id, pic: task.pic, contributors: task.contributors }) && <UnlinkedHint />}
+          {(() => {
+            // Audit 25/11 MB-2: a rejected close request shows on the row itself.
+            const rej = rejectedCloseItem(task, { uid: me.readOnly ? null : me.uid, isMe: me.isMe, now: new Date() });
+            return rej ? <div style={{ fontSize: 11, color: TOK.overdueFg, marginTop: 2 }}>✕ Rejected by {rej.decidedBy}: {rej.reason}</div> : null;
+          })()}
         </div>
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
           <StatusQuickPill status={task.status} onChange={statusOk && onStatusChange ? (st) => onStatusChange(st) : null} />
         </span>
         {task.status !== 'Completed' && onMarkDone && statusOk && (
-          <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
+          // Audit 25/11 MB-5: say "Submit" when the click sends an approval request.
+          (!project?.__v2 || me.isOwner || canCloseDirectly(tickCtx.roles, task.id, me.uid))
+            ? <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Mark done">✓</Btn>
+            : <Btn size="sm" variant="primary" onClick={(e) => { e.stopPropagation(); onMarkDone(); }} title="Submit as done: your approver reviews it">Submit</Btn>
         )}
         <ChevronDown size={14} style={{ color: TOK.muted, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }} />
       </div>
@@ -9289,7 +9302,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
                   key={entry.action.id + ':' + (entry.subtask.id || idx)}
                   entry={entry}
                   isFirstOpen={idx === 0}
-                  isMine={entry.subtask.pic === author}
+                  isMine={!!me.isMe?.(entry.subtask.pic)}
                   canTick={canTickStep({ ...tickCtx, action: entry.action, isPic: !!me.isMe?.(entry.action.pic) })}
                   onDone={onStepDone ? () => onStepDone(entry.action, entry.subtask) : null}
                 />
@@ -9734,8 +9747,10 @@ function SubtaskMyWorkRow({ subtask, parentAction, project, teamMembers, onMarkD
           {parentAction.dueDate && <span>· 📅 {fmtDateShort(parentAction.dueDate)} (parent due)</span>}
         </div>
       </div>
-      {onMarkDone && (
+      {onMarkDone ? (
         <Btn size="sm" variant="primary" onClick={onMarkDone} title="Mark done">✓</Btn>
+      ) : (
+        <span style={{ fontSize: 11, color: TOK.muted, whiteSpace: 'nowrap' }}>Ask {parentAction.pic || 'the PIC'} to tick this step</span>
       )}
       {onOpenParent && (
         <Btn size="sm" variant="ghost" onClick={onOpenParent} title="Open parent action">→</Btn>
@@ -11419,12 +11434,13 @@ function ByProjectCard({
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
-  const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions } = bundle;
+  const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions, rejected = [] } = bundle;
   const me = useContext(MeContext);
   const [collapsed, setCollapsed] = useState(false);
+  // Audit 25/11 MB-8: with nothing due today, open this week instead of a "Nothing due" line.
   const [openSec, setOpenSec] = useState({
-    taskWeek: false, taskLater: false, taskContrib: false,
-    actionWeek: false, actionLater: false,
+    taskWeek: owned.today.length === 0, taskLater: false, taskContrib: false,
+    actionWeek: actions.today.length === 0, actionLater: false,
     raidEsc: false, raidOver: false, raidReview: false, raidApprove: false,
   });
   const togSec = (k) => setOpenSec((s) => ({ ...s, [k]: !s[k] }));
@@ -11434,7 +11450,7 @@ function ByProjectCard({
   const totalActions = actions.today.length + actions.week.length + actions.later.length;
   const totalRaid = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
   const totalDecisions = decisions.length;
-  const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length;
+  const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length + rejected.length;
   const color = project.color || '#0C447C';
   const colorBg = hex2rgba(color, 0.08);
 
@@ -11478,13 +11494,14 @@ function ByProjectCard({
           parentAction={parent}
           project={e.project}
           teamMembers={teamMembers}
-          onMarkDone={() => {
+          // Audit 25/11 MB-3: only the action's PIC or a manager ticks a step (rules).
+          onMarkDone={canTickStep({ isOwner: !!me.isOwner, isV2: !!e.project.__v2, roles: e.project.__v2 ? e.project.__v2.roles || null : null, uid: me.uid, action: parent, isPic: !!me.isMe?.(parent.pic) }) ? () => {
             const updatedParent = {
               ...parent,
               subtasks: (parent.subtasks || []).map((s) => s.id === sub.id ? { ...s, status: 'Done' } : s),
             };
             onActionUpdate(updatedParent, e.project.id);
-          }}
+          } : null}
           onOpenParent={() => onActionClick && onActionClick(e.project.id, parent.id)}
         />
       );
@@ -11592,11 +11609,21 @@ function ByProjectCard({
                   🔴 Risk escalating: {r.item?.title || '(untitled)'}
                 </div>
               ))}
-              {unreadMentions.slice(0, 5).map((m, i) => (
-                <div key={'am-' + i} style={{ color: '#356512', marginBottom: 2 }}>
-                  💬 {m.postAuthor || '—'}: "{(m.text || '').slice(0, 55)}…"
-                </div>
+              {rejected.map((r) => (
+                <button key={'arj-' + r.task.id} onClick={() => onTaskClick(r.task.id, project.id)}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: TOK.overdueFg, marginBottom: 2 }}>
+                  ✕ Close request rejected: <strong>{r.task.name}</strong> — {r.decidedBy}: {r.reason}
+                </button>
               ))}
+              {/* Audit 25/11 MB-1: each mention opens its task / action; full text. */}
+              {unreadMentions.slice(0, 5).map((m, i) => (
+                <button key={'am-' + i}
+                  onClick={() => (m.task ? onTaskClick(m.task.id, project.id) : m.action && onActionClick ? onActionClick(project.id, m.action.id) : null)}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: '#356512', marginBottom: 2, whiteSpace: 'normal' }}>
+                  💬 {m.postAuthor || '—'} on <strong>{m.task?.name || m.action?.title || 'an item'}</strong>: "{m.text || ''}"
+                </button>
+              ))}
+              {unreadMentions.length > 5 && <div style={{ color: '#356512', fontSize: 11 }}>+ {unreadMentions.length - 5} more in By urgency → Mentions</div>}
             </div>
           )}
 
@@ -11751,6 +11778,7 @@ function ByProjectView({
           actions: { today: [], week: [], later: [] },
           mentions: [],
           unreadMentions: [],
+          rejected: [],
           raid: { escalating: [], overdueActions: [], needsReview: [], pendingApproval: [] },
           decisions: [],
         });
@@ -11765,6 +11793,7 @@ function ByProjectView({
     for (const m of (myWork.allMentions || [])) ensure(m.project)?.mentions.push(m);
     for (const m of (myWork.unreadMentions || [])) ensure(m.project)?.unreadMentions.push(m);
     for (const d of (myWork.decisions || [])) ensure(d.project)?.decisions.push(d);
+    for (const it of (myWork.needsAttention || [])) if (it.kind === 'rejected_close') ensure(it.project)?.rejected.push(it);
     if (myRaid) {
       for (const key of ['pendingApproval', 'escalating', 'overdueActions', 'needsReview']) {
         for (const e of (myRaid[key] || [])) ensure(e.project)?.raid[key].push(e);
@@ -11774,7 +11803,7 @@ function ByProjectView({
       const tasks = b.owned.today.length + b.owned.week.length + b.owned.later.length + b.contributing.length;
       const acts = b.actions.today.length + b.actions.week.length + b.actions.later.length;
       const r = b.raid.escalating.length + b.raid.overdueActions.length + b.raid.needsReview.length + b.raid.pendingApproval.length;
-      return tasks + acts + b.unreadMentions.length + r + b.decisions.length > 0;
+      return tasks + acts + b.unreadMentions.length + b.rejected.length + r + b.decisions.length > 0;
     });
     arr.sort((a, b) => {
       const aOv = a.owned.today.filter((e) => isOverdue(e.task)).length;
@@ -11875,11 +11904,14 @@ function MyWorkView({
     try { localStorage.setItem('myWorkViewMode', viewMode); } catch { /* ignore */ }
   }, [viewMode]);
 
+  // Audit 25/11 MB-1: mentions count as seen when the person leaves My Work, not after
+  // 5 seconds on it (the only signal used to vanish before it could be read).
+  const markSeenRef = useRef(onMarkSeen);
+  markSeenRef.current = onMarkSeen;
   useEffect(() => {
-    if (!onMarkSeen || !author) return;
-    const t = setTimeout(() => onMarkSeen(), 5000);
-    return () => clearTimeout(t);
-  }, [author, onMarkSeen]);
+    if (!author) return undefined;
+    return () => { if (markSeenRef.current) markSeenRef.current(); };
+  }, [author]);
 
   const handleStatusChange = (task, project, newStatus) => {
     const prevStatus = task.status || 'Planned';
@@ -12283,13 +12315,13 @@ function MyWorkView({
                 parentAction={parent}
                 project={e.project}
                 teamMembers={teamMembers}
-                onMarkDone={() => {
+                onMarkDone={canTickStep({ isOwner: !!me.isOwner, isV2: !!e.project.__v2, roles: e.project.__v2 ? e.project.__v2.roles || null : null, uid: me.uid, action: parent, isPic: !!me.isMe?.(parent.pic) }) ? () => {
                   const updatedParent = {
                     ...parent,
                     subtasks: (parent.subtasks || []).map((s) => s.id === sub.id ? { ...s, status: 'Done' } : s),
                   };
                   onActionUpdate(updatedParent, e.project.id);
-                }}
+                } : null}
                 onOpenParent={() => onActionClick && onActionClick(e.project.id, parent.id)}
               />
             );
@@ -12364,9 +12396,9 @@ function MyWorkView({
 
       {/* 📋 Tasks I own */}
       <MyWorkSection
-        icon="📋" title="Tasks I own as Primary PIC"
+        icon="📋" title="My tasks"
         count={counts.owned}
-        defaultOpen={myWork.tasksOwned.today.length > 0}
+        defaultOpen={myWork.tasksOwned.today.length + myWork.tasksOwned.week.length > 0}
         headerRight={
           <MyWorkSubTabs value={ownedTab} onChange={setOwnedTab} tabs={[
             { id: 'today', label: 'Today', count: myWork.tasksOwned.today.length },
@@ -12892,8 +12924,8 @@ function generateBriefingMarkdown({ projects, daysBack = 7, ownerName = null }) 
   lines.push(`- **${newDecisions.length}** new decision${newDecisions.length === 1 ? '' : 's'} logged this week`);
   lines.push(`- **${newActions.length}** new action item${newActions.length === 1 ? '' : 's'} created · **${completedActions.length}** completed`);
   lines.push(`- **${newBlockers.length}** new blocker${newBlockers.length === 1 ? '' : 's'} raised · **${resolvedBlockers.length}** resolved`);
-  if (completedTasks.length > 0) lines.push(`- ✅ **${completedTasks.length}** milestone${completedTasks.length === 1 ? '' : 's'} completed`);
-  if (overdueTasks.length > 0) lines.push(`- 🔴 **${overdueTasks.length}** milestone${overdueTasks.length === 1 ? '' : 's'} overdue right now`);
+  if (completedTasks.length > 0) lines.push(`- ✅ **${completedTasks.length}** task${completedTasks.length === 1 ? '' : 's'} completed`);
+  if (overdueTasks.length > 0) lines.push(`- 🔴 **${overdueTasks.length}** task${overdueTasks.length === 1 ? '' : 's'} overdue right now`);
   if (decayedDecisions.length > 0) lines.push(`- 🕐 **${decayedDecisions.length}** decision${decayedDecisions.length === 1 ? '' : 's'} need review (past expected review date)`);
   lines.push('');
 
@@ -13062,8 +13094,8 @@ function generateBriefingHtml({ projects, daysBack = 7, ownerName = null }) {
   parts.push(`<li><strong>${newDecisions.length}</strong> new decision${newDecisions.length === 1 ? '' : 's'} logged this week</li>`);
   parts.push(`<li><strong>${newActions.length}</strong> new action${newActions.length === 1 ? '' : 's'} created · <strong>${completedActions.length}</strong> completed</li>`);
   parts.push(`<li><strong>${newBlockers.length}</strong> new blocker${newBlockers.length === 1 ? '' : 's'} raised · <strong>${resolvedBlockers.length}</strong> resolved</li>`);
-  if (completedTasks.length > 0) parts.push(`<li>✅ <strong>${completedTasks.length}</strong> milestone${completedTasks.length === 1 ? '' : 's'} completed</li>`);
-  if (overdueTasks.length > 0) parts.push(`<li>🔴 <strong>${overdueTasks.length}</strong> milestone${overdueTasks.length === 1 ? '' : 's'} overdue right now</li>`);
+  if (completedTasks.length > 0) parts.push(`<li>✅ <strong>${completedTasks.length}</strong> task${completedTasks.length === 1 ? '' : 's'} completed</li>`);
+  if (overdueTasks.length > 0) parts.push(`<li>🔴 <strong>${overdueTasks.length}</strong> task${overdueTasks.length === 1 ? '' : 's'} overdue right now</li>`);
   if (decayedDecisions.length > 0) parts.push(`<li>🕐 <strong>${decayedDecisions.length}</strong> decision${decayedDecisions.length === 1 ? '' : 's'} need review</li>`);
   parts.push(`</ul>`);
 
@@ -15023,7 +15055,7 @@ export default function App() {
           <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             setProjectMenu({ x: Math.max(8, rect.right - 260), y: rect.bottom + 4 });
-          }} title="Export, import, people and project settings" aria-haspopup="menu"><MoreHorizontal size={12} /> {isOwner ? 'Export / Import' : 'Export'}</Btn></span>
+          }} title="Export, import, people and project settings" aria-haspopup="menu"><MoreHorizontal size={12} /> More</Btn></span>
           <button
             onClick={() => setUserMenuOpen(!userMenuOpen)}
             title="Account menu"
@@ -15114,8 +15146,8 @@ export default function App() {
                     if (projectId && projectId !== currentId) {
                       await switchProject(projectId);
                     }
+                    // Audit 25/11 MB-4 / PM-3: the task panel opens beside My Work (no jump to Outline).
                     setSelectedTaskId(taskId);
-                    setView('outline');
                   }}
                   onActionClick={async (projectId, actionId) => {
                     if (projectId && projectId !== currentId) {

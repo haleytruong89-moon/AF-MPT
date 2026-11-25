@@ -107,6 +107,17 @@ export function CloseControl({ task, roles, onUpdate, dialogs }) {
           <Chip status={status}>{LABEL[status] || status}</Chip>
         </div>
       )}
+      {kind === 'open' && (() => {
+        // Audit 25/11 MB-2: say why the task is open again, above the buttons.
+        const h = Array.isArray(task.closeRequestHistory) ? task.closeRequestHistory[0] : null;
+        if (!h || h.status !== 'Rejected') return null;
+        return (
+          <div style={{ fontSize: 11.5, color: '#A32D2D', marginBottom: 6 }}>
+            Last request rejected by {h.decidedBy || me.nameOf(h.decidedByUid) || 'the approver'}
+            {h.decidedAt ? ` on ${fmtDay(h.decidedAt)}` : ''}: {h.reason || '—'}
+          </div>
+        );
+      })()}
       {kind === 'open' && (me.readOnly || !buttons.length) && <Chip status={status}>{LABEL[status] || status}</Chip>}
       {buttons.length > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
