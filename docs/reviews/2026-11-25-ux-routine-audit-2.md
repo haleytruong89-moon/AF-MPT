@@ -127,18 +127,81 @@ Câu hỏi của HOD ở lần rà soát trước (2 ô có trùng nhau không):
 
 ## 6. Cần HOD quyết
 
-1. **Ai xem được credit của ai.** Hiện mọi người đọc được project đều thấy phần chia credit của mọi người trong panel task, và Dashboard "Recent activity" hiện cả dòng từ chối đóng task của người khác. Ngày 11/11 chị đã chọn ẩn tab Activity và dòng "Top credit" với non-Owner. Có áp cùng quy tắc ở hai chỗ này không? (MB-16)
-2. **PM có được xem credit theo người trong program của mình không?** Nếu có, bảng "By person" (PM-21) thêm được hai cột credit; nếu không, banner credit pool trên Outline nên thu gọn với non-Owner. (PM-26, PM-32)
-3. **PM / Sub-PM có được thấy RAID của program mình khi còn chờ Owner duyệt không?** Hiện PM thấy biểu tượng đồng hồ cát nhưng danh sách trống. (PM-18)
-4. **Blocker mới:** chỉ hiện trong My Work của người quản lý, hay gửi thêm thẻ Chat? (PM-2)
-5. **Action không gắn task** (việc phát sinh trong họp, không thuộc task nào): hiện chỉ Owner tạo được. Giữ nguyên (ghi rõ trong form) hay mở cho PM (đổi rules)? (PM-8)
-6. **Hồ sơ của chính mình:** đồng ý cho member xem "Closed by me" và credit theo năm, có chi tiết theo task của chính họ không? Đây là điểm các công cụ performance (Lattice, 15Five) coi là mặc định: người được đánh giá xem được hồ sơ của mình quanh năm và biết ai khác xem được. (MB-14, MB-15, tiêu chí 10–11)
+Mỗi câu: các phương án, ưu / nhược, khuyến nghị và lý do.
+
+Lưu ý chung cho câu 1–3: **ẩn trên giao diện không phải là bảo mật.** Rules hiện cho mọi member của project đọc toàn bộ task, RAID và activity của project đó; ai biết dùng công cụ dev vẫn đọc được dữ liệu thô. Muốn chặn thật phải đổi rules và tách dữ liệu, việc lớn hơn nhiều. Các phương án dưới đây là về **những gì app chủ động bày ra**, phù hợp với cách chị đã chọn ngày 11/11 (ẩn tab Activity và dòng "Top credit").
+
+### Câu 1 — Member có thấy phần chia credit và dòng bị từ chối của người khác không? (MB-16)
+
+Hiện tại: panel task hiện phần trăm và cp của mọi người trên task đó; Dashboard "Recent activity" (15 dòng mới nhất) hiện cả "Rejected close request … (requested by Y): lý do" và lời từ chối đổi deadline của chị.
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Giữ nguyên | Không phải làm gì; minh bạch trong nhóm | Lời từ chối kèm lý do của một người hiện cho cả project xem — dễ thành chuyện "bêu" người; không khớp quyết định 11/11 |
+| B. Panel task: non-manager chỉ thấy dòng của mình + tổng pool; Dashboard: ẩn "Recent activity" với non-Owner | Khớp 11/11; người được chấm không bị so sánh công khai từng task | Người cùng làm một task không thấy mình được chia bao nhiêu so với người kia |
+| C. Như B nhưng giữ "Recent activity", chỉ lọc bỏ các dòng từ chối / deadline không liên quan tới người xem | Vẫn giữ cảm giác "nhóm đang làm gì" | Lọc theo loại dòng phải giữ cập nhật khi có loại mới |
+
+**Khuyến nghị: B**, vì (1) cùng logic chị đã chọn 11/11, (2) lý do từ chối là phản hồi cá nhân, chuẩn của Lattice / 15Five là phản hồi có người xem được nêu rõ, không công khai mặc định, (3) contributor vẫn thấy phần của chính mình. Cỡ: nhỏ.
+
+### Câu 2 — PM có được xem credit theo người trong program của mình không? (PM-26, PM-32)
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Không (như hiện tại); thu gọn banner credit pool trên Outline với non-Owner thành 1 dòng | Credit chỉ chị nắm, ít tranh luận | PM không kiểm được việc phân task có công bằng không; cuối năm PM không có số liệu để góp ý đánh giá; banner chiếm chỗ mà PM không dùng được |
+| B. Có, chỉ người trong program PM quản lý, projected + earned theo năm | PM tự cân lại phân việc trong năm; đúng vai "người quản lý trực tiếp duyệt Done" đã chốt 14/10 | PM thấy credit của chính mình so với người khác; có thể gây so bì giữa các program |
+| C. Có, nhưng chỉ số task đã giao đúng hạn / trễ theo người, không có điểm credit | PM có bằng chứng giao việc mà không thấy điểm | Thiếu nửa bức tranh; PM vẫn hỏi chị điểm |
+
+**Khuyến nghị: C bây giờ, xem lại B vào cuối Q1/2027**, vì (1) đúng hạn / trễ là dữ liệu PM đã tạo ra khi duyệt nên PM có quyền dùng, (2) điểm credit có trọng số do chị đặt — để PM thấy sớm dễ thành mặc cả trọng số trước khi quy trình ổn định, (3) theo chuẩn thị trường điểm đánh giá đi qua bước "calibration" của cấp trên trước khi chia sẻ. Kèm theo: thu gọn banner credit pool với non-Owner. Cỡ: nhỏ (C dùng chung bảng "By person" của PM-21).
+
+### Câu 3 — PM / Sub-PM có thấy RAID của program mình khi còn chờ chị duyệt không? (PM-18)
+
+Hiện tại: chỉ người tạo và chị thấy; PM thấy biểu tượng đồng hồ cát nhưng danh sách trống.
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Giữ nguyên, chỉ bỏ biểu tượng đồng hồ cát với người không thấy được | Chị lọc trước rồi mới công bố | PM chịu trách nhiệm rủi ro của program nhưng biết sau cùng; Issue (việc đã xảy ra) cũng phải chờ |
+| B. PM / Deputy / Sub-PM của program thấy, có nhãn "Waiting for Owner approval", không duyệt được | Người chịu trách nhiệm biết ngay; có thể chuẩn bị biện pháp trong lúc chờ | Mục chưa duyệt (có thể bị từ chối) lộ ra cho 2–3 người |
+| C. Như B nhưng chỉ PM / Deputy, không Sub-PM khác | Hẹp hơn | Sub-PM tạo mục vẫn thấy (là người tạo); Sub-PM work stream bên cạnh không thấy — khó giải thích |
+
+**Khuyến nghị: B**, vì (1) chuẩn RAID: mọi mục có chủ và được xem ở buổi họp tuần — PM là người chủ trì buổi đó, (2) người thấy thêm chỉ là quản lý của chính program đó, (3) quyền kích hoạt vẫn chỉ chị. Cỡ: nhỏ, không đổi rules.
+
+### Câu 4 — Blocker mới báo cho người quản lý bằng cách nào? (PM-2)
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Chỉ thêm mục "Blocker on {task}" trong Needs attention của người quản lý task đó | Không ồn; quản lý thấy khi mở app | Quản lý không mở app thì không biết; blocker là việc gấp |
+| B. A + thẻ Google Chat vào space của project (nếu project có webhook) | Tới ngay, cả nhóm biết để hỗ trợ | Space ồn hơn; blocker có thể nhạy cảm |
+| C. A + thẻ Chat chỉ khi blocker chưa xử lý sau 1 ngày làm việc | Ít ồn, vẫn có lưới an toàn | Không có máy chủ: chỉ gửi được khi có ai mở app sau mốc 1 ngày, có thể gửi trùng nhiều trình duyệt (lý do đã hoãn P7 ngày 16/11) |
+
+**Khuyến nghị: B**, vì (1) blocker là cách người làm xin trợ giúp — chuẩn NN/g: việc cần hành động thì báo nổi bật, (2) space Chat của project đã nhận thẻ gửi duyệt / từ chối nên thêm một loại không đổi thói quen, (3) C có lỗi gửi trùng vì app không có máy chủ. Người gắn cờ vẫn chọn được không tick "blocker" nếu nhạy cảm. Cỡ: nhỏ.
+
+### Câu 5 — Action không gắn task (việc phát sinh trong họp) (PM-8)
+
+Hiện tại: PM / Sub-PM chỉ tạo action gắn với task trong work stream mình quản lý; action không gắn task chỉ chị tạo được.
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Giữ nguyên, ghi rõ trong form "Actions belong to a task… For anything else ask the Owner"; đổi chữ "milestone" thành "task" | Không đổi rules; mọi action có chủ quản lý rõ | Việc vặt trong họp phải nhờ chị hoặc gắn tạm vào một task không liên quan |
+| B. Cho PM tạo action gắn với **program** (không cần task) | Đúng thực tế họp; PM vẫn bị giới hạn trong program của mình | Đổi rules + test emulator + publish rules; thêm một trường phạm vi cho action |
+| C. Mỗi work stream có sẵn một task "General follow-ups" để gắn | Không đổi rules | Task giả làm sai số đếm, % và credit |
+
+**Khuyến nghị: A ngay (trong đợt 1), B khi làm đợt 5 (họp và báo cáo)**, vì (1) A gỡ nhầm lẫn hiện tại mà không rủi ro, (2) B là đổi rules nên nên gộp với đợt có test rules và chị publish một lần, (3) C làm sai số liệu chấm performance. Cỡ: A nhỏ; B vừa.
+
+### Câu 6 — Member xem "Closed by me" và credit theo năm của chính mình? (MB-14, MB-15)
+
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| A. Không (như hiện tại) | Chị kiểm soát thời điểm công bố điểm | Người được chấm không biết hồ sơ của mình tới cuối năm → bất ngờ, tranh luận khi đánh giá; mỗi người tự giữ file riêng |
+| B. Có: việc đã đóng + đúng hạn / trễ + credit theo năm, theo từng task của chính mình; không so với người khác | Chuẩn thị trường (Lattice, 15Five, Culture Amp): hồ sơ của mình xem được quanh năm, chống thiên lệch "nhớ việc gần đây"; người làm tự sửa sai sớm | Điểm projected thay đổi khi chị chỉnh trọng số → cần ghi rõ "dự kiến, có thể thay đổi" |
+| C. Có việc đã đóng + đúng hạn / trễ; credit chỉ hiện sau khi chị khóa trọng số năm | Không lộ điểm khi trọng số còn đổi | Hai bước; member vẫn hỏi về điểm |
+
+**Khuyến nghị: B, kèm nhãn "Projected — may change until the Owner locks the weights"**, vì (1) app đã có khóa trọng số (Lock weights) — dùng luôn làm mốc "điểm chính thức", (2) minh bạch với chính người được chấm là điều kiện để họ tin con số, (3) không ai thấy điểm của người khác (khớp câu 1). Cỡ: vừa, cần spec ngắn.
 
 ## 7. Lộ trình đề xuất
 
 | Đợt | Nội dung | Vì sao | Điều kiện |
 |---|---|---|---|
-| **1. Trước onboard** | MB-1, MB-2, MB-3, MB-4 / PM-3, MB-5, MB-8, PM-2, PM-14 | Toàn việc nhỏ; làm cho màn mặc định nói đủ những gì xảy ra với việc của mình | Không cần quyết định nào |
+| **1. Trước onboard** | MB-1, MB-2, MB-3, MB-4 / PM-3, MB-5, MB-8, PM-14, PM-8 phương án A (chữ "milestone" → "task" + ghi chú) | Toàn việc nhỏ; làm cho màn mặc định nói đủ những gì xảy ra với việc của mình | Không cần quyết định nào |
 | **2. Phạm vi (C2)** | R1, R2, R3, R5, R7; sau đó R4, R6 | Gỡ nhầm lẫn lớn nhất của người quản lý; là nền cho đợt 3 và 5 | Spec ngắn |
 | **3. Góc nhìn quản lý** | PM-1, PM-4, PM-5, PM-7, PM-21, PM-22 | Trả lời "cái gì cần tôi hôm nay" và "ai đang quá tải" | Câu 2, 3, 4 |
 | **4. Hồ sơ cá nhân** | MB-14, MB-15, MB-6 | Nhịp tháng / quý / năm của member; minh bạch dữ liệu chấm performance | Câu 1, 6 |
