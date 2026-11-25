@@ -40,6 +40,7 @@ import { meetingTaskLists, takeWithMore } from './meetingLists.js';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
+import { collectBriefing, briefingEntries, briefingMarkdown, markdownToHtml } from './briefing.js';
 import { minutesDefaults } from './minutesDefaults.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
@@ -13486,354 +13487,40 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
 
 /* ═════════ BRIEFING PACK ═════════ */
 
-function generateBriefingMarkdown({ projects, daysBack = 7, ownerName = null }) {
-  const now = new Date();
-  const from = new Date(now);
-  from.setDate(from.getDate() - daysBack);
-  from.setHours(0, 0, 0, 0);
-
-  const inWindow = (ts) => {
-    if (!ts) return false;
-    const d = new Date(ts);
-    return !isNaN(d) && d >= from && d <= now;
-  };
-  const inWindowDate = (dateStr) => {
-    if (!dateStr) return false;
-    const d = parseDate(dateStr);
-    return d && d >= from && d <= now;
-  };
-
-  const lines = [];
-  const headerDate = `${fmtDate(from)} → ${fmtDate(now)}`;
-  lines.push(`# 📋 Weekly Briefing — ${headerDate}`);
-  lines.push('');
-  if (ownerName) {
-    lines.push(`**Owner:** ${ownerName}`);
-    lines.push('');
-  }
-
-  const newDecisions = [];
-  const decayedDecisions = [];
-  const newActions = [];
-  const completedActions = [];
-  const newBlockers = [];
-  const resolvedBlockers = [];
-  const overdueTasks = [];
-  const completedTasks = [];
-
-  for (const project of Object.values(projects)) {
-    for (const d of (project.decisions || [])) {
-      const decay = getDecisionDecay(d, now);
-      if (decay.decayed) decayedDecisions.push({ project, decision: d, decay });
-      if (inWindowDate(d.date)) newDecisions.push({ project, decision: d });
-    }
-    for (const a of (project.actionItems || [])) {
-      if (inWindow(a.timestamp)) newActions.push({ project, action: a });
-      if (a.status === 'Done' && inWindow(a.completedAt || a.timestamp)) completedActions.push({ project, action: a });
-    }
-    for (const pg of project.programs || []) {
-      for (const ws of pg.workstreams || []) {
-        for (const t of ws.tasks || []) {
-          for (const u of (t.updates || [])) {
-            if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
-            if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
-          }
-          if (isOverdueTask(t, now)) {
-            const lateDays = daysBetween(t.end, now);
-            if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
-          }
-          if (t.status === 'Completed' && t.end && inWindowDate(t.end)) {
-            completedTasks.push({ project, program: pg, workstream: ws, task: t });
-          }
-        }
-      }
-    }
-  }
-
-  lines.push(`## 📊 At a glance`);
-  lines.push('');
-  lines.push(`- **${newDecisions.length}** new decision${newDecisions.length === 1 ? '' : 's'} logged this week`);
-  lines.push(`- **${newActions.length}** new action item${newActions.length === 1 ? '' : 's'} created · **${completedActions.length}** completed`);
-  lines.push(`- **${newBlockers.length}** new blocker${newBlockers.length === 1 ? '' : 's'} raised · **${resolvedBlockers.length}** resolved`);
-  if (completedTasks.length > 0) lines.push(`- ✅ **${completedTasks.length}** task${completedTasks.length === 1 ? '' : 's'} completed`);
-  if (overdueTasks.length > 0) lines.push(`- 🔴 **${overdueTasks.length}** task${overdueTasks.length === 1 ? '' : 's'} overdue right now`);
-  if (decayedDecisions.length > 0) lines.push(`- 🕐 **${decayedDecisions.length}** decision${decayedDecisions.length === 1 ? '' : 's'} need review (past expected review date)`);
-  lines.push('');
-
-  const talkingPoints = [];
-  if (overdueTasks.length > 0) {
-    const top = overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 3);
-    for (const o of top) talkingPoints.push(`**${o.task.name}** is ${o.lateDays}d overdue (${o.project.name})`);
-  }
-  if (decayedDecisions.length > 0) {
-    talkingPoints.push(`Review ${decayedDecisions.length} decision${decayedDecisions.length === 1 ? '' : 's'} past expected review date`);
-  }
-  const unresolvedNew = newBlockers.filter((b) => !b.update.resolvedAt);
-  if (unresolvedNew.length > 0) {
-    talkingPoints.push(`${unresolvedNew.length} blocker${unresolvedNew.length === 1 ? '' : 's'} still unresolved`);
-  }
-  if (newDecisions.length === 0 && newActions.length === 0) {
-    talkingPoints.push(`Quiet week — confirm each program is making progress`);
-  }
-  if (talkingPoints.length > 0) {
-    lines.push(`## 💬 Suggested talking points`);
-    lines.push('');
-    for (const tp of talkingPoints) lines.push(`- ${tp}`);
-    lines.push('');
-  }
-
-  if (overdueTasks.length > 0) {
-    lines.push(`## 🔴 Overdue right now`);
-    lines.push('');
-    lines.push(`| Milestone | Program | PIC | Days late |`);
-    lines.push(`|---|---|---|---|`);
-    overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 10).forEach((o) => {
-      lines.push(`| ${o.task.name} | ${o.program.name} | ${o.task.pic || '—'} | ${o.lateDays}d |`);
-    });
-    if (overdueTasks.length > 10) lines.push(`| _… and ${overdueTasks.length - 10} more_ | | | |`);
-    lines.push('');
-  }
-
-  if (decayedDecisions.length > 0) {
-    lines.push(`## 🕐 Decisions need review`);
-    lines.push('');
-    lines.push(`| Decision | Project | Days overdue | Decided by |`);
-    lines.push(`|---|---|---|---|`);
-    decayedDecisions.sort((a, b) => b.decay.daysOverdue - a.decay.daysOverdue).slice(0, 10).forEach((d) => {
-      lines.push(`| ${(d.decision.text || '').slice(0, 80)} | ${d.project.name} | ${d.decay.daysOverdue}d | ${(d.decision.decidedBy || []).join(', ')} |`);
-    });
-    lines.push('');
-  }
-
-  if (newDecisions.length > 0) {
-    lines.push(`## 📋 New decisions this week`);
-    lines.push('');
-    for (const { project, decision } of newDecisions) {
-      lines.push(`- **${decision.text}** _(${project.name})_`);
-      const meta = [];
-      if (decision.decidedBy && decision.decidedBy.length) meta.push(`by ${decision.decidedBy.join(', ')}`);
-      if (decision.meetingRef) meta.push(decision.meetingRef);
-      if (meta.length) lines.push(`  - ${meta.join(' · ')}`);
-    }
-    lines.push('');
-  }
-
-  const activeBlockers = newBlockers.filter((b) => !b.update.resolvedAt);
-  if (activeBlockers.length > 0) {
-    lines.push(`## 🚩 Active blockers`);
-    lines.push('');
-    for (const b of activeBlockers) {
-      lines.push(`- **${b.task.name}** (${b.project.name}): ${b.update.text || ''}`);
-      lines.push(`  - Raised by ${b.update.author} on ${fmtDateTime(b.update.timestamp)}`);
-    }
-    lines.push('');
-  }
-
-  if (resolvedBlockers.length > 0) {
-    lines.push(`## ✓ Blockers resolved this week`);
-    lines.push('');
-    for (const b of resolvedBlockers) {
-      lines.push(`- ${b.task.name} (${b.project.name}) — resolved by ${b.update.resolvedBy}`);
-    }
-    lines.push('');
-  }
-
-  if (completedTasks.length > 0 || completedActions.length > 0) {
-    lines.push(`## ✅ Completed this week`);
-    lines.push('');
-    for (const c of completedTasks) lines.push(`- 🎯 ${c.task.name} (${c.project.name})`);
-    for (const c of completedActions) lines.push(`- ✓ ${c.action.title} (${c.project.name})`);
-    lines.push('');
-  }
-
-  lines.push(`---`);
-  lines.push('');
-  lines.push(`_Generated ${fmtDateTime(now)} from AF Master Project Tracker._`);
-
-  return lines.join('\n');
-}
-
-function generateBriefingHtml({ projects, daysBack = 7, ownerName = null }) {
-  const FONT = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;`;
-  const cell = `border: 1px solid #e5e3dc; padding: 8px 10px; vertical-align: top;`;
-  const cellHead = `${cell} background: #f7f5ef; font-weight: 600; text-align: left;`;
-
-  const now = new Date();
-  const from = new Date(now);
-  from.setDate(from.getDate() - daysBack);
-  from.setHours(0, 0, 0, 0);
-
-  const inWindow = (ts) => {
-    if (!ts) return false;
-    const d = new Date(ts);
-    return !isNaN(d) && d >= from && d <= now;
-  };
-  const inWindowDate = (dateStr) => {
-    if (!dateStr) return false;
-    const d = parseDate(dateStr);
-    return d && d >= from && d <= now;
-  };
-
-  const newDecisions = [];
-  const decayedDecisions = [];
-  const newActions = [];
-  const completedActions = [];
-  const newBlockers = [];
-  const resolvedBlockers = [];
-  const overdueTasks = [];
-  const completedTasks = [];
-
-  for (const project of Object.values(projects)) {
-    for (const d of (project.decisions || [])) {
-      const decay = getDecisionDecay(d, now);
-      if (decay.decayed) decayedDecisions.push({ project, decision: d, decay });
-      if (inWindowDate(d.date)) newDecisions.push({ project, decision: d });
-    }
-    for (const a of (project.actionItems || [])) {
-      if (inWindow(a.timestamp)) newActions.push({ project, action: a });
-      if (a.status === 'Done' && inWindow(a.completedAt || a.timestamp)) completedActions.push({ project, action: a });
-    }
-    for (const pg of project.programs || []) {
-      for (const ws of pg.workstreams || []) {
-        for (const t of ws.tasks || []) {
-          for (const u of (t.updates || [])) {
-            if (u.isBlocker && inWindow(u.timestamp)) newBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
-            if (u.isBlocker && u.resolvedAt && inWindow(u.resolvedAt)) resolvedBlockers.push({ project, program: pg, workstream: ws, task: t, update: u });
-          }
-          if (isOverdueTask(t, now)) {
-            const lateDays = daysBetween(t.end, now);
-            if (lateDays >= 0) overdueTasks.push({ project, program: pg, workstream: ws, task: t, lateDays });
-          }
-          if (t.status === 'Completed' && t.end && inWindowDate(t.end)) {
-            completedTasks.push({ project, program: pg, workstream: ws, task: t });
-          }
-        }
-      }
-    }
-  }
-
-  const parts = [];
-  const headerDate = `${fmtDate(from)} → ${fmtDate(now)}`;
-  parts.push(`<div style="${FONT} font-size: 14px; line-height: 1.55; color: #1a1a19; max-width: 900px;">`);
-  parts.push(`<h1 style="font-size: 22px; font-weight: 600; margin: 0 0 8px;">📋 Weekly Briefing — ${escapeHtml(headerDate)}</h1>`);
-  if (ownerName) {
-    parts.push(`<p style="margin: 0 0 16px; color: #6e6c66;"><strong>Owner:</strong> ${escapeHtml(ownerName)}</p>`);
-  }
-
-  parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">📊 At a glance</h2>`);
-  parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-  parts.push(`<li><strong>${newDecisions.length}</strong> new decision${newDecisions.length === 1 ? '' : 's'} logged this week</li>`);
-  parts.push(`<li><strong>${newActions.length}</strong> new action${newActions.length === 1 ? '' : 's'} created · <strong>${completedActions.length}</strong> completed</li>`);
-  parts.push(`<li><strong>${newBlockers.length}</strong> new blocker${newBlockers.length === 1 ? '' : 's'} raised · <strong>${resolvedBlockers.length}</strong> resolved</li>`);
-  if (completedTasks.length > 0) parts.push(`<li>✅ <strong>${completedTasks.length}</strong> task${completedTasks.length === 1 ? '' : 's'} completed</li>`);
-  if (overdueTasks.length > 0) parts.push(`<li>🔴 <strong>${overdueTasks.length}</strong> task${overdueTasks.length === 1 ? '' : 's'} overdue right now</li>`);
-  if (decayedDecisions.length > 0) parts.push(`<li>🕐 <strong>${decayedDecisions.length}</strong> decision${decayedDecisions.length === 1 ? '' : 's'} need review</li>`);
-  parts.push(`</ul>`);
-
-  const talkingPoints = [];
-  if (overdueTasks.length > 0) {
-    const top = overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 3);
-    for (const o of top) talkingPoints.push(`<strong>${escapeHtml(o.task.name)}</strong> is ${o.lateDays}d overdue (${escapeHtml(o.project.name)})`);
-  }
-  if (decayedDecisions.length > 0) talkingPoints.push(`Review ${decayedDecisions.length} decision${decayedDecisions.length === 1 ? '' : 's'} past expected review date`);
-  const unresolvedNew = newBlockers.filter((b) => !b.update.resolvedAt);
-  if (unresolvedNew.length > 0) talkingPoints.push(`${unresolvedNew.length} blocker${unresolvedNew.length === 1 ? '' : 's'} still unresolved`);
-  if (newDecisions.length === 0 && newActions.length === 0) talkingPoints.push(`Quiet week — confirm each program is making progress`);
-
-  if (talkingPoints.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">💬 Suggested talking points</h2>`);
-    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-    for (const tp of talkingPoints) parts.push(`<li>${tp}</li>`);
-    parts.push(`</ul>`);
-  }
-
-  if (overdueTasks.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🔴 Overdue right now</h2>`);
-    parts.push(`<table style="border-collapse: collapse; width: 100%; margin: 0 0 16px; font-size: 13px; ${FONT}">`);
-    parts.push(`<thead><tr><th style="${cellHead}">Milestone</th><th style="${cellHead}">Program</th><th style="${cellHead}">PIC</th><th style="${cellHead}">Days late</th></tr></thead><tbody>`);
-    overdueTasks.sort((a, b) => b.lateDays - a.lateDays).slice(0, 10).forEach((o) => {
-      parts.push(`<tr><td style="${cell}">${escapeHtml(o.task.name)}</td><td style="${cell}">${escapeHtml(o.program.name)}</td><td style="${cell}">${escapeHtml(o.task.pic || '—')}</td><td style="${cell} color: #A32D2D; font-weight: 500;">${o.lateDays}d</td></tr>`);
-    });
-    parts.push(`</tbody></table>`);
-  }
-
-  if (decayedDecisions.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🕐 Decisions need review</h2>`);
-    parts.push(`<table style="border-collapse: collapse; width: 100%; margin: 0 0 16px; font-size: 13px; ${FONT}">`);
-    parts.push(`<thead><tr><th style="${cellHead}">Decision</th><th style="${cellHead}">Project</th><th style="${cellHead}">Days overdue</th><th style="${cellHead}">Decided by</th></tr></thead><tbody>`);
-    decayedDecisions.sort((a, b) => b.decay.daysOverdue - a.decay.daysOverdue).slice(0, 10).forEach((d) => {
-      parts.push(`<tr><td style="${cell}">${escapeHtml((d.decision.text || '').slice(0, 80))}</td><td style="${cell}">${escapeHtml(d.project.name)}</td><td style="${cell} color: #A8660C; font-weight: 500;">${d.decay.daysOverdue}d</td><td style="${cell}">${escapeHtml((d.decision.decidedBy || []).join(', '))}</td></tr>`);
-    });
-    parts.push(`</tbody></table>`);
-  }
-
-  if (newDecisions.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">📋 New decisions this week</h2>`);
-    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-    for (const { project, decision } of newDecisions) {
-      parts.push(`<li><strong>${escapeHtml(decision.text)}</strong> <em style="color: #6e6c66;">(${escapeHtml(project.name)})</em>`);
-      if ((decision.decidedBy || []).length || decision.meetingRef) {
-        parts.push(`<div style="font-size: 12px; color: #6e6c66; margin-top: 2px;">${escapeHtml((decision.decidedBy || []).join(', '))}${decision.meetingRef ? ' · ' + escapeHtml(decision.meetingRef) : ''}</div>`);
-      }
-      parts.push(`</li>`);
-    }
-    parts.push(`</ul>`);
-  }
-
-  const activeB = newBlockers.filter((b) => !b.update.resolvedAt);
-  if (activeB.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">🚩 Active blockers</h2>`);
-    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-    for (const b of activeB) {
-      parts.push(`<li><strong>${escapeHtml(b.task.name)}</strong> <em style="color: #6e6c66;">(${escapeHtml(b.project.name)})</em>: ${escapeHtml(b.update.text || '')}<div style="font-size: 12px; color: #95938c; margin-top: 2px;">Raised by ${escapeHtml(b.update.author)} on ${escapeHtml(fmtDateTime(b.update.timestamp))}</div></li>`);
-    }
-    parts.push(`</ul>`);
-  }
-
-  if (resolvedBlockers.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">✓ Blockers resolved this week</h2>`);
-    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-    for (const b of resolvedBlockers) {
-      parts.push(`<li>${escapeHtml(b.task.name)} <em style="color: #6e6c66;">(${escapeHtml(b.project.name)})</em> — resolved by ${escapeHtml(b.update.resolvedBy)}</li>`);
-    }
-    parts.push(`</ul>`);
-  }
-
-  if (completedTasks.length > 0 || completedActions.length > 0) {
-    parts.push(`<h2 style="font-size: 16px; font-weight: 600; margin: 24px 0 8px;">✅ Completed this week</h2>`);
-    parts.push(`<ul style="margin: 0 0 16px; padding-left: 22px;">`);
-    for (const c of completedTasks) parts.push(`<li>🎯 ${escapeHtml(c.task.name)} <em style="color: #6e6c66;">(${escapeHtml(c.project.name)})</em></li>`);
-    for (const c of completedActions) parts.push(`<li>✓ ${escapeHtml(c.action.title)} <em style="color: #6e6c66;">(${escapeHtml(c.project.name)})</em></li>`);
-    parts.push(`</ul>`);
-  }
-
-  parts.push(`<hr style="border: none; border-top: 1px solid #e5e3dc; margin: 24px 0;" />`);
-  parts.push(`<p style="font-size: 11px; color: #95938c; font-style: italic; margin: 0;">Generated ${escapeHtml(fmtDateTime(now))} from AF Master Project Tracker.</p>`);
-  parts.push(`</div>`);
-  return parts.join('');
-}
-
-function BriefingDialog({ projects, isOwnerMode = false, ownerName = null, teamMembers = [], onClose, showToast }) {
+// Audit 25/11 PM-16 / MB-11: scope chosen in the dialog (default: the open project and its scope),
+// generated on open and when the choice changes; "For you" first; rich copy from the edited text.
+// Data and Markdown: src/briefing.js.
+function BriefingDialog({ projects, isOwnerMode = false, ownerName = null, teamMembers = [], onClose, showToast, initialProjectId = null, initialScope = null, me = null }) {
   const [daysBack, setDaysBack] = useState(BRIEFING_DEFAULT_WINDOW_DAYS);
+  const [projectId, setProjectId] = useState(initialProjectId && projects[initialProjectId] ? initialProjectId : '');
+  const [scope, setScope] = useState(initialProjectId && projects[initialProjectId] ? (initialScope || '') : '');
   const [preview, setPreview] = useState('');
-  const [generated, setGenerated] = useState(false);
-
-  const generate = () => {
-    const md = generateBriefingMarkdown({ projects, daysBack, ownerName: isOwnerMode ? ownerName : null });
-    setPreview(md);
-    setGenerated(true);
-  };
+  const [edited, setEdited] = useState(false);
+  const project = projectId ? projects[projectId] : null;
+  const scopeChoices = useMemo(() => (project ? scopeOptions(project, me?.uid || null) : []), [project, me]);
+  const scopeLabel = useMemo(() => {
+    if (!project) return 'All projects';
+    const o = scope ? scopeChoices.find((x) => x.value === scope) : null;
+    return o ? `${project.name} › ${o.label.replace(/^My work stream: /, '')}` : project.name;
+  }, [project, scope, scopeChoices]);
+  const build = useCallback(() => {
+    const entries = briefingEntries(projects, { projectId: projectId || null, scope: scope || null, narrow: scopedProject });
+    const data = collectBriefing({ entries, daysBack, now: new Date(), me, decayOf: getDecisionDecay });
+    return briefingMarkdown(data, { scopeLabel, ownerName: isOwnerMode ? ownerName : null, fmt: { date: (d) => fmtDate(d), dateTime: (s) => fmtDateTime(s) } });
+  }, [projects, projectId, scope, daysBack, me, scopeLabel, isOwnerMode, ownerName]);
+  // Regenerated when the choice changes, not when data reloads in the background (keeps edits).
+  const buildRef = useRef(build);
+  buildRef.current = build;
+  useEffect(() => { setPreview(buildRef.current()); setEdited(false); }, [projectId, scope, daysBack]);
 
   const copyMarkdown = async () => {
     try { await navigator.clipboard.writeText(preview); showToast?.('Markdown copied'); } catch { showToast?.('Copy failed'); }
   };
   const copyRich = async () => {
-    const html = generateBriefingHtml({ projects, daysBack, ownerName: isOwnerMode ? ownerName : null });
+    const html = markdownToHtml(preview);
     try {
       if (window.ClipboardItem) {
-        const blob = new Blob([html], { type: 'text/html' });
-        const textBlob = new Blob([preview], { type: 'text/plain' });
-        await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob })]);
+        await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([preview], { type: 'text/plain' }) })]);
         showToast?.('Rich text copied — paste into Gmail');
       } else {
         await navigator.clipboard.writeText(html);
@@ -13841,46 +13528,41 @@ function BriefingDialog({ projects, isOwnerMode = false, ownerName = null, teamM
       }
     } catch { showToast?.('Copy failed'); }
   };
-  const download = () => {
-    const blob = new Blob([preview], { type: 'text/markdown' });
-    downloadBlob(blob, `briefing-${todayISODate()}.md`);
-  };
+  const download = () => downloadBlob(new Blob([preview], { type: 'text/markdown' }), `briefing-${todayISODate()}.md`);
   const openGmail = () => {
     const cc = isOwnerMode ? (teamMembers || []).map((m) => m.email).filter(Boolean).join(',') : '';
-    const url = buildGmailUrl({
-      to: '',
-      cc,
-      subject: `📋 Weekly Briefing — ${fmtDate(new Date())}`,
-      body: preview,
-    });
-    openLinkInNewTab(url);
+    openLinkInNewTab(buildGmailUrl({ to: '', cc, subject: `📋 Weekly Briefing — ${scopeLabel} — ${fmtDate(new Date())}`, body: preview }));
   };
+  const sel = { fontFamily: FONT_STACK, fontSize: 13, padding: '5px 22px 5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, maxWidth: 220 };
 
   return (
-    <Modal title={isOwnerMode ? '📨 Weekly digest (owner)' : '📋 Weekly briefing'} onClose={onClose} width={720}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <FieldLabel>Look-back window</FieldLabel>
-        <select value={daysBack} onChange={(e) => { setDaysBack(Number(e.target.value)); setGenerated(false); }}
-          style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '5px 22px 5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface }}>
+    <Modal title={isOwnerMode ? '📨 Weekly digest (owner)' : '📋 Weekly briefing'} onClose={onClose} width={760}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <select aria-label="Project" value={projectId} onChange={(e) => { setProjectId(e.target.value); setScope(''); }} style={sel}>
+          <option value="">All projects</option>
+          {Object.values(projects).filter(Boolean).sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        {project && (
+          <select aria-label="Scope" value={scope} onChange={(e) => setScope(e.target.value)} style={sel}>
+            {scopeChoices.map((o) => <option key={o.value || 'all'} value={o.value}>{o.label}</option>)}
+          </select>
+        )}
+        <select aria-label="Look-back window" value={daysBack} onChange={(e) => setDaysBack(Number(e.target.value))} style={sel}>
           <option value={3}>Last 3 days</option>
           <option value={7}>Last 7 days</option>
           <option value={14}>Last 14 days</option>
         </select>
         <div style={{ flex: 1 }} />
-        <Btn size="sm" variant="primary" onClick={generate}>{generated ? 'Regenerate' : 'Generate preview'}</Btn>
+        <Btn size="sm" variant="ghost" onClick={() => { setPreview(build()); setEdited(false); }}>{edited ? 'Regenerate (drops my edits)' : 'Regenerate'}</Btn>
       </div>
-
-      {generated && (
-        <>
-          <Textarea value={preview} onChange={setPreview} rows={18} />
-          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-            <Btn size="sm" onClick={copyMarkdown}>Copy Markdown</Btn>
-            <Btn size="sm" onClick={copyRich}>✨ Copy rich text</Btn>
-            <Btn size="sm" onClick={download}>Download .md</Btn>
-            <Btn size="sm" variant="primary" onClick={openGmail}>📧 Open in Gmail</Btn>
-          </div>
-        </>
-      )}
+      <Textarea value={preview} onChange={(v) => { setPreview(v); setEdited(true); }} rows={18} />
+      <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 4 }}>You can edit the text; copies and Gmail use what you see.</div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+        <Btn size="sm" onClick={copyMarkdown}>Copy Markdown</Btn>
+        <Btn size="sm" onClick={copyRich}>✨ Copy rich text</Btn>
+        <Btn size="sm" onClick={download}>Download .md</Btn>
+        <Btn size="sm" variant="primary" onClick={openGmail}>📧 Open in Gmail</Btn>
+      </div>
     </Modal>
   );
 }
@@ -16047,6 +15729,8 @@ export default function App() {
               // Export
               { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
               { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
+              // Audit 25/11 MB-11: members have no Briefing tab; it opens from here any day.
+              ...(!tabsFor(tier).some((t) => t.id === 'briefing') ? [{ label: 'Weekly briefing…', icon: <FileText size={13} />, onClick: () => { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); } }] : []),
               { label: 'Export Excel', icon: <FileSpreadsheet size={13} />, onClick: exportExcel },
               // W3 D4: Backup JSON is Owner only (PM / members use Export Excel).
               ...(isOwner ? [{ label: 'Backup JSON', icon: <Download size={13} />, onClick: backupJson }] : []),
@@ -16245,7 +15929,10 @@ export default function App() {
 
         {showBriefingDialog && (
           <BriefingDialog
-            projects={projects}
+            projects={activeProjects}
+            initialProjectId={currentId && currentId !== '__all__' ? currentId : null}
+            initialScope={scopeProgramId}
+            me={impersonatingAs ? null : { uid: meValue.uid, isMe: meValue.isMe }}
             isOwnerMode={briefingDialogIsOwnerMode}
             ownerName={meta?.workspaceOwner || null}
             teamMembers={teamMembers}
