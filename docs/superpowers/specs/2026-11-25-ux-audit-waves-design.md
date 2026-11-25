@@ -76,7 +76,7 @@ Definition (shared, unit-tested): **closed on** = `approvedAt` (set on a direct 
 | PM-15 | Minutes: default = current project (all when All projects), From = today − 7 days, attendees pre-filled with the scope's PM / Deputy / Sub-PMs and task PICs |
 | PM-16 / MB-11 | Briefing: scope select inside the dialog; generated on open; "Completed" by approval date (fallback end date); all unresolved blockers, new ones marked; rich copy built from the edited text; members open it from the ⋯ More menu any day; a "For you" block first |
 | PM-24 | Export Excel: uses the scope; adds Contributors, Health, Closed on, Approved by, Original end, Latest update; in All projects: toast "Choose a project first" |
-| Q5-B | Rules: a PM / Deputy may create an action scoped to their program without a related task (new field `programId` on the action doc; Owner unchanged). Emulator tests allowed / denied; HOD publishes after merge |
+| Coordinator (HOD 25/11, replaces Q5-B) | New project-level role **Coordinator** (record keeper, PMO-lite; usually a Sub-PM). The Owner assigns 1–2 per project in Roles… (Activity `role_changed`). **May:** create / edit / cancel actions in any program of the project, including actions with no task (project-level), with any project member as PIC; log / edit decisions in any program and project-level decisions; register RAID in any program (still waits for Owner activation) and update mitigations; read everything; Meeting mode, Minutes. **May not:** create / edit tasks, dates or task PIC; approve / reject close requests; assign roles; weights, credit, deadline approval; delete anything. Data: `coordinatorUids` on the project doc (Owner-only field). Rules change with emulator tests (allowed / denied per item); HOD publishes after merge. Role chip "Coordinator". My Work for a Coordinator: "Project follow-ups" = overdue open actions of the project |
 
 ## Order and size
 
@@ -86,7 +86,7 @@ Definition (shared, unit-tested): **closed on** = `approvedAt` (set on a direct 
 | 2 | 2 (R1–R3, R5, R7 core; then R4, R6) | — |
 | 3 | 2 (My Work manager section; Dashboard + close trail) | wave 2 for scope |
 | 4 | 1–2 | — |
-| 5 | 2 (UI; rules for Q5-B) | wave 2; rules publish by HOD |
+| 5 | 2 (UI; rules for the Coordinator role) | wave 2; rules publish by HOD |
 
 Each PR: unit tests for new pure helpers, typecheck, lint gate 2/32, build, CI green; check list in the PR for the Vercel preview; rollback = Vercel Promote + `git revert -m 1`.
 
