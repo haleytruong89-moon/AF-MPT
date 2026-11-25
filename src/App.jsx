@@ -33,6 +33,7 @@ import { loadCreditYearDocs, loadYearSnapshot, writeYearSnapshot, saveYearDoc, l
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
+import { recentlyApprovedSent, pendingDeadlineSent, lastDeadlineResolution, deadlineResolutionText, rejectedDeadlineItem } from './sentItems.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
@@ -952,6 +953,9 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
           // W3-B3 (M3): my close request was rejected -> Needs attention (max 14 days).
           const rej = rejectedCloseItem(t, { uid, isMe, now: new Date() });
           if (rej) out.needsAttention.push({ kind: 'rejected_close', ...enriched, ...rej });
+          // Audit 25/11 MB-6: my deadline change request was rejected -> Needs attention (14 days).
+          const drej = rejectedDeadlineItem(t, { uid, isMe, now: new Date() });
+          if (drej) out.needsAttention.push({ kind: 'rejected_deadline', ...enriched, ...drej });
 
           if (Array.isArray(t.contributors) && t.contributors.some(isMe) && !isMe(t.pic)) {
             out.tasksContributing.push({ ...enriched, primaryPic: t.pic });
@@ -3509,7 +3513,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
 
   const save = () => {
     if (datesOutsideWs()) {
-      setDateNote(`Outside the work stream dates (${wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – ${wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}). Use Request change.`);
+      setDateNote(`Outside the work stream dates (${wsWindow.start ? fmtDateShort(wsWindow.start) : '—'} – ${wsWindow.end ? fmtDateShort(wsWindow.end) : '—'}). Use Request deadline change.`);
       return;
     }
     setDateNote(null);
@@ -3877,7 +3881,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                       <div style={{ flex: 1 }}><Input type="date" value={draft.end || ''} onChange={(v) => setDraftDate('end', v)} /></div>
                       {!isOwner && (
                         <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
-                          {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                          {task.deadlineRequest ? '⏳ Request pending' : 'Request deadline change'}
                         </Btn>
                       )}
                     </div>
@@ -3892,7 +3896,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                       🔒 {draft.end ? fmtDateShort(draft.end) : '—'}
                     </div>
                     <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
-                      {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                      {task.deadlineRequest ? '⏳ Request pending' : 'Request deadline change'}
                     </Btn>
                   </div>
                 )}
@@ -3949,7 +3953,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               // Wave 1 U6: Edit is hidden for the Assignee; keep the request path.
               <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '2px 0 4px' }}>
                 <Btn size="sm" onClick={() => setShowDeadlineRequest(true)} disabled={!!task.deadlineRequest}>
-                  {task.deadlineRequest ? '⏳ Request pending' : 'Request change'}
+                  {task.deadlineRequest ? '⏳ Request pending' : 'Request deadline change'}
                 </Btn>
               </div>
             )}
@@ -4033,6 +4037,17 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
           onReject={rejectDeadlineRequest}
           onCancel={cancelDeadlineRequest}
         />
+
+        {(() => {
+          // Audit 25/11 MB-6: the last approved / rejected request, under the banner.
+          const last = !task.deadlineRequest ? lastDeadlineResolution(task) : null;
+          if (!last) return null;
+          return (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: last.status === 'rejected' ? TOK.overdueFg : TOK.muted }}>
+              Last deadline request ({last.newDate ? fmtDateShort(last.newDate) : '—'}): {deadlineResolutionText(last, fmtDateShort)}
+            </div>
+          );
+        })()}
 
         {(task.deadlineHistory || []).length > 0 && (
           <div style={{ marginTop: 12, padding: 10, background: TOK.bg, borderRadius: 7 }}>
@@ -9527,7 +9542,7 @@ function TaskRowInline({ task, project, program, workstream, author, teamMembers
               onAddUpdate(draft.trim(), isBlocker);
               setDraft(''); setIsBlocker(false); setExpanded(false);
             }}>Post update</Btn>
-            {statusOk ? <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request extension</Btn>
+            {statusOk ? <Btn size="sm" onClick={onRequestExtension}><Calendar size={11} /> Request deadline change</Btn>
               : <span style={{ fontSize: 11.5, color: TOK.muted, alignSelf: 'center' }}>Only the PIC submits</span>}
             {onAddAction && (
               <Btn size="sm" onClick={(e) => { e.stopPropagation(); onAddAction(); }}><Plus size={11} /> Add action</Btn>
@@ -11779,9 +11794,11 @@ function ByProjectCard({
                 </button>
               ))}
               {rejected.map((r) => (
-                <button key={'arj-' + r.task.id} onClick={() => onTaskClick(r.task.id, project.id)}
+                <button key={'arj-' + r.kind + r.task.id} onClick={() => onTaskClick(r.task.id, project.id)}
                   style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: TOK.overdueFg, marginBottom: 2 }}>
-                  ✕ Close request rejected: <strong>{r.task.name}</strong> — {r.decidedBy}: {r.reason}
+                  {r.kind === 'rejected_deadline'
+                    ? <>✕ Deadline change rejected: <strong>{r.task.name}</strong> — {r.resolvedBy}{r.note ? `: ${r.note}` : ''}</>
+                    : <>✕ Close request rejected: <strong>{r.task.name}</strong> — {r.decidedBy}: {r.reason}</>}
                 </button>
               ))}
               {/* Audit 25/11 MB-1: each mention opens its task / action; full text. */}
@@ -11964,7 +11981,7 @@ function ByProjectView({
     for (const m of (myWork.unreadMentions || [])) ensure(m.project)?.unreadMentions.push(m);
     for (const d of (myWork.decisions || [])) ensure(d.project)?.decisions.push(d);
     for (const it of (myWork.needsAttention || [])) {
-      if (it.kind === 'rejected_close') ensure(it.project)?.rejected.push(it);
+      if (it.kind === 'rejected_close' || it.kind === 'rejected_deadline') ensure(it.project)?.rejected.push(it);
       if (it.kind === 'blocker') ensure(it.project)?.blockers.push(it);
     }
     if (myRaid) {
@@ -12190,6 +12207,9 @@ function MyWorkView({
   // signed-in uid, so hidden under View as. `now` is read per render.
   const me = useContext(MeContext);
   const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
+  // Audit 25/11 MB-9 / MB-6: approved close requests (7 days) and my pending deadline requests.
+  const approvedSent = me.readOnly ? [] : recentlyApprovedSent(projects, me.uid, new Date());
+  const deadlineSent = me.readOnly ? [] : pendingDeadlineSent(projects, { uid: me.uid, isMe: me.isMe });
   const recordIsMe = useMemo(() => isMeFor(dirIndex, author, authorEmail), [dirIndex, author, authorEmail]);
   // Audit 25/11 wave 3: the manager's lens (signed-in user only, never View as).
   const managerBox = useMemo(() => (me.readOnly ? { managesAny: false } : managerInbox(projects, me.uid, new Date())), [projects, me.readOnly, me.uid]);
@@ -12260,9 +12280,12 @@ function MyWorkView({
       ],
     }, project.id);
   };
+  // Audit 25/11 MB-6: the dialog opens here; the request goes to the Owner.
+  const [deadlineDialog, setDeadlineDialog] = useState(null); // { task, project }
   const handleRequestExtension = (task, project) => {
-    onTaskClick(task.id, project.id);
-    if (showToast) showToast('Open the task to request an extension');
+    if (me.readOnly) { showToast?.(READ_ONLY_MESSAGE); return; }
+    if (task.deadlineRequest) { showToast?.('A deadline change for this task is already waiting for the Owner.'); return; }
+    setDeadlineDialog({ task, project });
   };
   const handleActionDone = (action, project) => {
     onActionUpdate({ ...action, status: 'Done', completedAt: new Date().toISOString() }, project.id);
@@ -12407,13 +12430,53 @@ function MyWorkView({
       {managerBox.managesAny && (
         <MyWorkManagerSection inbox={managerBox} onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
       )}
-      {approvals.sent.length > 0 && (
-        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
+      {approvals.sent.length + deadlineSent.length + approvedSent.length > 0 && (
+        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length + deadlineSent.length} defaultOpen>
           {approvals.sent.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
           ))}
+          {deadlineSent.map((it) => (
+            <div key={'dl:' + it.project.id + ':' + it.task.id} style={{ borderLeft: '3px solid ' + TOK.inprogFg, padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                <span role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onTaskClick(it.task.id, it.project.id)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(it.task.id, it.project.id); }}>{it.task.name}</span>
+              </div>
+              <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                <span>· Deadline change {it.task.end ? fmtDateShort(it.task.end) : '—'} → {fmtDateShort(it.request.newDate)}</span>
+                <span>· Waiting for Owner{it.request.requestedAt ? ` since ${fmtDateShort(it.request.requestedAt)}` : ''}</span>
+              </div>
+            </div>
+          ))}
+          {approvedSent.map((it) => (
+            <div key={'ap:' + it.project.id + ':' + it.task.id} style={{ borderLeft: '3px solid ' + TOK.doneFg, padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onTaskClick(it.task.id, it.project.id)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(it.task.id, it.project.id); }}>{it.task.name}</span>
+                <span style={{ fontSize: 11, fontWeight: 500, color: TOK.doneFg, background: TOK.doneBg, padding: '1px 8px', borderRadius: 999 }}>
+                  ✓ {it.task.status === 'Dropped' ? 'Drop approved' : 'Approved'} by {it.entry.decidedBy || me.nameOf(it.entry.decidedByUid) || '—'} · {fmtDateShort(it.entry.decidedAt)}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
+                <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+              </div>
+            </div>
+          ))}
         </MyWorkSection>
+      )}
+      {deadlineDialog && (
+        <DeadlineRequestDialog
+          task={deadlineDialog.task}
+          currentEnd={deadlineDialog.task.end}
+          author={author}
+          uid={deadlineDialog.project.__v2 ? me.uid : null}
+          onClose={() => setDeadlineDialog(null)}
+          onSubmit={(req) => {
+            const r = onTaskUpdate({ ...deadlineDialog.task, deadlineRequest: req }, deadlineDialog.project.id);
+            if (r !== 'read-only') showToast?.('Deadline change sent to the Owner.');
+          }}
+        />
       )}
 
       {viewMode === 'project' ? (
@@ -12475,6 +12538,23 @@ function MyWorkView({
                 <div style={{ fontSize: 12, color: TOK.ink, marginTop: 2 }}>{it.update.text}</div>
                 <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>Open task</Btn>
+                </div>
+              </div>
+            );
+          }
+          if (it.kind === 'rejected_deadline') {
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  ✕ Deadline change rejected by {it.resolvedBy}{it.note ? `: ${it.note}` : ''}
+                </div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ color: TOK.ink }}>{it.task.name}</span>
+                  <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                  <span>· due date stays {it.task.end ? fmtDateShort(it.task.end) : '—'}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>Open task</Btn>
