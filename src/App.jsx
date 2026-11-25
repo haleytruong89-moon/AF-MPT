@@ -25,6 +25,7 @@ import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
+import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
@@ -12018,6 +12019,120 @@ function ByProjectView({
   );
 }
 
+// Audit 25/11 wave 4 (HOD Q6, MB-14, MB-15): my own record — what I closed, on time or late,
+// and my credit by year with per-task rows. Only my rows; nobody else's points are shown.
+function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
+  const me = useContext(MeContext);
+  const [period, setPeriod] = useState('thisMonth');
+  const thisYear = new Date().getFullYear();
+  const years = useMemo(() => creditYears(projects, thisYear), [projects, thisYear]);
+  const [year, setYear] = useState(thisYear);
+  const creditsOf = useMemo(() => {
+    const cache = new Map();
+    return (p) => {
+      if (!cache.has(p.id)) cache.set(p.id, computeProjectCredits(p, dirIndex).breakdown || []);
+      return cache.get(p.id);
+    };
+  }, [projects, dirIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  const closed = useMemo(() => {
+    const { from, to } = periodRange(period, new Date());
+    return closedByMe({ projects, isMe, from, to, creditsOf });
+  }, [projects, isMe, period, creditsOf]);
+  const credit = useMemo(() => myCreditByYear({ projects, isMe, year, creditsOf, currentYear: thisYear }), [projects, isMe, year, creditsOf, thisYear]);
+  const r1 = (n) => Math.round(n * 10) / 10;
+  const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : '—');
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); showToast?.('Copied. Paste into Sheets, Excel or Docs.'); }
+    catch { showToast?.("Couldn't copy: your browser blocked the clipboard."); }
+  };
+  const sel = { fontFamily: FONT_STACK, fontSize: 12, padding: '4px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface };
+  const th = { padding: '5px 8px', fontWeight: 500, color: TOK.muted, textAlign: 'left' };
+  const td = { padding: '5px 8px', borderTop: '1px solid ' + TOK.line };
+  const totalProjected = r1(credit.reduce((s, c) => s + c.projected, 0));
+  const totalEarned = r1(credit.reduce((s, c) => s + c.earned, 0));
+  return (
+    <MyWorkSection icon="📈" title="My record" count={closed.rows.length} defaultOpen={false}>
+      <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 10 }}>
+        Your record is visible to you and the Owner. Managers of a task also see its credit split, and your managers see your on-time / late counts.
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>✅ Closed by me</span>
+        <select value={period} onChange={(e) => setPeriod(e.target.value)} style={sel} aria-label="Period">
+          {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: TOK.muted }}>
+          {closed.summary.closed} closed · {closed.summary.onTime} on time · {closed.summary.late} late{closed.summary.dropped ? ` · ${closed.summary.dropped} dropped` : ''} · {closed.summary.cp} cp
+        </span>
+        <span style={{ flex: 1 }} />
+        {closed.rows.length > 0 && (
+          <Btn size="sm" variant="ghost" onClick={() => copy(toTsv(
+            ['Task', 'Project', 'Role', 'Closed on', 'Approved by', 'Timing', 'cp'],
+            closed.rows.map((r) => [r.task.name, r.project.name, r.role, fmtDateShort(r.closedOn.toISOString()), me.nameOf(r.approverUid) || '', timingText(r.timing), r1(r.cp)]),
+          ))}>Copy as table</Btn>
+        )}
+      </div>
+      {closed.rows.length === 0 ? (
+        <div style={{ fontSize: 12, color: TOK.muted, marginBottom: 14 }}>Nothing closed in this period.</div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 16 }}>
+          <thead><tr>{['Task', 'Project', 'Role', 'Closed on', 'Approved by', 'Timing', 'cp'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {closed.rows.map((r) => (
+              <tr key={r.project.id + ':' + r.task.id}>
+                <td style={td}><span role="button" tabIndex={0} style={{ cursor: 'pointer', color: TOK.ink }} onClick={() => onTaskClick(r.task.id, r.project.id)} onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(r.task.id, r.project.id); }}>{r.task.name}</span></td>
+                <td style={td}>{r.project.name}</td>
+                <td style={td}>{r.role}</td>
+                <td style={td}>{fmtDateShort(r.closedOn.toISOString())}</td>
+                <td style={td}>{me.nameOf(r.approverUid) || '—'}</td>
+                <td style={{ ...td, color: r.timing.kind === 'late' ? TOK.overdueFg : r.timing.kind === 'on-time' ? TOK.doneFg : TOK.muted }}>{timingText(r.timing)}</td>
+                <td style={td}>{r1(r.cp)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>📊 My credit</span>
+        <select value={year} onChange={(e) => setYear(Number(e.target.value))} style={sel} aria-label="Credit year">
+          {years.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: TOK.muted }}>Earned {totalEarned} cp · projected {totalProjected} cp</span>
+        <span style={{ flex: 1 }} />
+        {credit.length > 0 && (
+          <Btn size="sm" variant="ghost" onClick={() => copy(toTsv(
+            ['Project', 'Task', 'Share %', 'Projected cp', 'Earned cp'],
+            credit.flatMap((c) => c.rows.map((r) => [c.project.name, r.taskName, r1(r.sharePct), r1(r.projected), r1(r.earned)])),
+          ))}>Copy as table</Btn>
+        )}
+      </div>
+      {credit.length === 0 && <div style={{ fontSize: 12, color: TOK.muted }}>No credit for you in {year}.</div>}
+      {credit.map((c) => (
+        <div key={c.project.id} style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: TOK.ink, marginBottom: 2 }}>
+            {c.project.name} · {c.earned} / {c.projected} cp
+            {!c.locked && <span style={{ fontWeight: 400, color: TOK.muted }}> · Projected — may change until the Owner locks the weights</span>}
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr>{['Task', 'Share', 'Projected', 'Earned'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {c.rows.map((r, i) => (
+                <tr key={(r.taskId || 'lead') + ':' + i}>
+                  <td style={td}>{r.taskName}</td>
+                  <td style={td}>{r1(r.sharePct)}%</td>
+                  <td style={td}>{r1(r.projected)}</td>
+                  <td style={{ ...td, color: r.credited ? TOK.doneFg : TOK.muted }}>{r1(r.earned)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </MyWorkSection>
+  );
+}
+
 function MyWorkView({
   projects, author, authorEmail = null, isOwner, userPrefs, teamMembers,
   onTaskClick, onActionClick, onDecisionClick, onCreateAction,
@@ -12038,6 +12153,7 @@ function MyWorkView({
   // signed-in uid, so hidden under View as. `now` is read per render.
   const me = useContext(MeContext);
   const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
+  const recordIsMe = useMemo(() => isMeFor(dirIndex, author, authorEmail), [dirIndex, author, authorEmail]);
   // Audit 25/11 wave 3: the manager's lens (signed-in user only, never View as).
   const managerBox = useMemo(() => (me.readOnly ? { managesAny: false } : managerInbox(projects, me.uid, new Date())), [projects, me.readOnly, me.uid]);
   const myWork = useMemo(
@@ -12677,48 +12793,11 @@ function MyWorkView({
         })}
       </MyWorkSection>
 
-      {/* 📊 My credit (always collapsed by default) */}
-      <MyWorkSection
-        icon="📊" title="My credit (all years)"
-        defaultOpen={false}>
-        {myWork.credit.projected === 0 ? (
-          <div style={{ color: TOK.muted, fontSize: 12.5 }}>
-            No credit allocation set up for projects you're in.
-          </div>
-        ) : (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <div style={{ fontSize: 13 }}>
-                <span style={{ color: TOK.muted }}>Earned:</span> <span style={{ fontWeight: 600, color: TOK.ink }}>{(Math.round(myWork.credit.earned * 10) / 10)} cp</span>
-              </div>
-              <div style={{ fontSize: 13 }}>
-                <span style={{ color: TOK.muted }}>Projected:</span> <span style={{ fontWeight: 600, color: TOK.ink }}>{(Math.round(myWork.credit.projected * 10) / 10)} cp</span>
-              </div>
-              <div style={{ fontSize: 13, color: TOK.accent, fontWeight: 600 }}>
-                {Math.round(myWork.credit.pct)}%
-              </div>
-            </div>
-            <div style={{ height: 6, background: TOK.bg, borderRadius: 999, overflow: 'hidden', marginBottom: 14 }}>
-              <div style={{ height: '100%', width: `${Math.min(100, myWork.credit.pct)}%`, background: TOK.accent }} />
-            </div>
-            <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 6, fontWeight: 500 }}>By project</div>
-            {myWork.credit.perProject.map((p, i) => {
-              const pct = p.projected > 0 ? (p.earned / p.projected) * 100 : 0;
-              return (
-                <div key={`cp-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, padding: '4px 0' }}>
-                  <span style={{ color: TOK.ink, minWidth: 100, fontWeight: 500 }}>{p.project.name}</span>
-                  <span style={{ color: TOK.muted }}>
-                    {(Math.round(p.earned * 10) / 10)} / {(Math.round(p.projected * 10) / 10)} cp
-                  </span>
-                  <span style={{ color: TOK.muted }}>({Math.round(pct)}%)</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </MyWorkSection>
         </>
       )}
+
+      {/* Audit 25/11 wave 4 (HOD Q6): my own record, both modes. */}
+      <MyRecordSection projects={projects} isMe={recordIsMe} dirIndex={dirIndex} showToast={showToast} onTaskClick={onTaskClick} />
     </div>
   );
 }
