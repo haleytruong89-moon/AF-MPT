@@ -44,7 +44,10 @@ export function effortMatrix(perProject) {
       };
       add(c, part);
       const t = b.taskId ? tasks.get(b.taskId) : null;
-      const timing = t && b.credited ? closeTiming(t) : null;
+      // G3: rows from a closed-year snapshot carry their frozen close date / timing.
+      const timing = 'snapTiming' in b
+        ? { kind: b.snapTiming || null, closedOn: b.snapClosedOn ? new Date(b.snapClosedOn) : null }
+        : (t && b.credited ? closeTiming(t) : null);
       c.rows.push({
         taskId: b.taskId || null, taskName: b.taskName, programName: b.programName, workstreamName: b.workstreamName,
         cp: b.actual || 0, remaining: part.remaining, share: b.sharePct, open: !done,

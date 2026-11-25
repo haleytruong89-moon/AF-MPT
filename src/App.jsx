@@ -28,6 +28,8 @@ import { personDelivery } from './delivery.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { effortMatrix, cellText, effortTable } from './effortReport.js';
+import { yearPrecheck, buildYearSnapshot, reopenYearDoc, reportFromSnapshot, mergeReports } from './creditYearClose.js';
+import { loadCreditYearDocs, loadYearSnapshot, writeYearSnapshot, saveYearDoc } from './creditYearsStore';
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
@@ -12809,19 +12811,97 @@ function MyWorkView({
   );
 }
 
-function CreditReportView({ projects, isOwner, showToast }) {
+const EMPTY_CREDIT_REPORT = { totalCp: 0, perPic: new Map(), perProject: new Map() };
+function CreditReportView({ projects, isOwner, showToast, dialogs, author, authUid = null, dirEntries = [] }) {
   // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
   const dirIndex = useContext(DirectoryIndexContext);
   const thisYear = vnYear(new Date().toISOString());
+  // G3: year-end snapshots. A closed year reads its snapshot; Lifetime = closed years frozen + open years live.
+  const [yearDocs, setYearDocs] = useState({});
+  const [snapCache, setSnapCache] = useState({}); // year -> report from the snapshot
+  const [yearBusy, setYearBusy] = useState(false);
+  const reloadYears = useCallback(() => (isOwner
+    ? loadCreditYearDocs().then(setYearDocs).catch((e) => console.warn('[credit years] load failed:', e))
+    : Promise.resolve()), [isOwner]);
+  useEffect(() => { reloadYears(); }, [reloadYears]);
+  const closedYears = useMemo(() => Object.keys(yearDocs).map(Number).filter((y) => yearDocs[y]?.status === 'closed'), [yearDocs]);
   // G2: years that have closed tasks (by close date) or a project credit year, plus Lifetime.
-  const allYears = useMemo(() => creditPeriodYears(projects, thisYear), [projects, thisYear]);
+  const allYears = useMemo(() => [...new Set([...creditPeriodYears(projects, thisYear), ...closedYears])].sort((a, b) => b - a), [projects, thisYear, closedYears]);
 
   const [selectedYear, setSelectedYear] = useState(thisYear);
   const [sortBy, setSortBy] = useState('projected');
   const [selectedPic, setSelectedPic] = useState(null);
   useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
 
-  const report = useMemo(() => computeWorkspaceCredits(projects, selectedYear, dirIndex), [projects, selectedYear, dirIndex]);
+  const neededSnaps = useMemo(() => (selectedYear === LIFETIME ? closedYears : closedYears.filter((y) => y === selectedYear)), [selectedYear, closedYears]);
+  useEffect(() => {
+    for (const y of neededSnaps) {
+      if (snapCache[y]) continue;
+      loadYearSnapshot(y)
+        .then((sn) => setSnapCache((c) => ({ ...c, [y]: reportFromSnapshot({ year: y, people: sn.people, projects: sn.projects }) })))
+        .catch((e) => console.warn('[credit years] snapshot load failed:', y, e));
+    }
+  }, [neededSnaps, snapCache]);
+  const snapLoading = neededSnaps.some((y) => !snapCache[y]);
+  const report = useMemo(() => {
+    if (selectedYear !== LIFETIME) {
+      return closedYears.includes(selectedYear) ? (snapCache[selectedYear] || EMPTY_CREDIT_REPORT) : computeWorkspaceCredits(projects, selectedYear, dirIndex);
+    }
+    if (!closedYears.length) return computeWorkspaceCredits(projects, LIFETIME, dirIndex);
+    return mergeReports(allYears.map((y) => (closedYears.includes(y) ? snapCache[y] : computeWorkspaceCredits(projects, y, dirIndex))));
+  }, [projects, selectedYear, dirIndex, closedYears, snapCache, allYears]);
+  const yearDoc = selectedYear !== LIFETIME ? yearDocs[selectedYear] || null : null;
+  const yearClosed = yearDoc?.status === 'closed';
+
+  const closeCreditYear = async (y) => {
+    if (!isOwner || yearBusy) return;
+    const live = computeWorkspaceCredits(projects, y, dirIndex);
+    const pc = yearPrecheck(projects, y, live.perProject);
+    const list = (items, fmt) => items.slice(0, 8).map((x) => '  • ' + fmt(x)).join('\n') + (items.length > 8 ? `\n  … and ${items.length - 8} more` : '');
+    const parts = [];
+    if (pc.submitted.length) parts.push(`Waiting for approval (${pc.submitted.length}) — they will count in the year they are approved:\n` + list(pc.submitted, (x) => `${x.taskName} (${x.projectName})`));
+    if (pc.noDate.length) parts.push(`Closed with no close date, counted in ${y} by the project's credit year (${pc.noDate.length}):\n` + list(pc.noDate, (x) => `${x.taskName} (${x.projectName})`));
+    if (pc.unlocked.length) parts.push(`Weights not locked (${pc.unlocked.length}):\n` + list(pc.unlocked, (x) => x.name));
+    const ok = await dialogs.confirm({
+      title: `Close credit year ${y}?`,
+      message: `The ${y} credit of every person and project is frozen. Reports for ${y} then read the frozen figures; later edits to ${y} tasks do not change them. You can reopen the year (reason required) and close it again.`
+        + (y === thisYear ? `\n\n${y} is not over: tasks closed later in ${y} count only if you reopen and close again.` : '')
+        + (parts.length ? '\n\nCheck before closing:\n' + parts.join('\n\n') : '\n\nPre-check: nothing to flag.'),
+      okLabel: `Close ${y}`,
+    });
+    if (!ok) return;
+    setYearBusy(true);
+    try {
+      const uidByEmail = new Map((dirEntries || []).filter((e) => e?.uid && e?.email).map((e) => [String(e.email).toLowerCase(), e.uid]));
+      const snap = buildYearSnapshot({ perProject: live.perProject, year: y, uidOf: (k) => uidByEmail.get(String(k).toLowerCase()) || null, by: author, byUid: authUid, precheck: pc, prevLog: yearDocs[y]?.log || [] });
+      await writeYearSnapshot(y, snap);
+      setSnapCache((c) => { const n = { ...c }; delete n[y]; return n; });
+      await reloadYears();
+      showToast(`Credit year ${y} closed: ${snap.people.length} people, ${snap.projects.length} projects frozen.`);
+    } catch (e) {
+      console.warn('[credit years] close failed:', e);
+      showToast(`Couldn't close ${y}: ${e?.message || e}. The year stays open; try again.`);
+    } finally { setYearBusy(false); }
+  };
+  const reopenCreditYear = async (y) => {
+    if (!isOwner || yearBusy || !yearDocs[y]) return;
+    const reason = await dialogs.prompt({
+      title: `Reopen credit year ${y}?`,
+      message: `Reports for ${y} go back to live figures until you close it again. The reason is kept in the year's log.`,
+      placeholder: 'Reason (required)',
+      okLabel: 'Reopen',
+    });
+    if (reason === null || !String(reason).trim()) return;
+    setYearBusy(true);
+    try {
+      await saveYearDoc(y, reopenYearDoc(yearDocs[y], { by: author, reason: String(reason).trim() }));
+      await reloadYears();
+      showToast(`Credit year ${y} reopened.`);
+    } catch (e) {
+      console.warn('[credit years] reopen failed:', e);
+      showToast(`Couldn't reopen ${y}: ${e?.message || e}`);
+    } finally { setYearBusy(false); }
+  };
 
   const picRows = useMemo(() => {
     const rows = Array.from(report.perPic.entries()).map(([id, val]) => ({
@@ -12960,13 +13040,24 @@ function CreditReportView({ projects, isOwner, showToast }) {
             value={selectedYear}
             onChange={(e) => { setSelectedYear(e.target.value === LIFETIME ? LIFETIME : Number(e.target.value)); setSelectedPic(null); }}
             style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '8px 12px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, outline: 'none' }}>
-            {allYears.map((y) => <option key={y} value={y}>Year {y}</option>)}
+            {allYears.map((y) => <option key={y} value={y}>Year {y}{yearDocs[y]?.status === 'closed' ? ' 🔒' : ''}</option>)}
             <option value={LIFETIME}>Lifetime (all years)</option>
           </select>
+          {selectedYear !== LIFETIME && selectedYear <= thisYear && (yearClosed
+            ? <Btn onClick={() => reopenCreditYear(selectedYear)} disabled={yearBusy}>Reopen {selectedYear}…</Btn>
+            : <Btn onClick={() => closeCreditYear(selectedYear)} disabled={yearBusy}>{yearBusy ? 'Closing…' : `Close credit year ${selectedYear}…`}</Btn>)}
           <Btn variant="primary" onClick={exportExcel} disabled={picRows.length === 0}>
             <Download size={12} /> Export Excel
           </Btn>
         </div>
+
+        {(yearClosed || snapLoading || (selectedYear === LIFETIME && closedYears.length > 0)) && (
+          <div style={{ padding: '8px 12px', marginBottom: 12, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 7, fontSize: 12, color: TOK.muted }}>
+            {snapLoading ? 'Loading the frozen figures…'
+              : yearClosed ? <>🔒 Credit year {selectedYear} closed{yearDoc.closedAt ? ` on ${fmtDate(yearDoc.closedAt)}` : ''}{yearDoc.closedBy ? ` by ${yearDoc.closedBy}` : ''}. These are the frozen figures; later edits to {selectedYear} tasks do not change them.</>
+              : <>Lifetime: {closedYears.slice().sort().join(', ')} from the frozen figures, other years live.</>}
+          </div>
+        )}
 
         {/* Summary cards */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
@@ -15707,7 +15798,7 @@ export default function App() {
                 </div>
               )}
               {view === 'credit-report' && isOwner && (
-                <CreditReportView projects={projects} isOwner={isOwner} showToast={showToast} />
+                <CreditReportView projects={projects} isOwner={isOwner && !impersonatingAs} showToast={showToast} dialogs={dialogs} author={author} authUid={authUser?.uid || null} dirEntries={dirEntries} />
               )}
               {view === 'credit-report' && !isOwner && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
