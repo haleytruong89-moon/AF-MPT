@@ -127,6 +127,8 @@ Câu hỏi của HOD ở lần rà soát trước (2 ô có trùng nhau không):
 
 ## 6. Cần HOD quyết
 
+> **HOD quyết 25/11: theo khuyến nghị cả 6 câu** (1-B, 2-C và xem lại B cuối Q1/2027, 3-B, 4-B, 5-A ngay và B ở đợt 5, 6-B).
+
 Mỗi câu: các phương án, ưu / nhược, khuyến nghị và lý do.
 
 Lưu ý chung cho câu 1–3: **ẩn trên giao diện không phải là bảo mật.** Rules hiện cho mọi member của project đọc toàn bộ task, RAID và activity của project đó; ai biết dùng công cụ dev vẫn đọc được dữ liệu thô. Muốn chặn thật phải đổi rules và tách dữ liệu, việc lớn hơn nhiều. Các phương án dưới đây là về **những gì app chủ động bày ra**, phù hợp với cách chị đã chọn ngày 11/11 (ẩn tab Activity và dòng "Top credit").
