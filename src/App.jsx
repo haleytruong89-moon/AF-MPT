@@ -38,6 +38,7 @@ import { planActivityAppend } from './activityLog';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
+import { minutesDefaults } from './minutesDefaults.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
@@ -6654,12 +6655,14 @@ function generateMeetingMinutesHtml({ projects, dateFrom, dateTo, selectedProjec
   return parts.join('');
 }
 
-function MeetingExportDialog({ projects, onClose, dialogs, showToast, author, teamMembers }) {
+// Audit 25/11 PM-15: defaults = current project (all in All projects), last 7 days, attendees
+// from the scope (PM / Deputy / Sub-PMs, then open task PICs). See src/minutesDefaults.js.
+function MeetingExportDialog({ projects, onClose, dialogs, showToast, author, teamMembers, defaults = null }) {
   const today_ = toISODate(new Date());
-  const [dateFrom, setDateFrom] = useState(today_);
-  const [dateTo, setDateTo] = useState(today_);
-  const [selectedProjectIds, setSelectedProjectIds] = useState(Object.keys(projects));
-  const [attendeesInput, setAttendeesInput] = useState(author || '');
+  const [dateFrom, setDateFrom] = useState(defaults?.from || today_);
+  const [dateTo, setDateTo] = useState(defaults?.to || today_);
+  const [selectedProjectIds, setSelectedProjectIds] = useState(() => { const ids = (defaults?.projectIds || []).filter((id) => projects[id]); return ids.length ? ids : Object.keys(projects); });
+  const [attendeesInput, setAttendeesInput] = useState(defaults?.attendees?.length ? defaults.attendees.join(', ') : (author || ''));
   const [preview, setPreview] = useState(null);
   const [copyHelper, setCopyHelper] = useState(null); // { html, title, gmailUrl } | null
 
@@ -16015,7 +16018,8 @@ export default function App() {
         )}
         {showMeetingExport && (
           <MeetingExportDialog
-            projects={projects}
+            projects={activeProjects}
+            defaults={minutesDefaults({ project: currentId && currentId !== '__all__' ? projects[currentId] || null : null, scope: scopeProgramId, allIds: activeIds, nameOf: meValue.nameOf })}
             onClose={() => setShowMeetingExport(false)}
             dialogs={dialogs}
             showToast={showToast}
