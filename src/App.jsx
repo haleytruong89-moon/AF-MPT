@@ -35,6 +35,7 @@ import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionIn
 import { personWorkload } from './workload.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
+import { meetingTaskLists, takeWithMore } from './meetingLists.js';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
@@ -6050,7 +6051,7 @@ function AggregationView({ projects, currentProjectId, teamMembers, dialogs, sho
 }
 
 /* ═════════ MEETING MODE (in-app fullscreen presentation) ═════════ */
-function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = null }) {
+function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = null, scope = null, onOpenTask = null, onOpenAction = null, onOpenDecision = null }) {
   // Listen for Esc key to exit
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onExit(); };
@@ -6061,10 +6062,19 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
   // W3-D1 (O11): the current project by default; toggle to every project.
   const hasCurrent = !!(currentProjectId && projects[currentProjectId]);
   const [onlyCurrent, setOnlyCurrent] = useState(hasCurrent);
-  const projList = useMemo(
-    () => (onlyCurrent && hasCurrent ? [projects[currentProjectId]] : Object.values(projects)),
-    [projects, onlyCurrent, hasCurrent, currentProjectId],
-  );
+  // Audit 25/11 PM-13: "This project" follows the scope chosen in the project (program / my work stream).
+  const projList = useMemo(() => {
+    if (onlyCurrent && hasCurrent) {
+      const orig = projects[currentProjectId];
+      const sc = validScope(orig, scope);
+      return [{ p: scopedProject(orig, sc), orig, sc }];
+    }
+    return Object.values(projects).filter(Boolean).map((p) => ({ p, orig: p, sc: null }));
+  }, [projects, onlyCurrent, hasCurrent, currentProjectId, scope]);
+  // A row opens its item: leave meeting mode, then open the panel / view.
+  const openRow = (fn) => (fn ? () => { onExit(); fn(); } : undefined);
+  const rowBtn = (on) => (on ? { cursor: 'pointer' } : {});
+  const More = ({ n }) => (n > 0 ? <div style={{ fontSize: 12, color: TOK.muted, paddingTop: 6 }}>+{n} more</div> : null);
 
   // Range filter on entries
   const inRange = (dateStr) => {
@@ -6107,8 +6117,12 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
       {/* Content area — present-friendly layout */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '32px 48px' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          {projList.map((p) => {
+          {projList.map(({ p, orig, sc }) => {
             const r = rollup(p);
+            const { programId: scPg, wsId: scWs } = scopeParts(orig, sc);
+            const scPgObj = scPg ? (orig.programs || []).find((x) => x.id === scPg) : null;
+            const scLabel = scWs ? `Work stream: ${(scPgObj?.workstreams || []).find((w) => w.id === scWs)?.name || ''}` : scPgObj ? `Program: ${scPgObj.name}` : null;
+            const { overdue: overdueTasks, dueSoon } = meetingTaskLists(p, new Date());
             // Active blockers across all milestones in this project
             const blockers = [];
             for (const pg of p.programs || []) {
@@ -6128,8 +6142,25 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
               else if (t.health === 'amber') ha++;
               else hg++;
             }
-            const recentDecisions = (p.decisions || []).filter((d) => inRange(d.date)).slice(0, 5);
-            const openActions = (p.actionItems || []).filter((a) => a.status !== 'Done' && a.status !== 'Cancelled').slice(0, 8);
+            const scopedDecisions = (p.decisions || []).filter((d) => decisionInScope(orig, orig.__v2?.roles || null, d, sc));
+            const decisionsInRange = scopedDecisions.filter((d) => inRange(d.date));
+            const recent = takeWithMore(decisionsInRange, 5);
+            const allOpenActions = (p.actionItems || []).filter((a) => a.status !== 'Done' && a.status !== 'Cancelled' && a.status !== 'Dropped' && actionInScope(orig, a, sc));
+            const actionsShown = takeWithMore(allOpenActions, 8);
+            const blockersShown = takeWithMore(blockers, 5);
+            const overdueShown = takeWithMore(overdueTasks, 8);
+            const dueShown = takeWithMore(dueSoon, 8);
+            const taskRow = ({ task, workstream, days }, kind) => (
+              <div key={kind + task.id} onClick={openRow(onOpenTask && (() => onOpenTask(task.id, orig.id)))}
+                style={{ padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13, display: 'flex', gap: 10, alignItems: 'center', ...rowBtn(onOpenTask) }}>
+                <span style={{ flex: 1, fontWeight: 500 }}>{task.name}</span>
+                <span style={{ fontSize: 12, color: TOK.muted }}>{task.pic || '—'}</span>
+                <span style={{ fontSize: 12, color: TOK.muted }}>{workstream.name}</span>
+                <span style={{ fontSize: 12, color: kind === 'od' ? TOK.overdueFg : TOK.muted, fontWeight: kind === 'od' ? 500 : 400 }}>
+                  {fmtDateShort(task.end)}{kind === 'od' ? ` · ${days}d late` : days === 0 ? ' · today' : ` · in ${days}d`}
+                </span>
+              </div>
+            );
 
             return (
               <div key={p.id} style={{ marginBottom: 40 }}>
@@ -6139,6 +6170,7 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                   paddingBottom: 12, borderBottom: '2px solid ' + TOK.lineStrong,
                 }}>
                   <h1 style={{ margin: 0, fontSize: 28, fontWeight: 500, color: TOK.ink }}>{p.name}</h1>
+                  {scLabel && <span style={{ fontSize: 15, color: TOK.ink, padding: '3px 10px', background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 999 }}>{scLabel}</span>}
                   <span style={{ fontSize: 16, color: TOK.muted, fontWeight: 400 }}>{r.pct}% complete</span>
                   <div style={{ flex: 1 }} />
                   <div style={{ display: 'flex', gap: 6 }}>
@@ -6161,6 +6193,22 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                   </div>
                 </div>
 
+                {/* Audit 25/11 PM-13: overdue and due in the next 7 days */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+                  <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 16 }}>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12, color: TOK.overdueFg }}>⚠ Overdue ({overdueTasks.length})</h3>
+                    {overdueTasks.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>Nothing overdue.</div>}
+                    {overdueShown.shown.map((x) => taskRow(x, 'od'))}
+                    <More n={overdueShown.more} />
+                  </div>
+                  <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 16 }}>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12 }}>📅 Due in the next 7 days ({dueSoon.length})</h3>
+                    {dueSoon.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>Nothing due this week.</div>}
+                    {dueShown.shown.map((x) => taskRow(x, 'ds'))}
+                    <More n={dueShown.more} />
+                  </div>
+                </div>
+
                 {/* Two-column layout: Blockers + Recent decisions / Open actions */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
                   {/* Active blockers */}
@@ -6169,41 +6217,43 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                       🚩 Active blockers ({blockers.length})
                     </h3>
                     {blockers.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>No active blockers.</div>}
-                    {blockers.slice(0, 5).map(({ task, update }) => (
-                      <div key={update.id} style={{ padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13 }}>
+                    {blockersShown.shown.map(({ task, update }) => (
+                      <div key={update.id} onClick={openRow(onOpenTask && (() => onOpenTask(task.id, orig.id)))} style={{ padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13, ...rowBtn(onOpenTask) }}>
                         <div style={{ fontWeight: 500, marginBottom: 2 }}>{task.name}</div>
                         <div style={{ color: TOK.blocker, fontSize: 12.5, lineHeight: 1.5 }}>{(update.text || '').slice(0, 200)}</div>
                         <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 2 }}>{update.author} · {fmtDateTime(update.timestamp)}</div>
                       </div>
                     ))}
+                    <More n={blockersShown.more} />
                   </div>
 
                   {/* Recent decisions */}
                   <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 16 }}>
                     <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12 }}>
-                      📋 Recent decisions ({(p.decisions || []).length})
+                      📋 Recent decisions ({decisionsInRange.length})
                     </h3>
-                    {recentDecisions.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>No decisions logged.</div>}
-                    {recentDecisions.map((d) => (
-                      <div key={d.id} style={{ padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13 }}>
+                    {recent.shown.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>No decisions logged.</div>}
+                    {recent.shown.map((d) => (
+                      <div key={d.id} onClick={openRow(onOpenDecision && (() => onOpenDecision(orig.id, d.id)))} style={{ padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13, ...rowBtn(onOpenDecision) }}>
                         <div style={{ fontWeight: 500, marginBottom: 2 }}>{d.text}</div>
                         <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>{fmtDate(d.date)} · {(d.decidedBy || []).join(', ')}</div>
                       </div>
                     ))}
+                    <More n={recent.more} />
                   </div>
                 </div>
 
                 {/* Open actions */}
                 <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 16 }}>
                   <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12 }}>
-                    ✅ Open actions ({(p.actionItems || []).filter((a) => a.status !== 'Done' && a.status !== 'Cancelled').length})
+                    ✅ Open actions ({allOpenActions.length})
                   </h3>
-                  {openActions.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>No open actions.</div>}
-                  {openActions.map((a) => {
+                  {allOpenActions.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>No open actions.</div>}
+                  {actionsShown.shown.map((a) => {
                     const overdue = a.dueDate && parseDate(a.dueDate) < today();
                     return (
-                      <div key={a.id} style={{
-                        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13,
+                      <div key={a.id} onClick={openRow(onOpenAction && (() => onOpenAction(orig.id, a.id)))} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid ' + TOK.line, fontSize: 13, ...rowBtn(onOpenAction),
                       }}>
                         <span style={{ flex: 1, fontWeight: 500 }}>{a.title}</span>
                         <span style={{ fontSize: 12, color: TOK.muted }}>{a.pic}</span>
@@ -6215,6 +6265,7 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                       </div>
                     );
                   })}
+                  <More n={actionsShown.more} />
                 </div>
               </div>
             );
@@ -16025,9 +16076,13 @@ export default function App() {
         )}
         {meetingMode && (
           <MeetingMode
-            projects={projects}
+            projects={activeProjects}
             currentProjectId={currentId && currentId !== '__all__' ? currentId : null}
+            scope={scopeProgramId}
             onExit={() => setMeetingMode(false)}
+            onOpenTask={async (taskId, pid) => { if (pid !== currentId) await switchProject(pid); setSelectedTaskId(taskId); }}
+            onOpenAction={async (pid, aid) => { if (pid !== currentId) await switchProject(pid); setView('actions'); setInitialActionEditId(aid); }}
+            onOpenDecision={async (pid, did) => { if (pid !== currentId) await switchProject(pid); setView('decisions'); setInitialDecisionEditId(did); }}
           />
         )}
         {userMenuOpen && (
