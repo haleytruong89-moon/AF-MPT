@@ -22,7 +22,11 @@ Yearly reports of performance and credit must be correct for annual and multi-ye
 
 `project.creditYear` no longer decides the year of credit; it stays as the year shown with the pool and the weight lock.
 
-## G1 — closed date for old tasks (script)
+## G1 — closed date for old tasks
+
+**HOD 25/11: not run (option B).** A Completed / Dropped task with no `approvedAt` counts in its **project's `creditYear`** (all 40 such tasks were closed in 2026, every live project is 2026) and is **not rated** on time / late; it shows "Date unknown" and appears in year views, not month / quarter views. The script below was merged (#68) and stays available but is not run.
+
+### Script (kept, not run)
 
 `scripts/p2-backfill-closed-at.mjs`, same pattern as `p2-backfill-uids` (one project per run; preview → plan hash → `--apply --expect <hash>`; manifest before the transaction; `STATE_CHANGED` refusal; `--rollback <manifest>`).
 
