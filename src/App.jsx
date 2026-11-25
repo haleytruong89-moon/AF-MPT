@@ -23,6 +23,7 @@ import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, fa
 import { mentionsMe } from './mentions.js';
 import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
+import { managerInbox, approvalEvidence, STALE_DAYS } from './managerInbox.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
@@ -9108,7 +9109,11 @@ function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
   const cr = task.closeRequest || {};
   const who = mode === 'needs'
     ? `Requested by ${me.nameOf(cr.requestedByUid) || cr.requestedBy || '—'}`
-    : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
+    : mode === 'others'
+      ? `Requested by ${me.nameOf(cr.requestedByUid) || cr.requestedBy || '—'} · with ${me.nameOf(cr.approverUid) || '—'}`
+      : `Approver: ${me.nameOf(cr.approverUid) || '—'}`;
+  // Audit 25/11 PM-3: the approver sees the evidence on the row.
+  const ev = mode === 'sent' ? null : approvalEvidence(task);
   const waiting = waitingDays === 0 ? 'Sent today' : `Waiting ${waitingDays} working day${waitingDays === 1 ? '' : 's'}`;
   return (
     <div style={{ borderLeft: '3px solid ' + (escalated ? TOK.overdueFg : TOK.inprogFg), padding: '8px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4 }}>
@@ -9129,10 +9134,66 @@ function MyWorkApprovalRow({ item, mode, onTaskClick, onTaskUpdate, dialogs }) {
           </span>
         ) : <span>· {waiting}</span>}
       </div>
+      {ev && (ev.due || ev.lastUpdate) && (
+        <div style={{ fontSize: 11, color: TOK.muted, marginTop: 3 }}>
+          {ev.due ? `Due ${fmtDateShort(ev.due)}` : 'No due date'}{ev.timing ? ` · ${ev.timing}` : ''}
+          {ev.lastUpdate ? ` · last update ${fmtDateShort(ev.lastUpdate.at)}: ${ev.lastUpdate.text.slice(0, 140)}` : ' · no update yet'}
+        </div>
+      )}
       <div style={{ marginTop: 8 }}>
         <CloseControl task={task} roles={project.__v2.roles} onUpdate={(t) => onTaskUpdate(t, project.id)} dialogs={dialogs} />
       </div>
     </div>
+  );
+}
+
+// Audit 25/11 wave 3 (PM-1, PM-4, PM-5): what needs me in the programs / work streams I manage.
+function MyWorkManagerSection({ inbox, onTaskClick, onTaskUpdate, dialogs }) {
+  const groups = [
+    { key: 'overdue', label: 'Overdue', items: inbox.overdue },
+    { key: 'blockers', label: 'Open blockers', items: inbox.blockers },
+    { key: 'stale', label: `No update for ${STALE_DAYS}+ days`, items: inbox.stale },
+    ...(inbox.onlyLead ? [] : [{ key: 'others', label: 'Waiting at Sub-PMs', items: inbox.waitingAtOthers }]),
+    { key: 'deadline', label: 'Deadline change requested', items: inbox.deadlineRequests },
+  ];
+  const firstNonEmpty = groups.find((g) => g.items.length)?.key || null;
+  const [open, setOpen] = useState(firstNonEmpty);
+  const total = groups.reduce((s, g) => s + g.items.length, 0);
+  const row = (it, extra) => (
+    <div key={it.project.id + ':' + it.task.id} style={{ padding: '7px 10px', marginBottom: 5, borderRadius: 4, background: TOK.bg, display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 500, color: TOK.ink }}>{it.task.name}</div>
+        <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+          {it.task.pic && <span>· PIC {it.task.pic}</span>}
+          <span>· {extra}</span>
+        </div>
+      </div>
+      <Btn size="sm" onClick={() => onTaskClick(it.task.id, it.project.id)}>Open</Btn>
+    </div>
+  );
+  const body = (g) => {
+    if (g.key === 'others') return g.items.map((it) => <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="others" onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />);
+    if (g.key === 'overdue') return g.items.map((it) => row(it, `due ${fmtDateShort(it.task.end)} · ${it.lateDays} day${it.lateDays === 1 ? '' : 's'} late`));
+    if (g.key === 'blockers') return g.items.map((it) => row(it, `🚩 ${it.update.author || '—'}: ${(it.update.text || '').slice(0, 140)}`));
+    if (g.key === 'stale') return g.items.map((it) => row(it, it.daysSinceUpdate == null ? 'never updated' : `last update ${it.daysSinceUpdate} days ago`));
+    return g.items.map((it) => row(it, `→ ${it.request.newDate ? fmtDateShort(it.request.newDate) : 'new date'} (Owner decides)`));
+  };
+  return (
+    <MyWorkSection icon="🧭" title={inbox.onlyLead ? 'My work stream' : 'My programs'} count={total} defaultOpen={total > 0}>
+      {total === 0 && <div style={{ fontSize: 12.5, color: TOK.muted }}>Nothing overdue, blocked or stale in what you manage.</div>}
+      {total > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+          {groups.map((g) => (
+            <button key={g.key} type="button" onClick={() => setOpen(open === g.key ? null : g.key)} disabled={!g.items.length}
+              style={{ fontFamily: FONT_STACK, fontSize: 11.5, padding: '4px 10px', borderRadius: 999, cursor: g.items.length ? 'pointer' : 'default', border: '1px solid ' + (open === g.key ? TOK.ink : TOK.lineStrong), background: open === g.key ? TOK.ink : TOK.surface, color: open === g.key ? '#fff' : g.items.length ? TOK.ink : TOK.subtle }}>
+              {g.label} · {g.items.length}
+            </button>
+          ))}
+        </div>
+      )}
+      {open && body(groups.find((g) => g.key === open) || { key: open, items: [] })}
+    </MyWorkSection>
   );
 }
 
@@ -11911,6 +11972,8 @@ function MyWorkView({
   // signed-in uid, so hidden under View as. `now` is read per render.
   const me = useContext(MeContext);
   const approvals = me.readOnly ? { needsMine: [], sent: [] } : approvalBuckets(projects, me.uid, new Date());
+  // Audit 25/11 wave 3: the manager's lens (signed-in user only, never View as).
+  const managerBox = useMemo(() => (me.readOnly ? { managesAny: false } : managerInbox(projects, me.uid, new Date())), [projects, me.readOnly, me.uid]);
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly ? null : me.uid),
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly, me.uid]
@@ -12121,6 +12184,9 @@ function MyWorkView({
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
           ))}
         </MyWorkSection>
+      )}
+      {managerBox.managesAny && (
+        <MyWorkManagerSection inbox={managerBox} onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
       )}
       {approvals.sent.length > 0 && (
         <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length} defaultOpen>
