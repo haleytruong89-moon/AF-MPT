@@ -1,6 +1,7 @@
 // Audit 25/11 wave 3 (PM-21 + HOD Q2): delivery per person for a manager — open, awaiting
 // approval, overdue, closed this year on time / late. No credit points (Q2). Pure.
 import { isOverdueTask } from './taskStatus.js';
+import { vnYear } from './creditYears.js';
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const DAY = 24 * 60 * 60 * 1000;
@@ -58,7 +59,7 @@ export function personDelivery(node, { keyOf = (raw) => raw, labelOf = null, yea
     } else if (s === 'Completed') {
       const ct = closeTiming(t);
       if (ct.kind === 'unknown') { row(t.pic).unknown++; continue; }
-      if (ct.closedOn.getFullYear() !== year) continue;
+      if (vnYear(t.approvedAt) !== year) continue; // G2: year in Vietnam
       const r = row(t.pic);
       if (ct.kind === 'late') r.late++;
       else if (ct.kind === 'on-time') r.onTime++;

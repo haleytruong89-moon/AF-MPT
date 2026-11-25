@@ -18,11 +18,11 @@ const project = {
   ] }] }],
 };
 const breakdown = [
-  { taskId: 'onTime', taskName: 'onTime', picName: 'Lan', sharePct: 100, projected: 10, actual: 10, credited: true },
-  { taskId: 'late', taskName: 'late', picName: 'Lan', sharePct: 100, projected: 5, actual: 5, credited: true },
-  { taskId: 'contrib', taskName: 'contrib', picName: 'Lan', sharePct: 30, projected: 3, actual: 3, credited: true },
-  { taskId: 'contrib', taskName: 'contrib', picName: 'Minh', sharePct: 70, projected: 7, actual: 7, credited: true },
-  { taskId: 'open', taskName: 'open', picName: 'Lan', sharePct: 100, projected: 4, actual: 0, credited: false },
+  { taskId: 'onTime', taskName: 'onTime', picName: 'Lan', sharePct: 100, taskCp: 10, projected: 10, actual: 10, credited: true },
+  { taskId: 'late', taskName: 'late', picName: 'Lan', sharePct: 100, taskCp: 5, projected: 5, actual: 5, credited: true },
+  { taskId: 'contrib', taskName: 'contrib', picName: 'Lan', sharePct: 30, taskCp: 10, projected: 3, actual: 3, credited: true },
+  { taskId: 'contrib', taskName: 'contrib', picName: 'Minh', sharePct: 70, taskCp: 10, projected: 7, actual: 7, credited: true },
+  { taskId: 'open', taskName: 'open', picName: 'Lan', sharePct: 100, taskCp: 4, projected: 4, actual: 0, credited: false },
 ];
 const creditsOf = () => breakdown;
 
@@ -51,5 +51,16 @@ describe('myRecord', () => {
   });
   it('MR-4 TSV cleans tabs and new lines', () => {
     expect(toTsv(['a', 'b'], [['x\ty', 'line\nbreak']])).toBe('a\tb\nx y\tline break');
+  });
+});
+
+describe('G2 option B in My record', () => {
+  it('MR-5 a closed task with no date shows in the year view of its project year, not in month views', () => {
+    const p = { id: 'q', name: 'MA', creditYear: 2026, programs: [{ id: 'g', workstreams: [{ id: 'w', tasks: [{ id: 'old', name: 'old', status: 'Completed', pic: 'Lan', end: '2026-05-01' }] }] }] };
+    const y = periodRange('thisYear', now);
+    const m = periodRange('thisMonth', now);
+    const inYear = closedByMe({ projects: { q: p }, isMe, from: y.from, to: y.to });
+    expect(inYear.rows.map((r) => [r.task.id, r.closedOn, r.timing.kind])).toEqual([['old', null, 'unknown']]);
+    expect(closedByMe({ projects: { q: p }, isMe, from: m.from, to: m.to }).rows).toEqual([]);
   });
 });
