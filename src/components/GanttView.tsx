@@ -82,6 +82,7 @@ interface Props {
   selectedTaskId: string | null;
   onTaskClick: (taskId: string) => void;
   scopeProgramId: string | null;
+  scopeWsId?: string | null;
 }
 
 const toggleKey = (set: React.Dispatch<React.SetStateAction<Set<string>>>) => (key: string) =>
@@ -92,12 +93,12 @@ const toggleKey = (set: React.Dispatch<React.SetStateAction<Set<string>>>) => (k
     return next;
   });
 
-export function GanttView({ project, selectedTaskId, onTaskClick, scopeProgramId }: Props) {
+export function GanttView({ project, selectedTaskId, onTaskClick, scopeProgramId, scopeWsId = null }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  useEffect(() => { setCollapsed(new Set()); }, [scopeProgramId]);
+  useEffect(() => { setCollapsed(new Set()); }, [scopeProgramId, scopeWsId]);
   const rows = useMemo(
-    () => buildGanttRows(project, { scopeProgramId, collapsed }) as GRow[],
-    [project, scopeProgramId, collapsed],
+    () => buildGanttRows(project, { scopeProgramId, scopeWsId, collapsed }) as GRow[],
+    [project, scopeProgramId, scopeWsId, collapsed],
   );
   const taskCount = rows.filter((r) => r.kind === 'task').length;
   if (rows.length === 0) {

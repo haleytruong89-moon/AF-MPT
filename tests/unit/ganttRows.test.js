@@ -64,3 +64,9 @@ describe('W3-C1 ganttRows', () => {
     expect(ganttTaskIndex(rows)).toEqual({ a: 2, b: 3, u: 5, c: 8 });
   });
 });
+
+describe('audit 25/11 R6: Gantt work-stream scope', () => {
+  it('GR-8 a work-stream scope keeps its program row and only that work stream', () => {
+    expect(buildGanttRows(project, { scopeProgramId: 'pg1', scopeWsId: 'w2' }).map((r) => r.key)).toEqual(['pg:pg1', 'ws:w2', 't:u']);
+  });
+});
