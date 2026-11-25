@@ -1467,6 +1467,31 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ─────── G3: year-end credit snapshot (spec 2026-11-25-credit-by-year-design.md) ───────
+    // creditYears/{year}: status (closed | open), who / when, timezone, pre-check counts, log.
+    // Owner writes everything. Active members read the year doc (is the year closed?) and
+    // only their own person doc (people/{uid}); project docs and other people: Owner only.
+    // No deletes of the year doc; sub-docs may be deleted by the Owner when a year is closed again.
+    function creditYearDocOk(d, year) {
+      return d.keys().hasOnly(['year', 'status', 'closedAt', 'closedBy', 'closedByUid', 'timezone', 'precheck', 'log', 'updatedAt'])
+        && d.get('year', null) is int && string(d.year) == year
+        && d.get('status', null) in ['closed', 'open']
+        && d.get('log', []) is list;
+    }
+    match /workspaces/{wid}/creditYears/{year} {
+      allow read: if isSmartOSC() && (isWsOwner(wid) || isActiveMember(wid));
+      allow create, update: if isSmartOSC() && isWsOwner(wid) && creditYearDocOk(request.resource.data, year);
+      allow delete: if false;
+
+      match /people/{personId} {
+        allow read: if isSmartOSC() && (isWsOwner(wid) || (personId == request.auth.uid && isActiveMember(wid)));
+        allow write: if isSmartOSC() && isWsOwner(wid);
+      }
+      match /projects/{projectId} {
+        allow read, write: if isSmartOSC() && isWsOwner(wid);
+      }
+    }
+
     // ─────── User directory (so owners can pick teammates by email) ───────
     // Each user upserts their own entry on sign-in; everyone in the workspace
     // can read it to populate the member-picker.
