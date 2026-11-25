@@ -26,6 +26,7 @@ import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
+import { effortMatrix, cellText, effortTable } from './effortReport.js';
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
@@ -12807,7 +12808,7 @@ function MyWorkView({
   );
 }
 
-function CreditReportView({ projects, isOwner }) {
+function CreditReportView({ projects, isOwner, showToast }) {
   // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
   const dirIndex = useContext(DirectoryIndexContext);
   const thisYear = vnYear(new Date().toISOString());
@@ -13108,10 +13109,123 @@ function CreditReportView({ projects, isOwner }) {
           </>
         )}
 
+        <EffortReportSection report={report} period={selectedYear} thisYear={thisYear} showToast={showToast} />
+
         <div style={{ marginTop: 14, fontSize: 11, color: TOK.subtle, lineHeight: 1.6 }}>
           <strong>Read this report:</strong> Sort by any column. Click a PIC row to drill down by project → program → tasks. Excel export contains 3 sheets: PIC summary, full task breakdown, and project metadata (lock status, lead info). Use export for year-end calibration discussions and HR review.
         </div>
       </div>
+    </div>
+  );
+}
+
+// G5: effort report, person x project for the selected period (a year or Lifetime).
+// Cell = cp earned (tasks closed in the period); remaining cp only in the current year / Lifetime.
+const TIMING_LABEL = { 'on-time': 'On time', late: 'Late', 'no-due': 'No due date', unknown: 'No close date', approx: 'Approx. date' };
+function EffortReportSection({ report, period, thisYear, showToast }) {
+  const [by, setBy] = useState('person');
+  const [showRemaining, setShowRemaining] = useState(false);
+  const [sel, setSel] = useState(null); // { personId, pid }
+  const m = useMemo(() => effortMatrix(report.perProject), [report]);
+  useEffect(() => { setSel(null); }, [period, by]);
+  if (!m.people.length) return null;
+  const remainingAllowed = period === LIFETIME || period === thisYear;
+  const opts = { showRemaining: remainingAllowed && showRemaining };
+  const rowsOf = by === 'person' ? m.people : m.projects;
+  const colsOf = by === 'person' ? m.projects : m.people;
+  const keyOf = (r, c) => (by === 'person' ? { personId: r.id, pid: c.id } : { personId: c.id, pid: r.id });
+  const selCell = sel ? m.cell(sel.personId, sel.pid) : null;
+  const selPerson = sel ? m.people.find((p) => p.id === sel.personId) : null;
+  const selProject = sel ? m.projects.find((p) => p.id === sel.pid) : null;
+  const copy = () => {
+    const t = effortTable(m, by, opts);
+    copyPlainText(toTsv(t.header, t.rows), showToast);
+  };
+  const th = { padding: '8px 10px', fontSize: 11, fontWeight: 500, color: TOK.muted, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid ' + TOK.line, background: TOK.bg };
+  const td = { padding: '7px 10px', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid ' + TOK.line, fontVariantNumeric: 'tabular-nums' };
+  return (
+    <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, marginTop: 16, padding: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, flex: 1, minWidth: 200 }}>
+          Effort {period === LIFETIME ? '— lifetime (all years)' : `— ${period}`}
+        </div>
+        <div role="group" aria-label="Rows" style={{ display: 'flex', gap: 4 }}>
+          <Btn size="sm" variant={by === 'person' ? 'primary' : 'ghost'} onClick={() => setBy('person')}>By person</Btn>
+          <Btn size="sm" variant={by === 'project' ? 'primary' : 'ghost'} onClick={() => setBy('project')}>By project</Btn>
+        </div>
+        {remainingAllowed && (
+          <label style={{ fontSize: 12, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input type="checkbox" checked={showRemaining} onChange={(e) => setShowRemaining(e.target.checked)} /> Show remaining
+          </label>
+        )}
+        <Btn size="sm" onClick={copy}>Copy table</Btn>
+      </div>
+      <div style={{ fontSize: 11, color: TOK.subtle, marginBottom: 10, lineHeight: 1.5 }}>
+        Each cell: credit points earned (tasks closed in the period). A shared task counts once for each person on it; project lead credit has no task count.
+        {remainingAllowed ? ' "left" = credit of tasks still open.' : ''} Closed projects are included. Click a cell for its tasks.
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontFamily: FONT_STACK }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: 'left', position: 'sticky', left: 0 }}>{by === 'person' ? 'Person' : 'Project'}</th>
+              {colsOf.map((c) => <th key={c.id} style={th} title={c.name}>{c.name}{c.closed ? ' 🔒' : ''}</th>)}
+              <th style={th}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rowsOf.map((r) => (
+              <tr key={r.id}>
+                <td style={{ ...td, textAlign: 'left', fontWeight: 500, position: 'sticky', left: 0, background: TOK.surface }}>{r.name}{r.closed ? ' 🔒' : ''}</td>
+                {colsOf.map((c) => {
+                  const k = keyOf(r, c);
+                  const cell = m.cell(k.personId, k.pid);
+                  const text = cellText(cell, opts);
+                  const on = !!sel && sel.personId === k.personId && sel.pid === k.pid;
+                  return (
+                    <td key={c.id} style={{ ...td, color: text ? TOK.ink : TOK.subtle, background: on ? '#E6F1FB' : 'transparent', cursor: cell ? 'pointer' : 'default' }}
+                      onClick={() => { if (cell) setSel(on ? null : k); }}>
+                      {text || '—'}
+                    </td>
+                  );
+                })}
+                <td style={{ ...td, fontWeight: 500 }}>{cellText(r.total, opts)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...td, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: TOK.surface }}>Total</td>
+              {colsOf.map((c) => <td key={c.id} style={{ ...td, fontWeight: 500 }}>{cellText(c.total, opts)}</td>)}
+              <td style={{ ...td, fontWeight: 600 }}>{cellText(m.total, opts)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {selCell && (
+        <div style={{ marginTop: 12, border: '1px solid ' + TOK.line, borderRadius: 7, padding: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>
+            {selPerson?.name} · {selProject?.name} — {cellText(selCell, opts) || '0'}
+          </div>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+            <thead>
+              <tr>
+                {['Task', 'Program › Work stream', 'Closed on', 'Timing', 'Share', 'cp'].map((h, i) => <th key={h} style={{ ...th, textAlign: i < 2 ? 'left' : 'right' }}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {selCell.rows.map((x, i) => (
+                <tr key={(x.taskId || 'lead') + i}>
+                  <td style={{ ...td, textAlign: 'left', whiteSpace: 'normal' }}>{x.taskName}{x.open ? <span style={{ color: TOK.subtle }}> (open)</span> : null}</td>
+                  <td style={{ ...td, textAlign: 'left', whiteSpace: 'normal', color: TOK.muted }}>{x.lead ? 'Project lead' : `${x.programName} › ${x.workstreamName}`}</td>
+                  <td style={td}>{x.closedOn ? fmtDate(x.closedOn) : '—'}</td>
+                  <td style={{ ...td, color: x.timing === 'late' ? TOK.overdueFg : TOK.muted }}>{x.timing ? TIMING_LABEL[x.timing] || x.timing : '—'}</td>
+                  <td style={td}>{x.lead ? '—' : `${x.share}%`}</td>
+                  <td style={td}>{Math.round(x.cp * 10) / 10}{x.open && x.remaining > 0 ? <span style={{ color: TOK.subtle }}> (+{Math.round(x.remaining * 10) / 10})</span> : null}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -15535,7 +15649,7 @@ export default function App() {
                 </div>
               )}
               {view === 'credit-report' && isOwner && (
-                <CreditReportView projects={projects} isOwner={isOwner} />
+                <CreditReportView projects={projects} isOwner={isOwner} showToast={showToast} />
               )}
               {view === 'credit-report' && !isOwner && (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TOK.muted, fontSize: 13 }}>
