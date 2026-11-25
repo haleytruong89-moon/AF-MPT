@@ -187,7 +187,7 @@ service cloud.firestore {
     // (Owner = isOwnerIn(workspaces/main) via isDirectoryOwner(), NOT the v1
     // per-project 'owner' role). Added on top of the v1 rule, never instead.
     function ownerOnlyProjectKeys() {
-      return ['programMeta', 'memberUids', 'visibility', 'schemaVersion'];
+      return ['programMeta', 'memberUids', 'visibility', 'schemaVersion', 'coordinatorUids'];
     }
 
     // Update gate. A doc with schemaVersion 2 is frozen for non-Owners (v2
@@ -481,6 +481,18 @@ service cloud.firestore {
         || (p.get('memberUids', null) is list
           ? request.auth.uid in p.memberUids
           : (p.get('memberIds', null) is list && request.auth.uid in p.memberIds));
+    }
+
+    // W5 Coordinator (HOD 25/11): project record keeper. uid in the project doc's
+    // coordinatorUids (Owner-only field), an active member and a project member.
+    // May create / edit / cancel actions (any work stream or none), decisions and
+    // RAID in any program of the project; never tasks, approvals, roles or deletes.
+    // get(): reuses the project doc p and members/{me} (no extra document).
+    function isCoordinatorIn(wid, p) {
+      return p.get('coordinatorUids', []) is list
+        && request.auth.uid in p.get('coordinatorUids', [])
+        && isActiveMember(wid)
+        && projectMemberIn(p);
     }
 
     // P2.4 rollback (fix round 1): v2 sub-docs only live while the parent
@@ -1093,6 +1105,7 @@ service cloud.firestore {
         || readerComment(wid, pid, ch)
         || (actionManager(wid, pid, resource.data)
           && (!ch.hasAny(['workstreamId']) || actionManager(wid, pid, request.resource.data)))
+        || isCoordinatorIn(wid, v2Project(wid, pid))
       );
     }
 
@@ -1105,6 +1118,7 @@ service cloud.firestore {
         && versionOnCreate() && stampedByMe() && (
         isWsOwner(wid)
         || actionManager(wid, pid, request.resource.data)
+        || isCoordinatorIn(wid, v2Project(wid, pid))
       );
 
       // get(): Owner 2, PIC 3, manager up to 5.
@@ -1159,7 +1173,7 @@ service cloud.firestore {
       let n = request.resource.data;
       return n.get('programId', null) == prg
         && prg in p.get('programMeta', {})
-        && (isWsOwner(wid) || claimInProgram(wid, pid, p, n, prg));
+        && (isWsOwner(wid) || claimInProgram(wid, pid, p, n, prg) || isCoordinatorIn(wid, p));
     }
 
     match /workspaces/{wid}/projects/{pid}/raid/{programId} {
@@ -1204,6 +1218,7 @@ service cloud.firestore {
       allow create: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionOnCreate() && stampedByMe()
         && (isWsOwner(wid)
+          || isCoordinatorIn(wid, v2Project(wid, pid))
           || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
             decisionProgram(wid, pid, request.resource.data)));
 
@@ -1211,6 +1226,7 @@ service cloud.firestore {
       allow update: if isSmartOSC() && projectIsV2(wid, pid) && pathFieldsOk(wid, pid)
         && versionBumped() && stampedByMe()
         && (isWsOwner(wid)
+          || isCoordinatorIn(wid, v2Project(wid, pid))
           || claimInProgram(wid, pid, v2Project(wid, pid), request.resource.data,
             decisionProgram(wid, pid, resource.data)));
 

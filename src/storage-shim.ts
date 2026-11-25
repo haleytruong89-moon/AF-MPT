@@ -47,7 +47,7 @@ import { splitProject } from './migrateV2';
 import { executeV2Save, applyWritten } from './execV2Save';
 import { buildDirectoryIndex } from './directory';
 import { activityDocFor, activityEntryFromDoc } from './activityDoc';
-import { executeRoleChange, wsCacheAfterRoleChange } from './execRoleChange';
+import { executeRoleChange, wsCacheAfterRoleChange, executeCoordinatorChange } from './execRoleChange';
 import type { UserProfile } from './types';
 
 const WORKSPACE = 'main';
@@ -254,6 +254,32 @@ export async function changeRoleV2(
       }
     }
     return res.status as 'ok' | 'changed' | 'conflict' | 'denied' | 'error';
+  });
+}
+
+/** W5: add / remove a project Coordinator (Owner). Updates the cached meta on success. */
+export async function changeCoordinatorV2(
+  pid: string,
+  op: 'add' | 'remove',
+  targetUid: string,
+): Promise<'ok' | 'changed' | 'full' | 'conflict' | 'denied' | 'error'> {
+  bumpWriteEpoch(pid);
+  return await projectWriteQueue.run(`project:${pid}`, async () => {
+    const res = await executeCoordinatorChange(
+      { runTransaction, doc, serverTimestamp, arrayUnion, arrayRemove },
+      { db, wid: WORKSPACE, pid, op, targetUid },
+    );
+    if (res.status === 'ok') {
+      const loaded = v2Loaded.get(pid);
+      if (loaded) {
+        loaded.meta = { ...loaded.meta, coordinatorUids: res.coordinatorUids };
+        if (op === 'add') {
+          const cur = Array.isArray(loaded.meta.memberUids) ? (loaded.meta.memberUids as string[]) : [];
+          if (!cur.includes(targetUid)) loaded.meta = { ...loaded.meta, memberUids: [...cur, targetUid] };
+        }
+      }
+    }
+    return res.status as 'ok' | 'changed' | 'full' | 'conflict' | 'denied' | 'error';
   });
 }
 

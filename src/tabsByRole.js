@@ -15,7 +15,8 @@ function managesIn(roles, uid) {
   for (const ws of Object.values(roles.workstreams || {})) {
     if (ws?.leadUid === uid) return true;
   }
-  return false;
+  // W5: a Coordinator runs the project's meetings (Briefing, Dashboard) like a manager.
+  return Array.isArray(roles.coordinatorUids) && roles.coordinatorUids.includes(uid);
 }
 
 /** 'owner' | 'manager' | 'member'. Manager = PM, Deputy or Sub-PM in any loaded v2 project. */

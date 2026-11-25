@@ -43,13 +43,14 @@ import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from 
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { collectBriefing, briefingEntries, briefingMarkdown, markdownToHtml } from './briefing.js';
 import { minutesDefaults } from './minutesDefaults.js';
+import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers, canCloseDirectly } from './closeFlow';
 import { planReplace, applyReplace, planIsEmpty } from './replacePerson.js';
 import { closeIntentFor, runCloseFlow, chokeMessage, replanMessage, isCloseOutcome, replaceTask, closeRollbackTask, directoryByUid, READ_ONLY_MESSAGE, MANUAL_SPLIT_MESSAGE } from './closeWiring';
-import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject, addMemberV2, removeMemberV2 } from './storage-shim';
+import { v2RolesNow, v2SavedTree, v2MemberUidsNow, changeRoleV2, changeCoordinatorV2, rememberCurrentProject, invalidatePlanDirectory, createProjectV2, peekProject, addMemberV2, removeMemberV2 } from './storage-shim';
 import { MeContext } from './components/meContext';
 import { CloseControl } from './components/CloseControl';
 import { taskUrl, parseDeepLink } from './deepLink';
@@ -57,7 +58,7 @@ import { RolePicker } from './components/RolePicker';
 import { loadMetaStrict } from './bootLoad.js';
 import { approvalBuckets } from './approvalsInbox.js';
 // Wave 1 PR-E: role-aware UI (dates, hidden controls, role chip).
-import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, dropRefusalReason, dragHint, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote } from './roleUi.js';
+import { datesWithinWs, canEditTaskDates, uiCaps, myRoleSummary, canEditRaid, canEditDecision, canDeleteRaidOrDecision, actionDeleteMode, isWorkspaceOwner, canDropMove, actionTaskOptions, canCreateAction, actionEditMode, canTickStep, taskPanelCaps, dropRefusalReason, dragHint, unlinkedAssignment, unlinkedContribution, UNLINKED_HINT, raidUpdaterNote, decisionUpdaterNote, isCoordinator } from './roleUi.js';
 import { findProgram, findWorkstream } from './treeLatest.js';
 import { stripSecretsFromProjects, projectForRestore } from './backupStrip.js';
 import { taskCountUnder, deleteBlockMessage, splitRestoreByV2, V2_RESTORE_MESSAGE, activityToRestore, restorePreview, restoreScriptHint } from './treeGuards.js';
@@ -5157,7 +5158,7 @@ function ActionCreateModal({ projects, defaultProjectId, defaultRelatedTaskId, a
           teamMembers={teamMembers}
           author={effectivePic}
           defaultRelatedTaskId={defaultRelatedTaskId || null}
-          taskIds={me.isOwner || !project.__v2 ? null : actionTaskOptions(project, ctxOf(project)).map((o) => o.task.id)}
+          taskIds={me.isOwner || !project.__v2 || isCoordinator(project.__v2.roles, me.uid) ? null : actionTaskOptions(project, ctxOf(project)).map((o) => o.task.id)}
           onSave={(newAction, opts) => {
             const finalAction = { ...newAction, pic: newAction.pic || effectivePic || '' };
             onCreate(finalAction, projectId, opts);
@@ -5402,7 +5403,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
   // W3-A2: who may create / change what (mirrors rules action create / actionUpdateOk).
   const roleCtx = { isOwner: !!me.isOwner, isV2: !!project.__v2, roles: project.__v2 ? project.__v2.roles || null : null, uid: me.uid };
   const mayCreate = canCreateAction(project, roleCtx);
-  const createTaskIds = roleCtx.isOwner || !roleCtx.isV2 ? null : actionTaskOptions(project, roleCtx).map((o) => o.task.id);
+  const createTaskIds = roleCtx.isOwner || !roleCtx.isV2 || isCoordinator(roleCtx.roles, roleCtx.uid) ? null : actionTaskOptions(project, roleCtx).map((o) => o.task.id);
   const editModeOf = (a) => actionEditMode({ ...roleCtx, action: a, isPic: !!me.isMe?.(a.pic) });
   const removeAction = async (a) => {
     if (actionMode(a) === 'cancel') {
@@ -12271,6 +12272,8 @@ function MyWorkView({
   const recordIsMe = useMemo(() => isMeFor(dirIndex, author, authorEmail), [dirIndex, author, authorEmail]);
   // Audit 25/11 wave 3: the manager's lens (signed-in user only, never View as).
   const managerBox = useMemo(() => (me.readOnly ? { managesAny: false } : managerInbox(projects, me.uid, new Date())), [projects, me.readOnly, me.uid]);
+  // W5 Coordinator: overdue open actions of the projects I keep the record of.
+  const followUps = useMemo(() => (me.readOnly ? [] : coordinatorFollowUps(projects, me.uid, new Date())), [projects, me.readOnly, me.uid]);
   const myWork = useMemo(
     () => computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly ? null : me.uid),
     [projects, author, isOwner, lastSeenAt, dirIndex, authorEmail, me.readOnly, me.uid]
@@ -12487,6 +12490,22 @@ function MyWorkView({
       )}
       {managerBox.managesAny && (
         <MyWorkManagerSection inbox={managerBox} onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
+      )}
+      {followUps.length > 0 && (
+        <MyWorkSection icon="📌" title="Project follow-ups" count={followUps.length} defaultOpen>
+          <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 6 }}>Open actions past due in the projects you coordinate. Chase the PIC or update the action.</div>
+          {followUps.map(({ project, action, lateDays }) => (
+            <div key={project.id + ':' + action.id} role="button" tabIndex={0}
+              onClick={() => onActionClick(project.id, action.id)}
+              onKeyDown={(e) => { if (e.key === 'Enter') onActionClick(project.id, action.id); }}
+              style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '6px 12px', background: TOK.bg, marginBottom: 6, borderRadius: 4, cursor: 'pointer' }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>{action.title || '(untitled action)'}</div>
+              <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2 }}>
+                {project.name} · {action.pic || 'no PIC'} · <span style={{ color: TOK.overdueFg }}>due {fmtDateShort(action.dueDate)} · {lateDays}d late</span>
+              </div>
+            </div>
+          ))}
+        </MyWorkSection>
       )}
       {approvals.sent.length + deadlineSent.length + approvedSent.length > 0 && (
         <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length + deadlineSent.length} defaultOpen>
@@ -14481,6 +14500,31 @@ export default function App() {
     return run;
   }, [rolesNowFor, changeRoleNow, dialogs, bumpPending]);
 
+  // W5 Coordinator (HOD 25/11): the Owner adds / removes up to 2 record keepers per project.
+  const changeCoordinator = useCallback(async (projectId, op, targetUid) => {
+    const me = meRef.current;
+    if (me.readOnly) { showToastRef.current(READ_ONLY_MESSAGE); return; }
+    if (!me.isOwner || !targetUid) return;
+    const p = projectsRef.current[projectId];
+    const who = me.nameOf(targetUid) || targetUid;
+    const ok = await dialogs.confirm({
+      title: op === 'add' ? 'Add a Coordinator?' : 'Remove the Coordinator?',
+      message: op === 'add'
+        ? `${who} will keep the record of "${p?.name || ''}": create, edit and cancel actions (also with no task), log decisions and register RAID in every program. They cannot change tasks or dates, approve closes, assign roles, touch credit or delete anything.${v2MemberUidsNow(projectId).includes(targetUid) ? '' : ` ${who} is also added as a project member.`}`
+        : `${who} goes back to their other roles in "${p?.name || ''}". Items they created stay.`,
+      okLabel: op === 'add' ? 'Add' : 'Remove',
+    });
+    if (!ok) return;
+    const st = await changeCoordinatorV2(projectId, op, targetUid);
+    if (st === 'ok') {
+      refreshV2Roles(projectId);
+      logActivityForProject(projectId, { type: 'role_changed', description: `Coordinator ${op === 'add' ? 'added' : 'removed'}: ${who}`, before: op === 'add' ? null : targetUid, after: op === 'add' ? targetUid : null });
+      showToastRef.current(op === 'add' ? `${who} is now a Coordinator.` : `${who} is no longer a Coordinator.`);
+    } else if (st === 'full') showToastRef.current('This project already has 2 Coordinators. Remove one first.');
+    else if (st === 'changed') { refreshV2Roles(projectId); showToastRef.current('Coordinators changed meanwhile. Check the list and try again.'); }
+    else showToastRef.current(st === 'denied' ? 'Not allowed: only the Owner sets Coordinators.' : 'Coordinator not saved. Check your connection and try again.');
+  }, [dialogs, refreshV2Roles]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Replace person (role assignment spec §8, Owner, v2). Runs in the project's close chain:
   // member → roles (changeRoleNow: role write + reroute + role_changed) → tree edit through
   // the normal save → close requests still on the old person → optional member removal →
@@ -15818,6 +15862,7 @@ export default function App() {
             me={meValue}
             people={rolePeople}
             onChangeRole={(c) => changeRole(project.id, c)}
+            onChangeCoordinator={isOwner && !impersonatingAs ? (op, u) => changeCoordinator(project.id, op, u) : null}
             focus={typeof showRoles === 'object' ? showRoles : null}
             onClose={() => setShowRoles(false)}
             onReplacePerson={isOwner && !impersonatingAs && project.__v2 ? () => { setShowRoles(false); setShowReplacePerson(true); } : null}
@@ -16037,7 +16082,7 @@ function ReplacePersonModal({ project, roles, dirEntries, dirIndex, onApply, onC
 // W3-D3 (P5): a PM picks only among project members.
 const MEMBERS_ONLY_NOTE = 'Only project members are listed. Ask the Owner to add someone.';
 
-function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose, onReplacePerson = null }) {
+function RolesModal({ project, roles, me, people = [], focus = null, onChangeRole, onClose, onReplacePerson = null, onChangeCoordinator = null }) {
   // focus ({ programId, wsId? }) comes from a Mind map node menu; "Show all" clears it.
   const [scope, setScope] = useState(focus);
   const [blankOnly, setBlankOnly] = useState(false);
@@ -16073,6 +16118,29 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
           {!me.isOwner && (
             <div style={{ fontSize: 12, color: TOK.muted, marginBottom: 10 }}>{MEMBERS_ONLY_NOTE}</div>
           )}
+          {/* W5: project Coordinators (record keepers), Owner sets up to 2 */}
+          <div style={{ border: '1px solid ' + TOK.line, borderRadius: 8, padding: '8px 10px', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Coordinators</span>
+              {(roles.coordinatorUids || []).length === 0 && <span style={{ fontSize: 12, color: TOK.muted }}>none</span>}
+              {(roles.coordinatorUids || []).map((u) => (
+                <span key={u} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, padding: '2px 8px', borderRadius: 999, background: TOK.bg, border: '1px solid ' + TOK.line, color: me.isActive(u) ? TOK.ink : TOK.overdueFg }}>
+                  {me.nameOf(u) || u}{me.isActive(u) ? '' : ' (inactive)'}
+                  {onChangeCoordinator && <button aria-label={'Remove ' + (me.nameOf(u) || u)} onClick={() => onChangeCoordinator('remove', u)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: TOK.muted, padding: 0, fontSize: 12 }}>✕</button>}
+                </span>
+              ))}
+              {onChangeCoordinator && (roles.coordinatorUids || []).length < 2 && (
+                <select aria-label="Add a Coordinator" value="" onChange={(e) => { if (e.target.value) onChangeCoordinator('add', e.target.value); }}
+                  style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '3px 20px 3px 6px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface }}>
+                  <option value="">+ Add…</option>
+                  {people.filter((x) => x.uid && !(roles.coordinatorUids || []).includes(x.uid)).map((x) => <option key={x.uid} value={x.uid}>{x.name || x.email || x.uid}</option>)}
+                </select>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: TOK.muted, marginTop: 4 }}>
+              Keep the project's record: actions (also with no task), decisions and RAID in every program. Not tasks, dates, approvals, roles, credit or deletes.
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
             {check(blankOnly, setBlankOnly, 'Blank roles only')}
             {check(inactiveOnly, setInactiveOnly, 'Inactive people only')}
