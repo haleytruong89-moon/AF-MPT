@@ -64,3 +64,11 @@ Cỡ việc: B vừa (đổi cách tính, test kỹ với ví dụ tính tay); C
 
 - **Kiểm dữ liệu (chỉ đọc):** đếm task Completed / Dropped không có `approvedAt`, project không có `creditYear`, project chưa khóa weight. Cần chị cho phép chạy script chỉ đọc trên production (như `--summary` lần trước).
 - PR #66 (My record) có thể merge: phần credit trong đó hiện đi theo năm của project như màn Credits; sẽ đổi theo quy tắc B khi làm.
+
+## 6. Nhu cầu HOD 25/11 và quyết định
+
+Nhu cầu: project theo năm (AF Operation 2026 / 2027, AF KRA 2026 / 2027) đóng lại cuối năm; project nhiều năm (CRP, MA, Treasury). Cần xem effort **theo năm** và **theo cả đời dự án**, **theo người** (dồn sức vào đâu) và **theo project** (ai đóng góp nhiều).
+
+Kết luận kiến trúc: nền phù hợp (mỗi task đã có ai làm, xong khi nào, nặng bao nhiêu; quy mô tính được ngay trên trình duyệt). Thiếu 5 mảnh: G1 ngày đóng cho task cũ, G2 credit theo năm đóng task, G3 chốt sổ cuối năm, G4 trạng thái project Closed (hiện chỉ có xóa mềm, làm credit biến khỏi báo cáo), G5 màn Effort (người × project × năm / cả đời).
+
+**HOD quyết 25/11 (theo khuyến nghị):** B + C ở mục 3 và các điểm ở mục 4; effort = **credit point** là số chính, **số task đã đóng** bên cạnh, không chấm công giờ; project nhiều năm có **một pool cho cả đời dự án**, đặt cỡ theo số năm (nhắc trong Project settings); project theo năm **đóng / Drop hết task trước khi Close**, có nút "Copy structure from last year" (chép program / work stream, không chép task). Thứ tự: kiểm dữ liệu chỉ đọc → G1 + G2 → G4 → G5 → G3 (trước 31/12/2026) → Copy structure.
