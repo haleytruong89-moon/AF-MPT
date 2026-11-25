@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { yearPrecheck, personDocId, buildYearSnapshot, reopenYearDoc, reportFromSnapshot, mergeReports, CREDIT_TZ } from '../../src/creditYearClose.js';
+import { yearPrecheck, personDocId, buildYearSnapshot, reopenYearDoc, reportFromSnapshot, mergeReports, myCreditFromSnapshot, CREDIT_TZ } from '../../src/creditYearClose.js';
 import { effortMatrix } from '../../src/effortReport.js';
 
 // G3, hand-computed. CRP 2026: Lan 10 cp t1 (closed 30/03, on time), t2 shared (Lan 4 + Minh 4,
@@ -87,5 +87,16 @@ describe('G3 credit year close', () => {
     expect(all.perProject.get('A').project.name).toBe('CRP (renamed)');
     const m = effortMatrix(all.perProject);
     expect(m.cell('minh@x', 'A')).toMatchObject({ cp: 5, tasks: 1, remaining: 6 });
+  });
+});
+
+describe('G3b my record from the snapshot', () => {
+  it('CY-7 person doc -> My record rows by project, all earned', () => {
+    const s = buildYearSnapshot({ perProject, year: 2026, uidOf: (k) => (k === 'minh@x' ? 'u_minh' : null), by: 'Ha', now: NOW });
+    const minh = s.people.find((p) => p.id === 'u_minh').data;
+    const rec = myCreditFromSnapshot(minh);
+    expect(rec.map((c) => [c.project.id, c.project.name, c.earned, c.projected, c.locked])).toEqual([['A', 'CRP', 4, 4, true], ['B', 'AF 2026 Operation', 2, 2, true]]);
+    expect(rec[0].rows).toEqual([{ taskId: 't2', taskName: 'T2', sharePct: 50, projected: 4, earned: 4, credited: true }]);
+    expect(myCreditFromSnapshot(null)).toEqual([]);
   });
 });

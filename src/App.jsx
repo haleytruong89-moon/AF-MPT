@@ -28,8 +28,8 @@ import { personDelivery } from './delivery.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { effortMatrix, cellText, effortTable } from './effortReport.js';
-import { yearPrecheck, buildYearSnapshot, reopenYearDoc, reportFromSnapshot, mergeReports } from './creditYearClose.js';
-import { loadCreditYearDocs, loadYearSnapshot, writeYearSnapshot, saveYearDoc } from './creditYearsStore';
+import { yearPrecheck, buildYearSnapshot, reopenYearDoc, reportFromSnapshot, mergeReports, myCreditFromSnapshot } from './creditYearClose.js';
+import { loadCreditYearDocs, loadYearSnapshot, writeYearSnapshot, saveYearDoc, loadMyYearPerson } from './creditYearsStore';
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
@@ -12034,8 +12034,30 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
   const me = useContext(MeContext);
   const [period, setPeriod] = useState('thisMonth');
   const thisYear = new Date().getFullYear();
-  const years = useMemo(() => creditYears(projects, thisYear), [projects, thisYear]);
+  // G3b: a year the Owner closed shows the frozen record (own person doc, by uid). Not under
+  // View as: the snapshot read is keyed on the signed-in uid.
+  const snapUid = me?.readOnly ? null : me?.uid || null;
+  const [yearDocs, setYearDocs] = useState({});
+  useEffect(() => {
+    if (!snapUid) return undefined;
+    let live = true;
+    loadCreditYearDocs().then((d) => { if (live) setYearDocs(d); }).catch((e) => console.warn('[credit years] load failed:', e));
+    return () => { live = false; };
+  }, [snapUid]);
+  const closedYears = useMemo(() => Object.keys(yearDocs).map(Number).filter((y) => yearDocs[y]?.status === 'closed'), [yearDocs]);
+  const years = useMemo(() => [...new Set([...creditYears(projects, thisYear), ...closedYears])].sort((a, b) => b - a), [projects, thisYear, closedYears]);
   const [year, setYear] = useState(thisYear);
+  const frozenYear = !!snapUid && closedYears.includes(year);
+  const [frozen, setFrozen] = useState({ year: null, doc: null, loaded: false });
+  useEffect(() => {
+    if (!frozenYear) return undefined;
+    let live = true;
+    setFrozen({ year, doc: null, loaded: false });
+    loadMyYearPerson(year, snapUid)
+      .then((d) => { if (live) setFrozen({ year, doc: d, loaded: true }); })
+      .catch((e) => { console.warn('[credit years] my record load failed:', e); if (live) setFrozen({ year, doc: null, loaded: true }); });
+    return () => { live = false; };
+  }, [frozenYear, year, snapUid]);
   const creditsOf = useMemo(() => {
     const cache = new Map();
     return (p) => {
@@ -12047,7 +12069,9 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
     const { from, to } = periodRange(period, new Date());
     return closedByMe({ projects, isMe, from, to, creditsOf });
   }, [projects, isMe, period, creditsOf]);
-  const credit = useMemo(() => myCreditByYear({ projects, isMe, year, creditsOf, currentYear: thisYear }), [projects, isMe, year, creditsOf, thisYear]);
+  const liveCredit = useMemo(() => myCreditByYear({ projects, isMe, year, creditsOf, currentYear: thisYear }), [projects, isMe, year, creditsOf, thisYear]);
+  const frozenReady = frozenYear && frozen.year === year && frozen.loaded;
+  const credit = useMemo(() => (frozenYear ? (frozenReady ? myCreditFromSnapshot(frozen.doc) : []) : liveCredit), [frozenYear, frozenReady, frozen, liveCredit]);
   const r1 = (n) => Math.round(n * 10) / 10;
   const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : t.kind === 'approx' ? 'Date estimated' : 'Not rated');
   const copy = async (text) => {
@@ -12107,7 +12131,9 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
         <select value={year} onChange={(e) => setYear(Number(e.target.value))} style={sel} aria-label="Credit year">
           {years.map((y) => <option key={y} value={y}>{y}</option>)}
         </select>
-        <span style={{ fontSize: 12, color: TOK.muted }}>Earned {totalEarned} cp · projected {totalProjected} cp</span>
+        <span style={{ fontSize: 12, color: TOK.muted }}>
+          {frozenYear ? <>🔒 Closed by the Owner{yearDocs[year]?.closedAt ? ` on ${fmtDate(yearDocs[year].closedAt)}` : ''} · {totalEarned} cp</> : <>Earned {totalEarned} cp · projected {totalProjected} cp</>}
+        </span>
         <span style={{ flex: 1 }} />
         {credit.length > 0 && (
           <Btn size="sm" variant="ghost" onClick={() => copy(toTsv(
@@ -12116,12 +12142,14 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
           ))}>Copy as table</Btn>
         )}
       </div>
-      {credit.length === 0 && <div style={{ fontSize: 12, color: TOK.muted }}>No credit for you in {year}.</div>}
+      {frozenYear && !frozenReady && <div style={{ fontSize: 12, color: TOK.muted }}>Loading your {year} record…</div>}
+      {credit.length === 0 && (!frozenYear || frozenReady) && <div style={{ fontSize: 12, color: TOK.muted }}>No credit for you in {year}.</div>}
       {credit.map((c) => (
         <div key={c.project.id} style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 500, color: TOK.ink, marginBottom: 2 }}>
             {c.project.name} · {c.earned} / {c.projected} cp
             {!c.locked && <span style={{ fontWeight: 400, color: TOK.muted }}> · Projected — may change until the Owner locks the weights</span>}
+            {c.frozen && <span style={{ fontWeight: 400, color: TOK.muted }}> · Final for {year}</span>}
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead><tr>{['Task', 'Share', 'Projected', 'Earned'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
