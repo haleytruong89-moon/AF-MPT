@@ -26,6 +26,7 @@ import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
+import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
@@ -13760,14 +13761,18 @@ export default function App() {
   // v30 Phase 4 — Badge count on the My Work tab. needsAttention always
   // counted; unreadMentions only counted after the user's first visit
   // (lastSeenMyWorkAt is set) to avoid scary backlog badges on new members.
+  // G4: closed projects leave the daily screens (My Work, Portfolio, All-projects Gantt) but stay in reports.
+  const activeProjects = useMemo(() => Object.fromEntries(Object.entries(projects || {}).filter(([, p]) => !isClosedProject(p))), [projects]);
+  const activeIds = useMemo(() => (meta?.projectIds || []).filter((id) => projects?.[id] && !isClosedProject(projects[id])), [meta, projects]);
+  const closedIds = useMemo(() => (meta?.projectIds || []).filter((id) => isClosedProject(projects?.[id])), [meta, projects]);
   const myWorkBadge = useMemo(() => {
     if (!author) return 0;
-    const w = computeMyWork(author, projects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail, authUser?.uid || null);
-    const r = computeMyRaid(author, projects, isOwner, authUser?.uid || null, isMeFor(dirIndex, author, verifiedEmail));
+    const w = computeMyWork(author, activeProjects, isOwner, userPrefs?.lastSeenMyWorkAt, dirIndex, verifiedEmail, authUser?.uid || null);
+    const r = computeMyRaid(author, activeProjects, isOwner, authUser?.uid || null, isMeFor(dirIndex, author, verifiedEmail));
     const hasVisited = !!userPrefs?.lastSeenMyWorkAt;
     const raidAttention = r.pendingApproval.length + r.escalating.length + r.overdueActions.length + r.needsReview.length;
     return w.needsAttention.length + raidAttention + (hasVisited ? w.unreadMentions.length : 0);
-  }, [projects, author, isOwner, userPrefs, dirIndex, verifiedEmail, authUser]);
+  }, [activeProjects, author, isOwner, userPrefs, dirIndex, verifiedEmail, authUser]);
 
   // v30 RAID Phase 2 — Owner-only pending approval count for the RAID tab badge.
   const raidPendingBadge = useMemo(() => {
@@ -15005,29 +15010,71 @@ export default function App() {
     showToast(`Renamed to "${name}"`);
   };
 
-  const createNewProject = async (name) => {
+  // G4: close / reopen a project (Owner). Closing needs every task closed or dropped.
+  const closeProject = async (pid) => {
+    const p = projectsRef.current[pid];
+    if (!p || !isOwner || impersonatingAs) return;
+    const r = closePatch(p, { by: author });
+    if (!r.ok) {
+      const names = r.open.slice(0, 10).map((o) => `• ${o.task.name} (${o.program.name} › ${o.workstream.name})`).join('\n');
+      await dialogs.alert({ title: "Can't close yet", message: `Close or drop these tasks first (${r.open.length}):\n${names}${r.open.length > 10 ? `\n… and ${r.open.length - 10} more` : ''}` });
+      return;
+    }
+    const ok = await dialogs.confirm({ title: `Close "${p.name}"?`, message: 'It leaves My Work, Portfolio and the All-projects Gantt, and stays in credit and effort reports. You can reopen it any time.', okLabel: 'Close project' });
+    if (!ok) return;
+    updateProject(r.project);
+    logActivityForProject(pid, { type: 'project_closed', description: `Closed project "${p.name}"` });
+    showToast(`Closed “${p.name}”`);
+  };
+  const reopenProject = async (pid) => {
+    const p = projectsRef.current[pid];
+    if (!p || !isOwner || impersonatingAs) return;
+    updateProject(reopenPatch(p));
+    logActivityForProject(pid, { type: 'project_reopened', description: `Reopened project "${p.name}"` });
+    showToast(`Reopened “${p.name}”`);
+  };
+
+  const createNewProject = async (name, sourceId = null) => {
+    // G4: "Copy structure from": programs, work streams, weights and roles of the source; no tasks.
+    const src = sourceId ? projectsRef.current[sourceId] : null;
+    const copied = src ? copyStructure(src, { idOf: (k) => uid(k), roles: src.__v2?.roles || null }) : { programs: [], roleMoves: [] };
     const p = {
       id: uid('proj'),
       name: name.trim(),
       createdAt: new Date().toISOString(),
-      programs: [], decisions: [], actionItems: [],
-      creditPoints: DEFAULT_CREDIT_POINTS,
+      programs: copied.programs, decisions: [], actionItems: [],
+      creditPoints: src && typeof src.creditPoints === 'number' ? src.creditPoints : DEFAULT_CREDIT_POINTS,
       creditYear: new Date().getFullYear(),
-      projectLeadShare: 10,
-      contributorRegistry: DEFAULT_DEPARTMENTS.map((nm) => ({ name: nm })),
+      projectLeadShare: src && typeof src.projectLeadShare === 'number' ? src.projectLeadShare : 10,
+      ...(src?.projectLead ? { projectLead: src.projectLead } : {}),
+      contributorRegistry: src?.contributorRegistry || DEFAULT_DEPARTMENTS.map((nm) => ({ name: nm })),
     };
     const created = await createProjectStore(p);
     if (!created.project) { showToast(createProjectMessage(created)); return; }
     const m2 = { ...meta, projectIds: [...meta.projectIds, p.id], currentProjectId: p.id };
     setMeta(m2); await saveMeta(m2);
     setProjects((prev) => ({ ...prev, [p.id]: created.project }));
+    projectsRef.current = { ...projectsRef.current, [p.id]: created.project }; // role / activity writes below need it now
     setCurrentId(p.id);
     setActivity([]);
     setShowNewProject(false);
-    const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type: 'project_create', description: `Created project "${p.name}"` };
+    const entry = { id: uid('act'), timestamp: new Date().toISOString(), author, type: 'project_create', description: src ? `Created project "${p.name}" from the structure of "${src.name}"` : `Created project "${p.name}"` };
     await appendActivity(p.id, entry, { v2: true });
     setActivity([entry]);
-    showToast(created.status === 'ok' ? `Created project “${p.name}”` : createProjectMessage(created));
+    // Roles of the source (active people only), one role write each; the new project is v2.
+    let roleFails = 0;
+    if (created.status === 'ok') {
+      for (const m of copied.roleMoves) {
+        if (!meRef.current.isActive(m.toUid)) continue;
+        const change = { kind: m.kind, programId: m.programId, ...(m.kind === 'lead' ? { wsId: m.wsId } : {}), fromUid: null, toUid: m.toUid };
+        const st = await changeRoleV2(p.id, change, { addMemberUid: m.toUid });
+        if (st === 'ok') logActivityForProject(p.id, roleChangeEvent(change, meRef.current.nameOf, scopeNameOf(projectsRef.current[p.id] || p, change)));
+        else roleFails++;
+      }
+      if (copied.roleMoves.length) refreshV2Roles(p.id);
+    }
+    showToast(created.status !== 'ok' ? createProjectMessage(created)
+      : roleFails ? `Created “${p.name}”; ${roleFails} role(s) not copied: set them in Roles….` : `Created project “${p.name}”`);
   };
 
   const handleFileImport = async (file) => {
@@ -15166,7 +15213,7 @@ export default function App() {
   const deleteCurrentProject = async () => {
     if (!project || !meta) return;
     if (meta.projectIds.length === 1) { await dialogs.alert({ title: 'Cannot delete', message: 'This is the only project in the workspace.' }); return; }
-    const ok = await dialogs.confirm({ title: 'Delete project?', message: `Delete project "${project.name}"? It disappears for everyone. The data is kept: the Owner can bring it back later (Firebase Console, clear deletedAt on the project).`, danger: true, okLabel: 'Delete' });
+    const ok = await dialogs.confirm({ title: 'Delete project?', message: `Delete project "${project.name}"? It disappears for everyone, including from credit reports. The data is kept: the Owner can bring it back later (Firebase Console, clear deletedAt on the project).\n\nTo finish a project, use Close project in Project settings instead: it stays in reports.`, danger: true, okLabel: 'Delete' });
     if (!ok) return;
     // W3-A3 (O2): keep the project when the delete did not go through.
     if (!(await deleteProjectStore(project.id))) {
@@ -15255,7 +15302,12 @@ export default function App() {
               style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '6px 24px 6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, cursor: 'pointer', fontWeight: 500 }}>
               <option value="__all__">🌐 All projects</option>
               <option disabled>──────────</option>
-              {meta.projectIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
+              {activeIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
+              {closedIds.length > 0 && (
+                <optgroup label="Closed projects">
+                  {closedIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'} (closed)</option>)}
+                </optgroup>
+              )}
             </select>}
             {!crossView && project && project.__v2 && (() => {
               // Wave 1 U6: my highest role on this (v2) project; tooltip lists all.
@@ -15434,7 +15486,7 @@ export default function App() {
             <ErrorBoundary>
               {view === 'my-work' && (
                 <MyWorkView
-                  projects={projects}
+                  projects={activeProjects}
                   author={effectiveAuthor}
                   authorEmail={impersonatingAs ? null : verifiedEmail}
                   isOwner={isOwner && !impersonatingAs}
@@ -15484,6 +15536,12 @@ export default function App() {
                   dialogs={dialogs}
                 />
               )}
+              {project && isClosedProject(project) && !crossView && (
+                <div style={{ padding: '8px 16px', background: TOK.bg, borderBottom: '1px solid ' + TOK.line, fontSize: 12, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span>🔒 This project is closed{project.closedAt ? ` (${fmtDate(project.closedAt)})` : ''}. It stays in credit and effort reports.</span>
+                  {isOwner && !impersonatingAs && <Btn size="sm" variant="ghost" onClick={() => reopenProject(project.id)}>Reopen</Btn>}
+                </div>
+              )}
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopePg} scopeWsId={scopeWs} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopePg} scopeWsId={scopeWs} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopePg} scopeWsId={scopeWs} />}
@@ -15519,7 +15577,7 @@ export default function App() {
                 </div>
               )}
               {view === 'portfolio' && isOwner && (
-                <PortfolioView projects={projects}
+                <PortfolioView projects={activeProjects}
                   onProjectClick={(pid) => { switchProject(pid); setView(readPlanView()); }}
                   onOpenItem={impersonatingAs ? null : (it) => {
                     switchProject(it.project.id);
@@ -15556,10 +15614,10 @@ export default function App() {
                 </div>
               )}
               {isAllProjectsMode && view === 'gantt' && (
-                <AllProjectsGantt projects={projects} projectIds={meta?.projectIds || []} onOpenProject={(pid) => switchProject(pid)} />
+                <AllProjectsGantt projects={projects} projectIds={activeIds} onOpenProject={(pid) => switchProject(pid)} />
               )}
               {isAllProjectsMode && (view === 'mindmap' || view === 'outline' || view === 'dashboard') && (
-                <ProjectList projects={projects} projectIds={meta?.projectIds || []} uid={meValue?.uid || null} onOpen={(pid) => switchProject(pid)}
+                <ProjectList projects={projects} projectIds={activeIds} uid={meValue?.uid || null} onOpen={(pid) => switchProject(pid)}
                   footer={isOwner ? <Btn size="sm" onClick={() => setView('activity')}>Open Activity</Btn> : null} />
               )}
               {!project && !isAllProjectsMode && view !== 'aggregation' && view !== 'activity' && view !== 'portfolio' && view !== 'credit-report' && view !== 'my-work' && (
@@ -15652,7 +15710,7 @@ export default function App() {
         )}
 
         {showNewProject && (
-          <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={createNewProject} />
+          <NewProjectModal projects={projects} projectIds={meta?.projectIds || []} onClose={() => setShowNewProject(false)} onCreate={createNewProject} />
         )}
         {showImport && (
           <ImportModal onClose={() => setShowImport(false)} onImport={handleFileImport} />
@@ -15715,6 +15773,8 @@ export default function App() {
             directory={directory}
             onClose={() => setShowProjectSettings(false)}
             onSave={(updated) => { updateProject(updated); logActivity({ type: 'project_settings', description: `Updated project settings for "${updated.name}"` }); showToast('Project settings saved'); }}
+            onCloseProject={isOwner && !impersonatingAs ? () => { setShowProjectSettings(false); closeProject(project.id); } : null}
+            onReopenProject={isOwner && !impersonatingAs ? () => { setShowProjectSettings(false); reopenProject(project.id); } : null}
             dialogs={dialogs}
             isOwner={isOwner}
             author={author}
@@ -15981,7 +16041,7 @@ function RolesModal({ project, roles, me, people = [], focus = null, onChangeRol
   );
 }
 
-function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialogs, isOwner = false, author }) {
+function ProjectSettingsModal({ project, directory = [], onClose, onSave, onCloseProject = null, onReopenProject = null, dialogs, isOwner = false, author }) {
   const settingsReadOnly = !isOwner && !!project.__v2;
   const [name, setName] = useState(project.name);
   const [opCode, setOpCode] = useState(project.openProjectCode || '');
@@ -16980,6 +17040,23 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
       </div>
       </fieldset>
 
+      {(onCloseProject || onReopenProject) && (
+        <div style={{ marginTop: 20, border: '1px solid ' + TOK.line, borderRadius: 8, padding: 12, background: TOK.surface }}>
+          <FieldLabel>Project status</FieldLabel>
+          {isClosedProject(project) ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: TOK.muted }}>🔒 Closed{project.closedAt ? ` on ${fmtDate(project.closedAt)}` : ''}{project.closedBy ? ` by ${project.closedBy}` : ''}. It stays in credit and effort reports.</span>
+              {onReopenProject && <Btn size="sm" onClick={onReopenProject}>Reopen project</Btn>}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: TOK.muted, flex: 1, minWidth: 200 }}>Finished? Close the project: it leaves My Work, Portfolio and the All-projects Gantt and stays in credit and effort reports. Every task must be closed or dropped first.</span>
+              {onCloseProject && <Btn size="sm" onClick={onCloseProject}>Close project…</Btn>}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ marginTop: 20, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <Btn onClick={onClose}>{settingsReadOnly ? 'Close' : 'Cancel'}</Btn>
         {!settingsReadOnly && <Btn variant="primary" disabled={!name.trim()} onClick={save}>Save</Btn>}
@@ -16988,12 +17065,27 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
   );
 }
 
-function NewProjectModal({ onClose, onCreate }) {
+function NewProjectModal({ projects = {}, projectIds = [], onClose, onCreate }) {
   const [name, setName] = useState('');
-  const submit = () => { if (name.trim()) onCreate(name); };
+  const [sourceId, setSourceId] = useState('');
+  const submit = () => { if (name.trim()) onCreate(name, sourceId || null); };
+  // G4: copying a structure suggests next year's name ("AF 2026 Operation" -> "AF 2027 Operation").
+  const pickSource = (id) => {
+    setSourceId(id);
+    const src = projects[id];
+    if (src && (!name.trim() || name === nextYearName(projects[sourceId]?.name || ''))) setName(nextYearName(src.name));
+  };
   return (
     <Modal title="Create new project" onClose={onClose} width={420}>
-      <p style={{ margin: '0 0 12px', fontSize: 13, color: TOK.muted }}>Start fresh with an empty project you'll build out manually.</p>
+      <FieldLabel>Start from</FieldLabel>
+      <select value={sourceId} onChange={(e) => pickSource(e.target.value)}
+        style={{ width: '100%', marginBottom: 6, padding: '6px 8px', fontFamily: FONT_STACK, fontSize: 13, border: '1px solid ' + TOK.line, borderRadius: 6, background: TOK.surface, color: TOK.ink }}>
+        <option value="">Empty project</option>
+        {projectIds.filter((id) => projects[id]).map((id) => <option key={id} value={id}>Copy structure from: {projects[id].name}</option>)}
+      </select>
+      <p style={{ margin: '0 0 12px', fontSize: 12, color: TOK.muted, lineHeight: 1.5 }}>
+        {sourceId ? 'Copies programs, work streams, weights, credit pool and PM / Deputy / Sub-PM roles. No tasks, actions, decisions or RAID.' : "Start fresh with an empty project you'll build out manually."}
+      </p>
       <FieldLabel>Project name</FieldLabel>
       <Input
         value={name}
