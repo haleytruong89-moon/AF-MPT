@@ -105,7 +105,27 @@ export function CloseControl({ task, roles, onUpdate, dialogs }) {
       {kind === 'closed' && (
         <div style={{ marginBottom: buttons.length ? 8 : 0 }}>
           <Chip status={status}>{LABEL[status] || status}</Chip>
+          {/* Audit 25/11 PM-7: who closed it and when (approvedAt is set on a direct close and on an approval). */}
+          {task.approvedAt && (
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+              {task.approvedByUid && task.closedByUid && task.approvedByUid !== task.closedByUid
+                ? `Approved by ${me.nameOf(task.approvedByUid) || '—'} · ${fmtDay(task.approvedAt)} · requested by ${me.nameOf(task.closedByUid) || '—'}`
+                : `Closed directly by ${me.nameOf(task.approvedByUid || task.closedByUid) || '—'} · ${fmtDay(task.approvedAt)}`}
+            </div>
+          )}
         </div>
+      )}
+      {Array.isArray(task.closeRequestHistory) && task.closeRequestHistory.length > 0 && (
+        <details style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+          <summary style={{ cursor: 'pointer' }}>Close history ({task.closeRequestHistory.length})</summary>
+          {task.closeRequestHistory.map((h, i) => (
+            <div key={h.id || i} style={{ marginTop: 3 }}>
+              {fmtDay(h.decidedAt)} · {h.status}{h.outcome ? ` (${h.outcome === 'Dropped' ? 'as dropped' : 'as done'})` : ''} · by {h.decidedBy || me.nameOf(h.decidedByUid) || '—'}
+              {h.status === 'Reassigned' && h.after?.approverUid ? ` → ${me.nameOf(h.after.approverUid) || '—'}` : ''}
+              {h.reason ? `: ${h.reason}` : ''}
+            </div>
+          ))}
+        </details>
       )}
       {kind === 'open' && (() => {
         // Audit 25/11 MB-2: say why the task is open again, above the buttons.

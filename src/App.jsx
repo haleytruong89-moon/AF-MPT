@@ -23,7 +23,8 @@ import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, fa
 import { mentionsMe } from './mentions.js';
 import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
-import { managerInbox, approvalEvidence, STALE_DAYS } from './managerInbox.js';
+import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
+import { personDelivery } from './delivery.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
 import { filterActivity, activityTypes } from './activityFilter.js';
@@ -7797,9 +7798,21 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, scopeWs
   const tasks = collectTasks(scopedNode);
   const now = today();
   const weekEnd = new Date(now); weekEnd.setDate(weekEnd.getDate() + 7);
+  const me = useContext(MeContext);
+  const dirIndex = useContext(DirectoryIndexContext);
+  const roles = project.__v2 ? project.__v2.roles || null : null;
+  // Audit 25/11 PM-21 / Q2: per-person delivery only for the Owner and the manager of the scope shown.
+  const managesScope = !me.readOnly && (!!me.isOwner
+    || (!!roles && !!scopeWsId && roles.workstreams?.[scopeWsId]?.leadUid === me.uid)
+    || (!!roles && !!scopeProgramId && [roles.programs?.[scopeProgramId]?.pmUid, roles.programs?.[scopeProgramId]?.deputyUid].includes(me.uid)));
+  const byPerson = useMemo(() => (managesScope
+    ? personDelivery(scopedNode, { keyOf: (raw) => personKey(dirIndex, raw), labelOf: (raw) => (dirIndex ? personLabel(dirIndex, raw) : raw), now: new Date() })
+    : []), [managesScope, scopedNode, dirIndex]);
+  const awaiting = tasks.filter((t) => t.status === 'Submitted').length;
+  const scopeName = scopedNode === project ? project.name : `${project.name} › ${scopedNode.name || ''}`;
 
   const dueThisWeek = tasks.filter((t) => {
-    if (t.status === 'Completed') return false;
+    if (t.status !== 'Planned' && t.status !== 'InProgress') return false; // audit 25/11 PM-22
     const e = parseDate(t.end);
     return e && e >= now && e <= weekEnd;
   }).sort((a, b) => parseDate(a.end) - parseDate(b.end));
@@ -7825,19 +7838,68 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, scopeWs
     return (entry.blockers || '').trim().length > 0;
   }).slice(0, 6);
 
-  const noUpdates = tasks.filter((t) => t.status !== 'Completed' && t.status !== 'Dropped' && (!t.checkIns || !t.checkIns.length) && (!t.updates || !t.updates.length));
+  // Audit 25/11 PM-22: open tasks with no update for 7+ days (or never, once started), longest first.
+  const staleTasks = tasks.filter((t) => {
+    if (t.status !== 'Planned' && t.status !== 'InProgress') return false;
+    const s = parseDate(t.start);
+    if (s && s > now) return false;
+    const touched = lastTouch(t);
+    return touched == null || (Date.now() - touched) / 86400000 >= STALE_DAYS;
+  }).map((t) => ({ t, touched: lastTouch(t) })).sort((a, b) => (a.touched ?? 0) - (b.touched ?? 0));
 
   const { min, max } = projectDateRange(scopedNode);
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 20, fontFamily: FONT_STACK, background: TOK.bg }}>
       <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <StatCard label="Overall progress" value={`${r.pct}%`} accent={TOK.accent} sub={`${r.done}/${r.total} tasks complete`} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: TOK.ink }}>Dashboard — {scopeName}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+          <StatCard label="Progress" value={`${r.pct}%`} accent={TOK.accent} sub={`${r.done}/${r.total} tasks complete`} />
           <StatCard label="In progress" value={r.inprog} accent={TOK.inprogFg} sub={`${r.planned} planned`} />
+          <StatCard label="Awaiting approval" value={awaiting} accent="#B7791F" sub={awaiting === 0 ? 'none waiting' : 'submitted, not yet decided'} />
           <StatCard label="Overdue" value={r.overdue} accent={TOK.overdueFg} sub={r.overdue === 0 ? 'nothing overdue' : 'needs attention'} />
-          <StatCard label="Timeline" value={min && max ? fmtDateShort(min) + ' → ' + fmtDateShort(max) : '—'} accent={TOK.ink} sub="project span" textValue />
+          <StatCard label="Timeline" value={min && max ? fmtDateShort(min) + ' → ' + fmtDateShort(max) : '—'} accent={TOK.ink} sub="span of the tasks shown" textValue />
         </div>
+
+        {byPerson.length > 0 && (
+          <Panel title="By person" count={byPerson.length} icon={<Users size={13} />}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: TOK.muted, textAlign: 'left' }}>
+                  {['Person', 'Open', 'Awaiting approval', 'Overdue', `Closed ${new Date().getFullYear()}: on time`, 'late'].map((h) => <th key={h} style={{ padding: '6px 12px', fontWeight: 500 }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {byPerson.map((p) => (
+                  <tr key={p.key} style={{ borderTop: '1px solid ' + TOK.line }}>
+                    <td style={{ padding: '6px 12px', color: TOK.ink }}>{p.label}</td>
+                    <td style={{ padding: '6px 12px' }}>{p.open}</td>
+                    <td style={{ padding: '6px 12px' }}>{p.awaiting}</td>
+                    <td style={{ padding: '6px 12px', color: p.overdue ? TOK.overdueFg : TOK.ink, fontWeight: p.overdue ? 500 : 400 }}>{p.overdue}</td>
+                    <td style={{ padding: '6px 12px', color: TOK.doneFg }}>{p.onTime}</td>
+                    <td style={{ padding: '6px 12px', color: p.late ? TOK.overdueFg : TOK.ink }}>{p.late}{p.unknown ? <span style={{ color: TOK.subtle }}> · {p.unknown} closed before approvals (date unknown)</span> : null}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        )}
+
+        {Array.isArray(scopedNode.workstreams) && scopedNode.workstreams.length > 1 && (
+          <Panel title="Work streams" count={scopedNode.workstreams.length} icon={<FolderPlus size={13} />}>
+            {scopedNode.workstreams.map((w) => {
+              const wr = rollup(w);
+              return (
+                <div key={w.id} style={{ padding: '7px 12px', borderTop: '1px solid ' + TOK.line, fontSize: 12, display: 'flex', gap: 12 }}>
+                  <span style={{ flex: 1, color: TOK.ink }}>{w.name}</span>
+                  <span style={{ color: TOK.muted }}>{wr.done}/{wr.total}</span>
+                  <span style={{ color: TOK.accent, fontWeight: 500, minWidth: 36, textAlign: 'right' }}>{wr.pct}%</span>
+                  <span style={{ color: wr.overdue ? TOK.overdueFg : TOK.subtle, minWidth: 70, textAlign: 'right' }}>{wr.overdue} overdue</span>
+                </div>
+              );
+            })}
+          </Panel>
+        )}
 
         {blockerEntries.length > 0 && (
           <Panel title="🚩 Top blockers" count={blockerEntries.length} icon={<AlertTriangle size={13} color={TOK.blocker} />}>
@@ -7906,10 +7968,14 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, scopeWs
           )}
         </Panel>}
 
-        {noUpdates.length > 0 && (
-          <Panel title="Open tasks with no updates" count={noUpdates.length} icon={<Info size={13} />}>
-            {noUpdates.slice(0, 10).map((t) => <TaskRow key={t.id} task={t} project={project} onClick={() => onTaskClick(t.id)} />)}
-            {noUpdates.length > 10 && <div style={{ fontSize: 11, color: TOK.subtle, padding: '8px 12px', borderTop: '1px solid ' + TOK.line }}>+ {noUpdates.length - 10} more</div>}
+        {staleTasks.length > 0 && (
+          <Panel title={`No update for ${STALE_DAYS}+ days`} count={staleTasks.length} icon={<Info size={13} />}>
+            {staleTasks.map(({ t, touched }) => (
+              <div key={t.id}>
+                <TaskRow task={t} project={project} onClick={() => onTaskClick(t.id)} />
+                <div style={{ fontSize: 10.5, color: TOK.subtle, padding: '0 12px 6px' }}>{touched == null ? 'never updated' : `last update ${Math.floor((Date.now() - touched) / 86400000)} days ago`}</div>
+              </div>
+            ))}
           </Panel>
         )}
       </div>
@@ -15342,7 +15408,7 @@ export default function App() {
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopePg} scopeWsId={scopeWs} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopePg} scopeWsId={scopeWs} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopePg} scopeWsId={scopeWs} />}
-              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopePg} scopeWsId={scopeWs} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} showActivity={isOwner && !impersonatingAs} />}
+              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); }} scopeProgramId={scopePg} scopeWsId={scopeWs} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} showActivity={isOwner && !impersonatingAs} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} scopeProgramId={scope} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setScopeProgramId(programId || null); setView('raid'); }} scopeProgramId={scope} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
