@@ -1,6 +1,7 @@
 // Audit 25/11 wave 4 (MB-14, MB-15; HOD Q6): a member's own record — closed work by period,
 // on time / late, and credit by year with per-task rows. Only the person's own items. Pure.
 import { closeTiming } from './delivery.js';
+import { closeYearOf, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 
@@ -45,7 +46,14 @@ export function closedByMe({ projects, isMe, from, to, creditsOf = () => [] }) {
           const contributor = !pic && arr(task.contributors).some(isMe);
           if (!pic && !contributor) continue;
           const timing = closeTiming(task);
-          if (!timing.closedOn || timing.closedOn < from || timing.closedOn >= to) continue;
+          if (timing.closedOn) {
+            if (timing.closedOn < from || timing.closedOn >= to) continue;
+          } else {
+            // G2 option B: no close date -> the project's credit year; shown only when the
+            // period covers that whole year (This year / Last year).
+            const y = closeYearOf(task, project);
+            if (y == null || !(from <= new Date(y, 0, 1) && to >= new Date(y + 1, 0, 1))) continue;
+          }
           if (breakdown === null) breakdown = creditsOf(project) || [];
           rows.push({
             project, program: pg, workstream: ws, task, role: pic ? 'PIC' : 'Contributor',
@@ -57,7 +65,7 @@ export function closedByMe({ projects, isMe, from, to, creditsOf = () => [] }) {
       }
     }
   }
-  rows.sort((a, b) => b.closedOn - a.closedOn);
+  rows.sort((a, b) => (b.closedOn ? b.closedOn.getTime() : 0) - (a.closedOn ? a.closedOn.getTime() : 0));
   const summary = {
     closed: rows.filter((r) => r.task.status === 'Completed').length,
     dropped: rows.filter((r) => r.task.status === 'Dropped').length,
@@ -68,24 +76,21 @@ export function closedByMe({ projects, isMe, from, to, creditsOf = () => [] }) {
   return { rows, summary };
 }
 
-/** Credit years present on the projects (newest first), always including `fallback`. */
+/** Years offered in My record: years with closed tasks or a project credit year, plus `fallback`. */
 export function creditYears(projects, fallback = new Date().getFullYear()) {
-  const ys = new Set([fallback]);
-  for (const p of Object.values(projects || {})) if (typeof p?.creditYear === 'number') ys.add(p.creditYear);
-  return [...ys].sort((a, b) => b - a);
+  return creditPeriodYears(projects, fallback);
 }
 
 /**
- * My credit for one credit year: per project (creditYear === year, or unset and year = current),
+ * My credit for one year (G2: by close date; open tasks count in the current year only),
  * my rows from the breakdown. -> [{ project, locked, rows: [{ taskId, taskName, sharePct, projected, earned, credited }], projected, earned }]
  */
 export function myCreditByYear({ projects, isMe, year, creditsOf = () => [], currentYear = new Date().getFullYear() }) {
   const out = [];
   for (const project of Object.values(projects || {})) {
     if (!project) continue;
-    const py = typeof project.creditYear === 'number' ? project.creditYear : currentYear;
-    if (py !== year) continue;
-    const rows = arr(creditsOf(project))
+    // G2: rows of this year by close date (open tasks only in the current year), every project.
+    const rows = creditRowsForPeriod({ project, breakdown: creditsOf(project), period: year, currentYear })
       .filter((b) => isMe(b.picName))
       .map((b) => ({ taskId: b.taskId, taskName: b.taskName, sharePct: b.sharePct, projected: b.projected || 0, earned: b.actual || 0, credited: !!b.credited }));
     if (!rows.length) continue;

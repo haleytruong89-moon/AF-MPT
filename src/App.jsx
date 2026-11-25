@@ -25,6 +25,7 @@ import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
+import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { PERIODS, periodRange, closedByMe, creditYears, myCreditByYear, toTsv } from './myRecord.js';
 import { scopeAppliesTo, isCrossProjectView, validScope, scopedProject, actionInScope, decisionInScope, scopedCounts, initialScope, scopeParts, scopeOptions, managesIn } from './scope.js';
 import { personWorkload } from './workload.js';
@@ -1198,24 +1199,28 @@ function applyMitigationUpdate(project, parentProgram, parentItem, mitigationId,
   };
 }
 
-// Aggregate credits across all projects, optionally filtered by year.
-// Projects without a `creditYear` are always included (no filter applied to them).
-// Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result}> }
-function computeWorkspaceCredits(projects, year = null, dirIndex = null) {
+// Aggregate credits across all projects for a period: a year (credit counted in the year the
+// task was closed, G2) or LIFETIME (null = LIFETIME). Every project is considered; rows outside
+// the period are left out (src/creditYears.js).
+// Returns { totalCp, perPic: Map, perProject: Map<projId, {project, ...result, breakdown: period rows}> }
+function computeWorkspaceCredits(projects, period = LIFETIME, dirIndex = null) {
   const perPic = new Map();
   const perProject = new Map();
   let totalCp = 0;
 
   for (const proj of Object.values(projects || {})) {
-    if (year != null && proj.creditYear != null && proj.creditYear !== year) continue;
-    const result = computeProjectCredits(proj, dirIndex);
-    totalCp += result.totalCp;
-    perProject.set(proj.id, { project: proj, ...result });
-    for (const [pic, val] of result.perPic.entries()) {
-      if (!perPic.has(pic)) perPic.set(pic, { earned: 0, projected: 0, name: val.name });
-      const cur = perPic.get(pic);
-      cur.earned += val.earned;
-      cur.projected += val.projected;
+    if (!proj) continue;
+    const base = computeProjectCredits(proj, dirIndex);
+    const rows = creditRowsForPeriod({ project: proj, breakdown: base.breakdown, period: period ?? LIFETIME });
+    if (!rows.length) continue;
+    const periodCp = rows.reduce((s, r) => s + r.projected, 0);
+    totalCp += periodCp;
+    perProject.set(proj.id, { project: proj, ...base, breakdown: rows, periodCp });
+    for (const r of rows) {
+      if (!perPic.has(r.picId)) perPic.set(r.picId, { earned: 0, projected: 0, name: r.picName });
+      const cur = perPic.get(r.picId);
+      cur.earned += r.actual;
+      cur.projected += r.projected;
     }
   }
   return { totalCp, perPic, perProject };
@@ -8422,7 +8427,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onO
     () => computeActivityIndexWithTrend(projects, { actionWeeks, taskWeeks }, dirIndex),
     [projects, actionWeeks, taskWeeks, dirIndex]
   );
-  const picCredits = useMemo(() => computeWorkspaceCredits(projects, null, dirIndex).perPic, [projects, dirIndex]);
+  const picCredits = useMemo(() => computeWorkspaceCredits(projects, LIFETIME, dirIndex).perPic, [projects, dirIndex]);
   const priorities = useMemo(() => rankCoachingPriorities(indexMap, 3), [indexMap]);
 
   const picList = useMemo(() => {
@@ -12040,7 +12045,7 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
   }, [projects, isMe, period, creditsOf]);
   const credit = useMemo(() => myCreditByYear({ projects, isMe, year, creditsOf, currentYear: thisYear }), [projects, isMe, year, creditsOf, thisYear]);
   const r1 = (n) => Math.round(n * 10) / 10;
-  const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : t.kind === 'approx' ? 'Date estimated' : '—');
+  const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : t.kind === 'approx' ? 'Date estimated' : 'Not rated');
   const copy = async (text) => {
     try { await navigator.clipboard.writeText(text); showToast?.('Copied. Paste into Sheets, Excel or Docs.'); }
     catch { showToast?.("Couldn't copy: your browser blocked the clipboard."); }
@@ -12068,7 +12073,7 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
         {closed.rows.length > 0 && (
           <Btn size="sm" variant="ghost" onClick={() => copy(toTsv(
             ['Task', 'Project', 'Role', 'Closed on', 'Approved by', 'Timing', 'cp'],
-            closed.rows.map((r) => [r.task.name, r.project.name, r.role, fmtDateShort(r.closedOn.toISOString()), me.nameOf(r.approverUid) || '', timingText(r.timing), r1(r.cp)]),
+            closed.rows.map((r) => [r.task.name, r.project.name, r.role, (r.closedOn ? fmtDateShort(r.closedOn.toISOString()) : 'Date unknown'), me.nameOf(r.approverUid) || '', timingText(r.timing), r1(r.cp)]),
           ))}>Copy as table</Btn>
         )}
       </div>
@@ -12083,7 +12088,7 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
                 <td style={td}><span role="button" tabIndex={0} style={{ cursor: 'pointer', color: TOK.ink }} onClick={() => onTaskClick(r.task.id, r.project.id)} onKeyDown={(e) => { if (e.key === 'Enter') onTaskClick(r.task.id, r.project.id); }}>{r.task.name}</span></td>
                 <td style={td}>{r.project.name}</td>
                 <td style={td}>{r.role}</td>
-                <td style={td}>{fmtDateShort(r.closedOn.toISOString())}</td>
+                <td style={td}>{(r.closedOn ? fmtDateShort(r.closedOn.toISOString()) : 'Date unknown')}</td>
                 <td style={td}>{me.nameOf(r.approverUid) || '—'}</td>
                 <td style={{ ...td, color: r.timing.kind === 'late' ? TOK.overdueFg : r.timing.kind === 'on-time' ? TOK.doneFg : TOK.muted }}>{timingText(r.timing)}</td>
                 <td style={td}>{r1(r.cp)}</td>
@@ -12805,18 +12810,11 @@ function MyWorkView({
 function CreditReportView({ projects, isOwner }) {
   // ─── ALL hooks declared BEFORE any return (Rules of Hooks) ───
   const dirIndex = useContext(DirectoryIndexContext);
-  const thisYear = new Date().getFullYear();
-  const allYears = useMemo(() => {
-    const years = new Set();
-    for (const proj of Object.values(projects || {})) {
-      if (typeof proj.creditYear === 'number') years.add(proj.creditYear);
-    }
-    if (years.size === 0) years.add(thisYear);
-    years.add(thisYear);
-    return Array.from(years).sort((a, b) => b - a);
-  }, [projects, thisYear]);
+  const thisYear = vnYear(new Date().toISOString());
+  // G2: years that have closed tasks (by close date) or a project credit year, plus Lifetime.
+  const allYears = useMemo(() => creditPeriodYears(projects, thisYear), [projects, thisYear]);
 
-  const [selectedYear, setSelectedYear] = useState(allYears[0] || thisYear);
+  const [selectedYear, setSelectedYear] = useState(thisYear);
   const [sortBy, setSortBy] = useState('projected');
   const [selectedPic, setSelectedPic] = useState(null);
   useEffect(() => { setSelectedPic(null); }, [dirIndex]); // P1: ids change when the directory loads
@@ -12929,8 +12927,9 @@ function CreditReportView({ projects, isOwner }) {
     for (const [, pd] of report.perProject.entries()) {
       projRows.push({
         'Project': sanitizeCell(pd.project.name),
-        'Year': pd.project.creditYear || '',
+        'Credit year (pool)': pd.project.creditYear || '',
         'Total pool (cp)': pd.totalCp,
+        'In this period (cp)': Math.round((pd.periodCp || 0) * 100) / 100,
         'Project Lead': sanitizeCell(pd.project.projectLead || '—'),
         'Lead share (%)': pd.leadSharePct,
         'Lead pool (cp)': Math.round(pd.leadCp * 100) / 100,
@@ -12952,14 +12951,15 @@ function CreditReportView({ projects, isOwner }) {
               Credit Report <span style={{ fontSize: 11, color: TOK.accent, fontWeight: 500, marginLeft: 6 }}>OWNER ONLY</span>
             </h2>
             <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4, lineHeight: 1.5 }}>
-              Year-end performance attribution. <strong>Earned</strong> = credit from Completed tasks (real). <strong>Projected</strong> = credit if all tasks complete. Effort-based: only Completed tasks earn credit, except Project Lead (proportional to overall completion).
+              <strong>Earned</strong> = credit of tasks Completed in the period, counted in the year they were approved (tasks closed before approvals existed count in their project's credit year). <strong>Projected</strong> = earned + open tasks (current year and Lifetime only). Project Lead: their share × tasks completed in the period.
             </div>
           </div>
           <select
             value={selectedYear}
-            onChange={(e) => { setSelectedYear(Number(e.target.value)); setSelectedPic(null); }}
+            onChange={(e) => { setSelectedYear(e.target.value === LIFETIME ? LIFETIME : Number(e.target.value)); setSelectedPic(null); }}
             style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '8px 12px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, outline: 'none' }}>
             {allYears.map((y) => <option key={y} value={y}>Year {y}</option>)}
+            <option value={LIFETIME}>Lifetime (all years)</option>
           </select>
           <Btn variant="primary" onClick={exportExcel} disabled={picRows.length === 0}>
             <Download size={12} /> Export Excel
@@ -16460,6 +16460,9 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
         <div style={{ fontSize: 11, color: TOK.subtle, lineHeight: 1.5, marginBottom: 10 }}>
           Total credit points decided by BoD/HR upfront. Default rules: 1 PIC + 0 contrib → 100/0; +1 contrib → 70/30; +2 → 70/15/15; +3+ → enter manually.
         </div>
+        <div style={{ fontSize: 11, color: TOK.muted, lineHeight: 1.5, marginBottom: 10 }}>
+          Credit counts in the year each task is approved as done. Multi-year project: size the pool for its whole life (e.g. 2 years = 2 × a yearly project). Year = the year the pool and the weight lock refer to.
+        </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
           <div style={{ flex: 1 }}>
             <FieldLabel>Total credit points</FieldLabel>
@@ -16481,7 +16484,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, dialog
           </div>
         </div>
 
-        <FieldLabel>Project lead <span style={{ color: TOK.subtle, fontWeight: 400 }}>(receives a share of total pool, tied to overall completion)</span></FieldLabel>
+        <FieldLabel>Project lead <span style={{ color: TOK.subtle, fontWeight: 400 }}>(receives a share of the pool, earned as tasks are completed, by year)</span></FieldLabel>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
           <select
             value={projectLead}
