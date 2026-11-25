@@ -66,3 +66,18 @@ export function writePlanView(v) {
   if (!PLAN_SUBVIEWS.includes(v)) return;
   try { localStorage.setItem(PLAN_VIEW_KEY, v); } catch { /* storage unavailable: choice lasts for this session only */ }
 }
+
+// Audit 25/11 wave 2 (R3): the scope (program) last chosen per project, per browser.
+const SCOPE_KEY = (pid) => `afmpt.scope.${pid}`;
+/** -> program id, '' (explicit "All programs"), or null (never chosen). */
+export function readScope(pid) {
+  if (!pid) return null;
+  try {
+    const v = localStorage.getItem(SCOPE_KEY(pid));
+    return v === null ? null : v;
+  } catch { return null; }
+}
+export function writeScope(pid, programId) {
+  if (!pid) return;
+  try { localStorage.setItem(SCOPE_KEY(pid), programId || ''); } catch { /* storage unavailable: choice lasts for this session only */ }
+}

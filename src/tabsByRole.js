@@ -60,7 +60,7 @@ export function canSeeView(tier, view) {
   return tabsFor(tier).some((t) => t.id === id);
 }
 
-function managerProgramId(project, uid) {
+export function managerProgramId(project, uid) {
   const roles = project?.__v2?.roles;
   const programs = Array.isArray(project?.programs) ? project.programs : [];
   if (!roles || !uid || !programs.length) return null;
