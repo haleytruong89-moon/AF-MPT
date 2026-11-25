@@ -95,3 +95,44 @@ export function wsCacheAfterRoleChange(cached, res, toUid) {
   if (!cached || cached.version === res.prevVersion) return res.ws;
   return { version: cached.version, data: { ...cached.data, leadUid: toUid } };
 }
+
+// W5 Coordinator (HOD 25/11): project record keepers, at most MAX_COORDINATORS, on the
+// project doc (coordinatorUids, Owner-only by rules). One transaction:
+//   op 'add'    -> arrayUnion(targetUid) and, when not a member yet, the member patch;
+//                  'full' when the live list already holds MAX_COORDINATORS others.
+//   op 'remove' -> arrayRemove(targetUid); 'changed' when the live list no longer has it.
+// -> { status: 'ok' | 'changed' | 'full' | 'conflict' | 'denied' | 'error', coordinatorUids? }
+export const MAX_COORDINATORS = 2;
+export async function executeCoordinatorChange(fs, { db, wid, pid, op, targetUid }) {
+  const { runTransaction, doc, serverTimestamp, arrayUnion, arrayRemove } = fs;
+  if ((op !== 'add' && op !== 'remove') || !safe(targetUid)) {
+    return { status: 'error', error: new Error('executeCoordinatorChange: bad change') };
+  }
+  const projectRef = doc(db, 'workspaces', wid, 'projects', pid);
+  try {
+    return await runTransaction(db, async (tx) => {
+      const snap = await tx.get(projectRef);
+      const p = snap.exists() ? snap.data() : null;
+      if (!p || p.schemaVersion !== 2) return { status: 'conflict' };
+      const live = Array.isArray(p.coordinatorUids) ? p.coordinatorUids : [];
+      const now = serverTimestamp();
+      if (op === 'remove') {
+        if (!live.includes(targetUid)) return { status: 'changed' };
+        tx.update(projectRef, { coordinatorUids: arrayRemove(targetUid), updatedAt: now });
+        return { status: 'ok', coordinatorUids: live.filter((u) => u !== targetUid) };
+      }
+      if (live.includes(targetUid)) return { status: 'ok', coordinatorUids: live };
+      if (live.length >= MAX_COORDINATORS) return { status: 'full' };
+      const patch = { coordinatorUids: arrayUnion(targetUid), updatedAt: now };
+      if (!(Array.isArray(p.memberUids) && p.memberUids.includes(targetUid))) {
+        patch.memberUids = arrayUnion(targetUid);
+        patch.memberIds = arrayUnion(targetUid);
+        if (!(p.roles && typeof p.roles === 'object' && targetUid in p.roles)) patch[`roles.${targetUid}`] = 'member';
+      }
+      tx.update(projectRef, patch);
+      return { status: 'ok', coordinatorUids: [...live, targetUid] };
+    });
+  } catch (e) {
+    return { status: e && e.code === 'permission-denied' ? 'denied' : 'error', error: e };
+  }
+}

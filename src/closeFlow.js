@@ -388,6 +388,7 @@ export function canActivateRaid(roles, programId, uid) {
 export function canWriteRaid(roles, uid) {
   if (!roles || !uid) return false;
   if (isOwnerUid(roles, uid)) return true;
+  if (Array.isArray(roles.coordinatorUids) && roles.coordinatorUids.includes(uid)) return true; // W5
   if (Object.values(roles.programs || {}).some((m) => isPMOrDeputy(m || {}, uid))) return true;
   return Object.values(roles.workstreams || {}).some((w) =>
     w && w.leadUid === uid && w.programId != null && hasOwn(roles.programs || {}, w.programId));

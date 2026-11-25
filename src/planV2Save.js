@@ -62,6 +62,7 @@ export const META_SKIP = new Set([
   'id', '__v2', 'programMeta', 'memberUids', 'v1Absent', 'programs', 'actionItems', 'decisions',
   'memberIds', 'roles', 'ownerUids', 'deletedAt', 'createdBy', 'createdAt', 'rev', 'writeId',
   'visibility', 'schemaVersion', 'workspaceId', 'version', 'updatedBy', 'updatedAt',
+  'coordinatorUids', // W5: written by the role executor only
 ]);
 // v2 fields the v1 tree cannot express: kept from the stored doc.
 const KEEP_WS = ['leadUid', 'start', 'end'];
@@ -404,6 +405,9 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
   const docs = loaded.docs || {};
   for (const kind of ['actions', 'decisions']) next[kind] = keepOrder(docs[kind] || new Map(), next[kind]);
   const claims = roleClaims(loaded, uid);
+  // W5: a Coordinator (rules isCoordinatorIn) needs no claim; decisions keep / get their
+  // program like an Owner edit, so the PM of that program can still edit them.
+  const coordinator = !isOwner && !!uid && Array.isArray(loaded.meta?.coordinatorUids) && loaded.meta.coordinatorUids.includes(uid);
   // task id -> programId (this save's tree first, then the stored docs).
   const taskProgram = new Map();
   for (const [id, e] of docs.tasks || new Map()) taskProgram.set(id, e.data?.programId ?? null);
@@ -445,7 +449,7 @@ export function planV2Save(rawLoaded, nextTree, { uid, wid, pid, isOwner = false
     // storedData = the stored doc (updates only, claims not stripped).
     const withClaim = (data, storedData) => {
       if (kind !== 'raid' && kind !== 'decisions') return data;
-      if (isOwner) {
+      if (isOwner || coordinator) {
         // Wave 2 R5: an Owner edit keeps a decision's stored claim, so the
         // decision stays in its program (the claim is its program, W2-4).
         if (kind !== 'decisions') return data;

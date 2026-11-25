@@ -91,7 +91,9 @@ export function rolesFromLoaded(loaded, ownerUids) {
     else if (typeof d?.viaWorkstreamId === 'string') programId = workstreams[d.viaWorkstreamId]?.programId ?? null;
     decisions[id] = { programId };
   }
-  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks, actions, decisions };
+  // W5: project Coordinators (record keepers), Owner-only field on the project doc.
+  const coordinatorUids = Array.isArray(loaded.meta?.coordinatorUids) ? loaded.meta.coordinatorUids.filter((u) => typeof u === 'string' && u) : [];
+  return { ownerUids: Array.isArray(ownerUids) ? [...ownerUids] : [], programs, workstreams, tasks, actions, decisions, coordinatorUids };
 }
 
 const isoOrNull = (ts) => ts?.toDate?.().toISOString() ?? null;

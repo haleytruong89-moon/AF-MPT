@@ -89,6 +89,11 @@ export function canDropMove({ isOwner, isV2, roles, uid, kind, sourcePgId, targe
   return isPmOf(roles, sourcePgId, uid) && datesWithinWs(taskStart, taskEnd, roles?.workstreams?.[targetWsId]);
 }
 
+/** W5 Coordinator (rules isCoordinatorIn): actions, decisions and RAID anywhere in the project. */
+export function isCoordinator(roles, uid) {
+  return !!uid && Array.isArray(roles?.coordinatorUids) && roles.coordinatorUids.includes(uid);
+}
+
 // PM / Deputy of the program or Sub-PM of a ws in it (rules claimInProgram).
 const holdsProgram = (roles, programId, uid) => {
   if (!uid || programId == null) return false;
@@ -101,7 +106,7 @@ const holdsAnyProgram = (roles, uid) => Object.keys(roles?.programs || {}).some(
 
 /** Wave 2 R5: edit raid/{programId}. Owner / v1: true; else a role in that program. */
 export function canEditRaid({ isOwner, isV2, roles, uid, programId }) {
-  if (isOwner || !isV2) return true;
+  if (isOwner || !isV2 || isCoordinator(roles, uid)) return true;
   return holdsProgram(roles, programId, uid);
 }
 
@@ -112,7 +117,7 @@ export function canEditRaid({ isOwner, isV2, roles, uid, programId }) {
  * a new one: anyone holding a PM / Deputy / Sub-PM role.
  */
 export function canEditDecision({ isOwner, isV2, roles, uid, decision }) {
-  if (isOwner || !isV2) return true;
+  if (isOwner || !isV2 || isCoordinator(roles, uid)) return true;
   const id = decision?.id;
   const stored = id != null && roles?.decisions && hasOwn(roles.decisions, id) ? roles.decisions[id] : undefined;
   if (stored === undefined) return holdsAnyProgram(roles, uid);
@@ -167,6 +172,7 @@ export function myRoleSummary(roles, uid, project) {
     for (const id of pmIds) if (roles.programs[id]?.pmUid === uid) detail.push(`PM · ${progName(id)}`);
     for (const id of pmIds) if (roles.programs[id]?.deputyUid === uid) detail.push(`Deputy · ${progName(id)}`);
     for (const [id, ws] of Object.entries(roles.workstreams || {})) if (ws?.leadUid === uid) detail.push(`Sub-PM · ${wsName(id)}`);
+    if (isCoordinator(roles, uid)) detail.push('Coordinator');
     if (Object.values(roles.tasks || {}).some((t) => t?.picUid === uid)) detail.push('Assignee');
   }
   if (!detail.length) return { label: 'View only', detail: ['View only'] };
@@ -183,7 +189,7 @@ export function myRoleSummary(roles, uid, project) {
 export function actionDeleteMode({ isOwner, isV2, roles, uid, action }) {
   if (isOwner || !isV2) return 'delete';
   if (action?.status === 'Cancelled') return 'none'; // rules: no touching a Cancelled action
-  return managesWs(roles, uid, actionWsId(roles, action)) ? 'cancel' : 'none';
+  return managesWs(roles, uid, actionWsId(roles, action)) || isCoordinator(roles, uid) ? 'cancel' : 'none';
 }
 
 // ── W3-A2: one capability per surface, mirroring firestore.rules ──
@@ -217,7 +223,7 @@ export function actionTaskOptions(project, { isOwner, isV2, roles, uid }) {
   const out = [];
   for (const program of project?.programs || []) {
     for (const workstream of program.workstreams || []) {
-      if (!(isOwner || !isV2 || managesWs(roles, uid, workstream.id))) continue;
+      if (!(isOwner || !isV2 || isCoordinator(roles, uid) || managesWs(roles, uid, workstream.id))) continue;
       for (const task of workstream.tasks || []) out.push({ task, program, workstream });
     }
   }
@@ -226,7 +232,7 @@ export function actionTaskOptions(project, { isOwner, isV2, roles, uid }) {
 
 /** May the person create any action in this project? Owner / v1: yes (an Owner may leave the task empty). */
 export function canCreateAction(project, ctx) {
-  if (ctx.isOwner || !ctx.isV2) return true;
+  if (ctx.isOwner || !ctx.isV2 || isCoordinator(ctx.roles, ctx.uid)) return true;
   return actionTaskOptions(project, ctx).length > 0;
 }
 
@@ -241,7 +247,7 @@ export function canCreateAction(project, ctx) {
 export function actionEditMode({ isOwner, isV2, roles, uid, action, isPic }) {
   if (isOwner || !isV2) return 'full';
   if (action?.status === 'Cancelled') return 'comment';
-  if (managesWs(roles, uid, actionWsId(roles, action))) return 'full';
+  if (managesWs(roles, uid, actionWsId(roles, action)) || isCoordinator(roles, uid)) return 'full';
   return isPic ? 'pic' : 'comment';
 }
 
@@ -261,11 +267,13 @@ export function taskPanelCaps({ isOwner, isV2, roles, uid, taskId, status }) {
   const all = { health: true, refs: true, resolveBlocker: true, addAction: true, comment: true };
   if (isOwner || !isV2) return all;
   if (managerLevel(roles, taskId, uid)) return all;
+  // W5: a Coordinator adds actions on any task; the task itself stays with its managers.
+  const coord = isCoordinator(roles, uid);
   const info = roles?.tasks && hasOwn(roles.tasks, taskId) ? roles.tasks[taskId] : null;
   const open = ['Planned', 'InProgress', 'Submitted'].includes(status || 'Planned');
-  if (uid && info?.picUid === uid && open) return { health: true, refs: true, resolveBlocker: true, addAction: false, comment: true };
+  if (uid && info?.picUid === uid && open) return { health: true, refs: true, resolveBlocker: true, addAction: coord, comment: true };
   const contrib = !!uid && Array.isArray(info?.contributorUids) && info.contributorUids.includes(uid);
-  return { health: false, refs: false, resolveBlocker: contrib, addAction: false, comment: true };
+  return { health: false, refs: false, resolveBlocker: contrib, addAction: coord, comment: true };
 }
 
 /** W3-D3 (P6): why a drop is refused (null when canDropMove allows it). */

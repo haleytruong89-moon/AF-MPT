@@ -135,6 +135,7 @@ describe('roles and approvals on the v2 tree (P3 task 5)', () => {
       tasks: { tA: { programId: null, workstreamId: null, picUid: null, contributorUids: [] } },
       actions: { aA: { picUid: 'uA' }, aB: { picUid: null } },
       decisions: {},
+      coordinatorUids: [],
     });
     expect(rolesFromLoaded({ meta: {}, docs: { workstreams: new Map(), tasks: new Map() } }, ['o']).programs).toEqual({});
   });
