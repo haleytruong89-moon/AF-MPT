@@ -37,6 +37,7 @@ import { recentlyApprovedSent, pendingDeadlineSent, lastDeadlineResolution, dead
 import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
 import { meetingTaskLists, takeWithMore } from './meetingLists.js';
+import { extraTaskColumns, exportFileStem } from './excelColumns.js';
 import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
 import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
@@ -1776,7 +1777,8 @@ async function parseExcelFile(file, dirIndex = null) {
   return project;
 }
 
-function projectToExcelBlob(project) {
+// Audit 25/11 PM-24: extra columns after the import-template ones (src/excelColumns.js).
+function projectToExcelBlob(project, { nameOf } = {}) {
   const rows = [];
   for (const pg of project.programs || [])
     for (const ws of pg.workstreams || [])
@@ -1795,6 +1797,7 @@ function projectToExcelBlob(project) {
           'Dependencies': sanitizeCell(t.dependencies || ''),
           'References': sanitizeCell((t.references || []).map((r) => `${r.url} | ${r.title || ''}`).join('; ')),
           'Latest check-in': sanitizeCell((t.checkIns && t.checkIns[0]) ? `${fmtDateTime(t.checkIns[0].timestamp)} — ${t.checkIns[0].author}: ${t.checkIns[0].done || ''}` : ''),
+          ...Object.fromEntries(Object.entries(extraTaskColumns(t, { nameOf })).map(([k, v]) => [k, sanitizeCell(v)])),
         });
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -15522,10 +15525,16 @@ export default function App() {
     }
   };
 
+  // Audit 25/11 PM-24: the scope chosen in the project; All projects asks for a project first.
   const exportExcel = () => {
-    if (!project) return;
-    const blob = projectToExcelBlob(project);
-    downloadBlob(blob, project.name.replace(/[^a-z0-9]+/gi, '_') + '_' + toISODate(new Date()) + '.xlsx');
+    if (!project || isAllProjectsMode) { showToast('Choose a project first'); return; }
+    const sc = validScope(project, scopeProgramId);
+    const { programId: pgId, wsId } = scopeParts(project, sc);
+    const pg = pgId ? (project.programs || []).find((p) => p.id === pgId) : null;
+    const scopeName = wsId ? (pg?.workstreams || []).find((w) => w.id === wsId)?.name : pg?.name;
+    const blob = projectToExcelBlob(scopedProject(project, sc), { nameOf: meValue.nameOf });
+    downloadBlob(blob, exportFileStem(project.name, scopeName || null) + '_' + toISODate(new Date()) + '.xlsx');
+    if (scopeName) showToast(`Exported ${scopeName} only (the scope chosen in this project).`);
   };
   const backupJson = async () => {
     const everything = { meta, projects: stripSecretsFromProjects(projects), activity: {} };
