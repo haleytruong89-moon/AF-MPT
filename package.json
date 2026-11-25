@@ -22,7 +22,8 @@
     "p2:migrate": "node scripts/p2-migrate.mjs",
     "p2:restore": "node scripts/p2-restore.mjs",
     "p2:backfill-uids": "node scripts/p2-backfill-uids.mjs",
-    "p2:visibility": "node scripts/p2-visibility.mjs"
+    "p2:visibility": "node scripts/p2-visibility.mjs",
+    "p2:backfill-closed-at": "node scripts/p2-backfill-closed-at.mjs"
   },
   "dependencies": {
     "firebase": "^11.0.0",
