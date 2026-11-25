@@ -7878,7 +7878,7 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, scopeWs
                     <td style={{ padding: '6px 12px' }}>{p.awaiting}</td>
                     <td style={{ padding: '6px 12px', color: p.overdue ? TOK.overdueFg : TOK.ink, fontWeight: p.overdue ? 500 : 400 }}>{p.overdue}</td>
                     <td style={{ padding: '6px 12px', color: TOK.doneFg }}>{p.onTime}</td>
-                    <td style={{ padding: '6px 12px', color: p.late ? TOK.overdueFg : TOK.ink }}>{p.late}{p.unknown ? <span style={{ color: TOK.subtle }}> · {p.unknown} closed before approvals (date unknown)</span> : null}</td>
+                    <td style={{ padding: '6px 12px', color: p.late ? TOK.overdueFg : TOK.ink }}>{p.late}{p.unknown ? <span style={{ color: TOK.subtle }}> · {p.unknown} closed before approvals (not rated)</span> : null}</td>
                   </tr>
                 ))}
               </tbody>
@@ -12040,7 +12040,7 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
   }, [projects, isMe, period, creditsOf]);
   const credit = useMemo(() => myCreditByYear({ projects, isMe, year, creditsOf, currentYear: thisYear }), [projects, isMe, year, creditsOf, thisYear]);
   const r1 = (n) => Math.round(n * 10) / 10;
-  const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : '—');
+  const timingText = (t) => (t.kind === 'on-time' ? 'On time' : t.kind === 'late' ? `${t.lateDays} day${t.lateDays === 1 ? '' : 's'} late` : t.kind === 'dropped' ? 'Dropped' : t.kind === 'no-due' ? 'No due date' : t.kind === 'approx' ? 'Date estimated' : '—');
   const copy = async (text) => {
     try { await navigator.clipboard.writeText(text); showToast?.('Copied. Paste into Sheets, Excel or Docs.'); }
     catch { showToast?.("Couldn't copy: your browser blocked the clipboard."); }

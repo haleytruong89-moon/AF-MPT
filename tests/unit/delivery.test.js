@@ -11,6 +11,7 @@ describe('closeTiming', () => {
     expect(closeTiming({ end: '2026-11-20', approvedAt: '2026-11-23T09:00:00' })).toMatchObject({ kind: 'late', lateDays: 3 });
     expect(closeTiming({ approvedAt: '2026-11-23T09:00:00' }).kind).toBe('no-due');
     expect(closeTiming({ end: '2026-11-20' }).kind).toBe('unknown');
+    expect(closeTiming({ end: '2026-11-20', approvedAt: '2026-11-20T16:59:59.000Z', approvedAtSource: 'end-date' }).kind).toBe('approx');
   });
 });
 

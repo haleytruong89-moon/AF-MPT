@@ -17,6 +17,9 @@ const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 export function closeTiming(task) {
   const closed = task?.approvedAt ? new Date(task.approvedAt) : null;
   if (!closed || Number.isNaN(closed.getTime())) return { kind: 'unknown', lateDays: 0, closedOn: null };
+  // G1: a date filled by the backfill from a shared task name or the planned end is right for
+  // the year but not for the day: never counted as on time / late.
+  if (task.approvedAtSource && task.approvedAtSource !== 'activity') return { kind: 'approx', lateDays: 0, closedOn: closed };
   const end = dayOf(task.end);
   if (!end) return { kind: 'no-due', lateDays: 0, closedOn: closed };
   const late = Math.round((startOfDay(closed) - end) / DAY);
@@ -59,6 +62,7 @@ export function personDelivery(node, { keyOf = (raw) => raw, labelOf = null, yea
       const r = row(t.pic);
       if (ct.kind === 'late') r.late++;
       else if (ct.kind === 'on-time') r.onTime++;
+      else if (ct.kind === 'approx') r.unknown++;
     }
   }
   return [...rows.values()].sort((a, b) => b.open - a.open || String(a.label).localeCompare(String(b.label)));
