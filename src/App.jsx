@@ -17,7 +17,7 @@ import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
 import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
-import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard, buildCloseReassignedCard } from './chatNotify';
+import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard, buildCloseReassignedCard, buildBlockerCard } from './chatNotify';
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey, shouldReloadOnFocus } from './persistence';
 import { mentionsMe } from './mentions.js';
@@ -932,6 +932,12 @@ function computeMyWork(author, projects, isOwner, lastSeenAt, dirIndex = null, a
             } else {
               out.tasksOwned.later.push(enriched);
             }
+          }
+
+          // HOD 25/11 Q4 (PM-2): an open blocker on a task I manage (not raised by me).
+          if (uid && proj.__v2 && managerLevel(proj.__v2.roles || null, t.id, uid)) {
+            const b = (t.updates || []).find((u) => u && u.isBlocker && !u.resolvedAt && u.authorUid !== uid && !isMe(u.author));
+            if (b) out.needsAttention.push({ kind: 'blocker', ...enriched, update: b });
           }
 
           // W3-B3 (M3): my close request was rejected -> Needs attention (max 14 days).
@@ -3984,7 +3990,10 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
                 <span style={{ marginLeft: 6, opacity: 0.7 }}>({Math.round(pctOfPool * 10) / 10}% of {totalCp} cp project pool)</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                {taskRows.map((b, i) => (
+                {/* HOD 25/11 Q1: everyone's share for the Owner and the task's managers; others see their own row. */}
+                {(!isV2 || (isOwner && !me.readOnly) || (!me.readOnly && managerLevel(v2Roles, task.id, me.uid))
+                  ? taskRows
+                  : taskRows.filter((b) => me.isMe?.(b.picName))).map((b, i) => (
                   <div key={i} style={{ display: 'flex', fontSize: 12, gap: 8 }}>
                     <span style={{ flex: 1 }}>{b.picName} <span style={{ color: TOK.muted, fontSize: 11 }}>({Math.round(b.sharePct * 10) / 10}%)</span></span>
                     <span style={{ color: credited ? TOK.doneFg : TOK.muted, fontWeight: credited ? 500 : 400 }}>
@@ -3995,7 +4004,7 @@ function TaskDetail({ project, taskId, onClose, onUpdate, onDelete, onProjectUpd
               </div>
               {!credited && (
                 <div style={{ marginTop: 6, fontSize: 11, color: TOK.muted, fontStyle: 'italic' }}>
-                  Mark task as Completed to award these credits.
+                  Awarded when the task is approved as Completed.
                 </div>
               )}
             </div>
@@ -7555,7 +7564,13 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
-        {(typeof project.creditPoints === 'number' || isOwner) && (
+        {/* HOD 25/11 Q2: one muted line for non-Owners (they cannot act on the pool). */}
+        {!isOwner && typeof project.creditPoints === 'number' && (
+          <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 8 }}>
+            {weightsLocked ? '🔒' : '🔓'} Credit pool: {project.creditPoints} cp · Year {project.creditYear ?? new Date().getFullYear()}
+          </div>
+        )}
+        {isOwner && (
           <div style={{
             padding: '10px 12px', marginBottom: 10, borderRadius: 8,
             background: weightsLocked ? '#FCEBEB' : '#E6F1FB',
@@ -7762,7 +7777,8 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
 }
 
 /* ═════════ DASHBOARD VIEW ═════════ */
-function DashboardView({ project, activity, onTaskClick, scopeProgramId, onOpenLog = null }) {
+// HOD 25/11 Q1: "Recent activity" (other people's rejections, deadline answers) only for the Owner.
+function DashboardView({ project, activity, onTaskClick, scopeProgramId, onOpenLog = null, showActivity = true }) {
   const scopedNode = useMemo(() => {
     if (!scopeProgramId) return project;
     const pg = (project.programs || []).find((p) => p.id === scopeProgramId);
@@ -7866,7 +7882,7 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, onOpenL
           ))}
         </Panel>
 
-        <Panel title="Recent activity" count={activity.length} icon={<Activity size={13} />}>
+        {showActivity && <Panel title="Recent activity" count={activity.length} icon={<Activity size={13} />}>
           {activity.length === 0 && <div style={{ fontSize: 12, color: TOK.subtle }}>No activity yet.</div>}
           {activity.slice(0, 15).map((a) => (
             <div key={a.id} style={{ padding: '7px 12px', borderTop: '1px solid ' + TOK.line, fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -7879,7 +7895,7 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, onOpenL
               <Btn size="sm" variant="ghost" onClick={() => onOpenLog(project.id)}>View full log</Btn>
             </div>
           )}
-        </Panel>
+        </Panel>}
 
         {noUpdates.length > 0 && (
           <Panel title="Open tasks with no updates" count={noUpdates.length} icon={<Info size={13} />}>
@@ -10617,7 +10633,7 @@ function AddRAIDForm({ onSave, onCancel, currentUser, teamMembers, picSuggestion
           <Btn size="sm" variant="primary" onClick={handleSave} disabled={!canSave}>Submit for approval</Btn>
         </div>
         <div style={{ fontSize: 11, color: TOK.subtle, marginTop: 10, textAlign: 'right' }}>
-          New items start as <strong>PendingApproval</strong>. Workspace owner must approve before everyone can see.
+          New items wait for the Owner's approval before the whole team sees them.
         </div>
       </div>
     </Modal>
@@ -10930,10 +10946,11 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
     if (!selectedEntry) return [];
     return (selectedEntry.program.raid || []).filter((item) => {
       if (item.status === 'Draft' && item.createdBy !== author) return false;
-      if (item.status === 'PendingApproval' && item.createdBy !== author && !isOwner) return false;
+      // HOD 25/11 Q3: also the PM / Deputy / Sub-PM of the program (v2), read-only for them.
+      if (item.status === 'PendingApproval' && item.createdBy !== author && !isOwner && !(selIsV2 && canEditSel)) return false;
       return true;
     });
-  }, [selectedEntry, author, isOwner]);
+  }, [selectedEntry, author, isOwner, selIsV2, canEditSel]);
 
   // Apply type + status filters.
   const filteredItems = useMemo(() => {
@@ -11025,7 +11042,8 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
             return order[lvl] < order[acc] ? lvl : acc;
           }, null);
           const dotColor = highestLevel === 'Critical' ? '#A32D2D' : highestLevel === 'High' ? '#A32D2D' : highestLevel === 'Medium' ? '#B7791F' : highestLevel === 'Low' ? '#356512' : 'transparent';
-          const hasPending = (e.program.raid || []).some((r) => r.status === 'PendingApproval');
+          const seesPending = isOwner || (!!e.project?.__v2 && canEditRaid({ isOwner, isV2: true, roles: e.project.__v2?.roles || null, uid: myUid, programId: e.program?.id ?? e.programId }));
+          const hasPending = (e.program.raid || []).some((r) => r.status === 'PendingApproval' && (seesPending || r.createdBy === author));
           const hasStale = active.some((r) => raidDaysSinceReview(r) > RAID_REVIEW_STALE_DAYS);
           const selected = selectedProgramKey === e.key;
           return (
@@ -11434,7 +11452,7 @@ function ByProjectCard({
   handleStatusChange, handleAddUpdate, handleRequestExtension, handleActionDone, handleStepDone,
   showToast, onNavigateRaid,
 }) {
-  const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions, rejected = [] } = bundle;
+  const { project, owned, contributing, actions, mentions, unreadMentions, raid, decisions, rejected = [], blockers = [] } = bundle;
   const me = useContext(MeContext);
   const [collapsed, setCollapsed] = useState(false);
   // Audit 25/11 MB-8: with nothing due today, open this week instead of a "Nothing due" line.
@@ -11450,7 +11468,7 @@ function ByProjectCard({
   const totalActions = actions.today.length + actions.week.length + actions.later.length;
   const totalRaid = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
   const totalDecisions = decisions.length;
-  const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length + rejected.length;
+  const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length + rejected.length + blockers.length;
   const color = project.color || '#0C447C';
   const colorBg = hex2rgba(color, 0.08);
 
@@ -11608,6 +11626,12 @@ function ByProjectCard({
                 <div key={'ar-' + (r.item?.id || i)} style={{ color: TOK.overdueFg, marginBottom: 2 }}>
                   🔴 Risk escalating: {r.item?.title || '(untitled)'}
                 </div>
+              ))}
+              {blockers.map((b) => (
+                <button key={'abl-' + b.task.id} onClick={() => onTaskClick(b.task.id, project.id)}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: TOK.overdueFg, marginBottom: 2, whiteSpace: 'normal' }}>
+                  🚩 Blocker on <strong>{b.task.name}</strong> — {b.update.author || '—'}: {b.update.text || ''}
+                </button>
               ))}
               {rejected.map((r) => (
                 <button key={'arj-' + r.task.id} onClick={() => onTaskClick(r.task.id, project.id)}
@@ -11779,6 +11803,7 @@ function ByProjectView({
           mentions: [],
           unreadMentions: [],
           rejected: [],
+          blockers: [],
           raid: { escalating: [], overdueActions: [], needsReview: [], pendingApproval: [] },
           decisions: [],
         });
@@ -11793,7 +11818,10 @@ function ByProjectView({
     for (const m of (myWork.allMentions || [])) ensure(m.project)?.mentions.push(m);
     for (const m of (myWork.unreadMentions || [])) ensure(m.project)?.unreadMentions.push(m);
     for (const d of (myWork.decisions || [])) ensure(d.project)?.decisions.push(d);
-    for (const it of (myWork.needsAttention || [])) if (it.kind === 'rejected_close') ensure(it.project)?.rejected.push(it);
+    for (const it of (myWork.needsAttention || [])) {
+      if (it.kind === 'rejected_close') ensure(it.project)?.rejected.push(it);
+      if (it.kind === 'blocker') ensure(it.project)?.blockers.push(it);
+    }
     if (myRaid) {
       for (const key of ['pendingApproval', 'escalating', 'overdueActions', 'needsReview']) {
         for (const e of (myRaid[key] || [])) ensure(e.project)?.raid[key].push(e);
@@ -11803,7 +11831,7 @@ function ByProjectView({
       const tasks = b.owned.today.length + b.owned.week.length + b.owned.later.length + b.contributing.length;
       const acts = b.actions.today.length + b.actions.week.length + b.actions.later.length;
       const r = b.raid.escalating.length + b.raid.overdueActions.length + b.raid.needsReview.length + b.raid.pendingApproval.length;
-      return tasks + acts + b.unreadMentions.length + b.rejected.length + r + b.decisions.length > 0;
+      return tasks + acts + b.unreadMentions.length + b.rejected.length + b.blockers.length + r + b.decisions.length > 0;
     });
     arr.sort((a, b) => {
       const aOv = a.owned.today.filter((e) => isOverdue(e.task)).length;
@@ -12145,6 +12173,22 @@ function MyWorkView({
           <div style={{ color: TOK.muted, fontSize: 12.5 }}>Nothing urgent right now.</div>
         )}
         {myWork.needsAttention.map((it, i) => {
+          if (it.kind === 'blocker') {
+            return (
+              <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: TOK.ink }}>
+                  🚩 Blocker on {it.task.name} — {it.update.author || '—'}
+                </div>
+                <div style={{ fontSize: 12, color: TOK.ink, marginTop: 2 }}>{it.update.text}</div>
+                <div style={{ fontSize: 11, color: TOK.muted, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <MyWorkBreadcrumb project={it.project} program={it.program} workstream={it.workstream} />
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <Btn size="sm" variant="primary" onClick={() => onTaskClick(it.task.id, it.project.id)}>Open task</Btn>
+                </div>
+              </div>
+            );
+          }
           if (it.kind === 'rejected_close') {
             return (
               <div key={`na-${i}`} style={{ borderLeft: '3px solid ' + TOK.overdueFg, padding: '8px 12px', background: TOK.overdueBg + '40', marginBottom: 6, borderRadius: 4 }}>
@@ -14295,6 +14339,17 @@ export default function App() {
     if ((oldTask.updates?.length || 0) < (updatedTask.updates?.length || 0)) {
       const newest = (updatedTask.updates || [])[0];
       log({ type: 'task_update', description: `Posted update on "${updatedTask.name}"${newest?.isBlocker ? ' 🚨 Blocker' : ''}${tag}` });
+      // HOD 25/11 Q4: a new blocker goes to the project's Chat space, once the save landed.
+      const webhook = targetProj.googleChatWebhook;
+      if (newest?.isBlocker && webhook) {
+        afterSaveOf(projectId, () => {
+          postToChat(webhook, buildBlockerCard({
+            projectName: targetProj.name || 'project', taskName: updatedTask.name || 'task',
+            authorName: newest.author || meRef.current.name || 'Someone', text: newest.text || '',
+            taskUrl: taskUrl(window.location.origin, projectId, updatedTask.id),
+          })).then((r) => { if (!r.ok) showToastRef.current(`Chat notify failed: ${r.status} ${r.statusText}`); });
+        });
+      }
     }
     if (oldTask.name !== updatedTask.name) {
       log({ type: 'task_rename', description: `Renamed task "${oldTask.name}" → "${updatedTask.name}"${tag}` });
@@ -15189,7 +15244,7 @@ export default function App() {
               {project && view === 'mindmap' && <MindMapView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} roles={project.__v2?.roles || null} nameOf={meValue?.nameOf || null} onOpenRoles={(f) => setShowRoles(f)} isOwner={isOwner} uid={meValue?.uid || null} />}
               {project && view === 'outline' && <OutlineView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} onProjectUpdate={updateProject} getLatestProject={getLatestProject} onActivity={logActivity} dialogs={dialogs} scopeProgramId={scopeProgramId} isOwner={isOwner} roles={project.__v2?.roles || null} me={meValue} people={rolePeople} onChangeRole={(c) => changeRole(project.id, c)} showToast={showToast} />}
               {project && view === 'gantt' && <GanttView project={project} selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} scopeProgramId={scopeProgramId} />}
-              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} />}
+              {project && view === 'dashboard' && <DashboardView project={project} activity={activity} onTaskClick={(id) => { setSelectedTaskId(id); setView('outline'); }} scopeProgramId={scopeProgramId} onOpenLog={isOwner && !impersonatingAs ? (pid) => setActivityLogFor(pid) : null} showActivity={isOwner && !impersonatingAs} />}
               {project && view === 'decisions' && <DecisionsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} initialEditId={initialDecisionEditId} isOwner={isOwner && !impersonatingAs} uid={meValue?.uid || null} />}
               {project && view === 'actions' && <ActionItemsView project={project} onProjectUpdate={updateProject} teamMembers={teamMembers} author={author} dialogs={dialogs} onActivity={logActivity} showToast={showToast} initialEditId={initialActionEditId} onApplyAction={applyActionUpdate} onNavigateRaid={(projectId, programId) => { setRaidScopeProgramId(programId || null); setView('raid'); }} />}
               {isAllProjectsMode && view === 'decisions' && <AggregationView projects={projects} currentProjectId={currentId} teamMembers={teamMembers} dialogs={dialogs} showToast={showToast} author={author} initialTab="decisions" />}
