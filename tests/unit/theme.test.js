@@ -35,7 +35,7 @@ describe('SmartOSC theme', () => {
       ['plannedFg', 'plannedBg'], ['inprogFg', 'inprogBg'], ['doneFg', 'doneBg'], ['droppedFg', 'droppedBg'], ['overdueFg', 'overdueBg'],
       ['programFg', 'programBg'], ['workstreamFg', 'workstreamBg'], ['projectFg', 'projectBg'],
       ['healthGreen', 'healthGreenBg'], ['healthAmber', 'healthAmberBg'], ['healthRed', 'healthRedBg'],
-      ['mention', 'mentionBg'], ['blocker', 'blockerBg'], ['overdueFg', 'surface'], ['doneFg', 'surface'], ['inprogFg', 'surface'], ['danger', 'surface'],
+      ['mention', 'mentionBg'], ['blocker', 'blockerBg'], ['submittedFg', 'submittedBg'], ['overdueFg', 'surface'], ['doneFg', 'surface'], ['inprogFg', 'surface'], ['danger', 'surface'],
     ];
     for (const [fg, bg] of pairs) expect(ratio(TOK[fg], TOK[bg]), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
     for (const fg of ['fg', 'muted', 'activeFg']) expect(ratio(NAV[fg], NAV.bg), `nav ${fg}`).toBeGreaterThanOrEqual(4.5);

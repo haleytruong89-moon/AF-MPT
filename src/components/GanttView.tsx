@@ -23,29 +23,8 @@ import { ZoomIn, ZoomOut, AlertTriangle, ChevronDown, ChevronRight } from 'lucid
 import type { Project, Task, TaskStatus } from '../types';
 import { isOverdueTask } from '../taskStatus';
 import { buildGanttRows, buildAllProjectsGanttRows, ganttTaskIndex } from '../ganttRows';
+import { TOK, FONT_STACK } from '../theme.js';
 
-const TOK = {
-  bg: '#F7F5EF',
-  surface: '#FFFFFF',
-  ink: '#1A1A19',
-  muted: '#6E6C66',
-  subtle: '#95938C',
-  line: 'rgba(26,26,25,0.10)',
-  lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  plannedFg: '#6E6C66',
-  plannedBg: '#EDEBE4',
-  inprogFg: '#A8660C',
-  inprogBg: '#FAEEDA',
-  doneFg: '#356512',
-  doneBg: '#E6EFD6',
-  overdueFg: '#A32D2D',
-  overdueBg: '#FCEBEB',
-  submittedFg: '#B7791F',
-  submittedBg: '#FAEEDA',
-};
-const FONT_STACK =
-  '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 
 const ROW_H = 28;
 const HEADER_H = 56;

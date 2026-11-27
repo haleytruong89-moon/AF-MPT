@@ -1,10 +1,11 @@
 // Role assignment: PM / Deputy / Sub-PM shown in Outline headers and the Roles modal.
 // Not editable -> "PM: <name>" text; editable -> compact select (None + people).
 // Who may edit and who is listed come from src/roleAssign.js (canEditRole, pickerPeople).
-const FONT = '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+import { TOK, FONT_STACK } from '../theme.js';
+const FONT = FONT_STACK;
 const C = {
-  ink: '#1A1A19', muted: '#6E6C66', surface: '#FFFFFF', lineStrong: 'rgba(26,26,25,0.22)',
-  inactiveFg: '#7A7873', inactiveBg: '#F0EEE8',
+  ink: TOK.ink, muted: TOK.muted, surface: TOK.surface, lineStrong: TOK.lineStrong,
+  inactiveFg: TOK.droppedFg, inactiveBg: TOK.droppedBg,
 };
 
 function InactiveBadge() {

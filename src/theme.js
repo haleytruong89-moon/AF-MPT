@@ -22,6 +22,8 @@ export const TOK = {
   blocker: '#B91C1C', blockerBg: '#FEE2E2',
   // Used by the modals (DirectoryModal danger, SearchModal highlight)
   danger: '#B91C1C', hl: '#FEF3C7',
+  // Gantt: Submitted (dashed bar)
+  submittedFg: '#92400E', submittedBg: '#FEF3C7',
 };
 
 // Sidebar: SmartOSC navy.
