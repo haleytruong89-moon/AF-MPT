@@ -1,7 +1,7 @@
 // Sidebar of the navigation shell (spec docs/superpowers/specs/2026-11-27-nav-shell-design.md).
 // Presentational: everything shown comes from navModel(); clicks go back through props.
 import { useState } from 'react';
-import { CheckSquare, FileText, Layers, ChevronDown, ChevronRight, UserCircle, X } from 'lucide-react';
+import { CheckSquare, FileText, Layers, ChevronDown, ChevronRight, UserCircle, X, LayoutGrid, Users, Award, GraduationCap } from 'lucide-react';
 import { NAV, TOK, FONT_STACK, FONT_NUM } from '../theme.js';
 import { isProjectView } from '../navModel.js';
 
@@ -26,7 +26,11 @@ export default function AppSidebar({ model, view, currentId, myWorkCount = 0, au
   const [showClosed, setShowClosed] = useState(false);
   if (!open) return null;
   const inProject = isProjectView(view);
-  const ICONS = { 'my-work': <CheckSquare size={16} aria-hidden="true" />, briefing: <FileText size={16} aria-hidden="true" /> };
+  const ICONS = {
+    'my-work': <CheckSquare size={16} aria-hidden="true" />, briefing: <FileText size={16} aria-hidden="true" />,
+    portfolio: <LayoutGrid size={16} aria-hidden="true" />, 'team-overview': <Users size={16} aria-hidden="true" />,
+    'credit-report': <Award size={16} aria-hidden="true" />, activity: <GraduationCap size={16} aria-hidden="true" />,
+  };
   return (
     <>
       {overlay && <div onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 89, background: 'rgba(15,27,51,0.35)' }} />}
@@ -80,7 +84,7 @@ export default function AppSidebar({ model, view, currentId, myWorkCount = 0, au
         {model.management.length > 0 && <div style={overline}>MANAGEMENT</div>}
         {model.management.map((it) => (
           <Item key={it.id} tour={'tab-' + it.id} active={view === it.id} onClick={() => onView(it.id)} title="Workspace owner only">
-            <span style={{ flex: 1 }}>{it.label}</span>
+            {ICONS[it.id]}<span style={{ flex: 1 }}>{it.label}</span>
           </Item>
         ))}
 

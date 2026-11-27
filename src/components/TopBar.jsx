@@ -23,9 +23,9 @@ export default function TopBar({ title = '', project = null, roleSummary = null,
           }}>Your role: {roleSummary.label}</span>
         )}
         {progress && (
-          <span style={{ fontSize: 12, color: TOK.muted, display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none', fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' }}>
-            <span><span style={{ color: TOK.accent, fontWeight: 600, fontSize: 13 }}>{progress.pct}%</span> · {progress.done}/{progress.total} complete</span>
-            {progress.overdue > 0 && <span style={{ color: TOK.overdueFg, display: 'inline-flex', alignItems: 'center', gap: 3 }}><AlertTriangle size={12} aria-hidden="true" /> {progress.overdue} overdue</span>}
+          <span style={{ fontSize: 12, color: TOK.muted, display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <span><span style={{ color: TOK.accent, fontWeight: 600, fontSize: 13, fontFamily: FONT_NUM }}>{progress.pct}%</span> · <span style={{ fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' }}>{progress.done}/{progress.total}</span> complete</span>
+            {progress.overdue > 0 && <span style={{ color: TOK.overdueFg, display: 'inline-flex', alignItems: 'center', gap: 3 }}><AlertTriangle size={12} aria-hidden="true" /> <span style={{ fontFamily: FONT_NUM }}>{progress.overdue}</span> overdue</span>}
           </span>
         )}
         <div style={{ flex: 1, minWidth: 8 }} />
