@@ -25,7 +25,6 @@ import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
-import { DEFAULT_DEADLINE_TYPE, ACTIVITY_THRESHOLDS, DEFAULT_DASHBOARD_WINDOW, bucketColor, sampleStatus, deliverySample, computeActivityIndexWithTrend, rankCoachingPriorities } from './coaching.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { effortMatrix, cellText, effortTable } from './effortReport.js';
@@ -47,6 +46,7 @@ import { minutesDefaults } from './minutesDefaults.js';
 import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
+import { DEFAULT_DEADLINE_TYPE, ACTIVITY_THRESHOLDS, DEFAULT_DASHBOARD_WINDOW, bucketColor, sampleStatus, deliverySample, computeActivityIndexWithTrend, rankCoachingPriorities } from './coaching.js';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers, canCloseDirectly } from './closeFlow';
 import { planReplace, applyReplace, planIsEmpty } from './replacePerson.js';
