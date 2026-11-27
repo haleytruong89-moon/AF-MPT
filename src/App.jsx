@@ -47,6 +47,7 @@ import { minutesDefaults } from './minutesDefaults.js';
 import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
+import { TOK, FONT_STACK } from './theme.js';
 import { DEFAULT_DEADLINE_TYPE, ACTIVITY_THRESHOLDS, DEFAULT_DASHBOARD_WINDOW, bucketColor, sampleStatus, deliverySample, computeActivityIndexWithTrend, rankCoachingPriorities } from './coaching.js';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers, canCloseDirectly } from './closeFlow';
@@ -209,28 +210,7 @@ function isValidUrl(url) {
   }
 }
 
-const TOK = {
-  bg: '#F7F5EF', surface: '#FFFFFF', ink: '#1A1A19', muted: '#6E6C66', subtle: '#706E68',
-  line: 'rgba(26,26,25,0.10)', lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  plannedFg: '#6E6C66', plannedBg: '#EDEBE4',
-  inprogFg: '#A8660C', inprogBg: '#FAEEDA',
-  doneFg: '#356512', doneBg: '#E6EFD6',
-  droppedFg: '#7A7873', droppedBg: '#F0EEE8',
-  overdueFg: '#A32D2D', overdueBg: '#FCEBEB',
-  programFg: '#0C447C', programBg: '#E6F1FB',
-  workstreamFg: '#0F6E56', workstreamBg: '#E1F5EE',
-  projectFg: '#26215C', projectBg: '#EEEDFE',
-  // Health (RAG)
-  healthGreen: '#2D7A2D', healthGreenBg: '#E2F0DE',
-  healthAmber: '#8A5A12', healthAmberBg: '#FBF1DC',
-  healthRed: '#A32D2D', healthRedBg: '#FCEBEB',
-  // Mention highlight
-  mention: '#1F5EA8', mentionBg: '#E5EFFB',
-  blocker: '#A32D2D', blockerBg: '#FCEBEB',
-};
 
-const FONT_STACK = '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 
 /* ═════════ UTILITIES ═════════ */
 const uid = (p = 'id') => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
