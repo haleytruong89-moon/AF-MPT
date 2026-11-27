@@ -3,7 +3,7 @@ import {
   Plus, Edit2, Trash2, X, Upload, Download, ChevronRight, ChevronDown,
   Save, Map as MapIcon, Calendar, FileSpreadsheet,
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
-  MessageSquare, Search, MoreHorizontal, FolderPlus, FileDown,
+  MessageSquare, Search, FolderPlus, FileDown,
   FileUp, Activity, ArrowRightLeft, Info, RefreshCw, UserCircle,
   Move, FileText, History, Grip, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
 } from 'lucide-react';
@@ -39,14 +39,18 @@ import { filterActivity, activityTypes } from './activityFilter.js';
 import { planActivityAppend } from './activityLog';
 import { meetingTaskLists, takeWithMore } from './meetingLists.js';
 import { extraTaskColumns, exportFileStem } from './excelColumns.js';
-import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope } from './uiPrefs';
-import { uiTier, tabsFor, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
+import { clampPanelWidth, autoRows, isBriefingDismissed, dismissBriefing, lastSeenMyWork, markMyWorkSeenLocal, readPlanView, writePlanView, readScope, writeScope, readNavHidden, writeNavHidden } from './uiPrefs';
+import { uiTier, canSeeView, landingFor, isPlanView, PLAN_VIEWS } from './tabsByRole.js';
 import { createHeldEffects, changedItemLabels } from './afterSave.js';
 import { collectBriefing, briefingEntries, briefingMarkdown, markdownToHtml } from './briefing.js';
 import { minutesDefaults } from './minutesDefaults.js';
 import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
+import { TOK, NAV, FONT_STACK } from './theme.js';
+import { navModel, isProjectView, viewAfterProjectClick, pageTitle } from './navModel.js';
+import AppSidebar from './components/AppSidebar.jsx';
+import TopBar from './components/TopBar.jsx';
 import { DEFAULT_DEADLINE_TYPE, ACTIVITY_THRESHOLDS, DEFAULT_DASHBOARD_WINDOW, bucketColor, sampleStatus, deliverySample, computeActivityIndexWithTrend, rankCoachingPriorities } from './coaching.js';
 // P3 Task 7: close flow choke point, task-panel close control, View as read-only.
 import { closeEventsFor, managerLevel, canEditCreditSplit, canEditCreditFields, reassignClose, eligibleApprovers, canCloseDirectly } from './closeFlow';
@@ -209,28 +213,7 @@ function isValidUrl(url) {
   }
 }
 
-const TOK = {
-  bg: '#F7F5EF', surface: '#FFFFFF', ink: '#1A1A19', muted: '#6E6C66', subtle: '#706E68',
-  line: 'rgba(26,26,25,0.10)', lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  plannedFg: '#6E6C66', plannedBg: '#EDEBE4',
-  inprogFg: '#A8660C', inprogBg: '#FAEEDA',
-  doneFg: '#356512', doneBg: '#E6EFD6',
-  droppedFg: '#7A7873', droppedBg: '#F0EEE8',
-  overdueFg: '#A32D2D', overdueBg: '#FCEBEB',
-  programFg: '#0C447C', programBg: '#E6F1FB',
-  workstreamFg: '#0F6E56', workstreamBg: '#E1F5EE',
-  projectFg: '#26215C', projectBg: '#EEEDFE',
-  // Health (RAG)
-  healthGreen: '#2D7A2D', healthGreenBg: '#E2F0DE',
-  healthAmber: '#8A5A12', healthAmberBg: '#FBF1DC',
-  healthRed: '#A32D2D', healthRedBg: '#FCEBEB',
-  // Mention highlight
-  mention: '#1F5EA8', mentionBg: '#E5EFFB',
-  blocker: '#A32D2D', blockerBg: '#FCEBEB',
-};
 
-const FONT_STACK = '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 
 /* ═════════ UTILITIES ═════════ */
 const uid = (p = 'id') => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -13143,6 +13126,16 @@ export default function App() {
   const [author, setAuthor] = useState(null);
   const [authorEmail, setAuthorEmail] = useState(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  // Nav shell (spec 2026-11-27): the sidebar is fixed; under 960 px (or when hidden by choice) it is a drawer.
+  const [navHidden, setNavHidden] = useState(() => readNavHidden());
+  const [navDrawer, setNavDrawer] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.innerWidth < 960);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < 960);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const navDocked = !navHidden && !narrow;
   const [meta, setMeta] = useState(null);
   const [projects, setProjects] = useState({}); // id → project
   // Latest projects for handlers invoked after an await or a delay (B4 review fix).
@@ -14876,6 +14869,19 @@ export default function App() {
   const crossView = isCrossProjectView(view);
   const { programId: scopePg, wsId: scopeWs } = scopeParts(project, scope);
   const tabCounts = project ? scopedCounts(project, project.__v2?.roles || null, scope) : { actions: 0, decisions: 0 };
+  const nav = navModel({ tier, impersonating: !!impersonatingAs, projects, activeIds, closedIds, now: new Date() });
+  const goView = (id) => {
+    setNavDrawer(false);
+    if (id === 'briefing') { setBriefingDialogIsOwnerMode(isOwner && !impersonatingAs); setShowBriefingDialog(true); return; }
+    if (id === 'plan') { setView(readPlanView()); return; }
+    setView(id);
+  };
+  const goProject = async (id) => {
+    setNavDrawer(false);
+    if (id !== currentId) await switchProject(id);
+    setView(viewAfterProjectClick(view, readPlanView()));
+  };
+  const inProjectView = isProjectView(view);
 
   return (
     <DirectoryIndexContext.Provider value={dirIndex}><MeContext.Provider value={meValue}>
@@ -14890,6 +14896,7 @@ export default function App() {
       <div style={{
         display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden',
         fontFamily: FONT_STACK, color: TOK.ink, background: TOK.bg, fontSize: 13, position: 'relative',
+        paddingLeft: navDocked ? NAV.width : 0,
       }}>
         {impersonatingAs && (
           <ImpersonationBanner
@@ -14898,64 +14905,25 @@ export default function App() {
             onExit={clearImpersonation}
           />
         )}
-        {/* Top bar */}
-        <div style={{ background: TOK.surface, borderBottom: '1px solid ' + TOK.line, padding: '10px 16px', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>Project Tracker</div>
-            <ChevronRight size={12} color={TOK.muted} />
-            {/* Audit 25/11 wave 2 (R1): pages that show every project have no project selector. */}
-            {crossView && <span style={{ fontSize: 13, color: TOK.muted }}>All my projects</span>}
-            {!crossView && <select value={currentId || ''} onChange={(e) => switchProject(e.target.value)}
-              style={{ fontFamily: FONT_STACK, fontSize: 13, padding: '6px 24px 6px 10px', border: '1px solid ' + TOK.lineStrong, borderRadius: 7, background: TOK.surface, color: TOK.ink, cursor: 'pointer', fontWeight: 500 }}>
-              <option value="__all__">🌐 All projects</option>
-              <option disabled>──────────</option>
-              {activeIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'}</option>)}
-              {closedIds.length > 0 && (
-                <optgroup label="Closed projects">
-                  {closedIds.map((pid) => <option key={pid} value={pid}>{projects[pid]?.name || '(unknown)'} (closed)</option>)}
-                </optgroup>
-              )}
-            </select>}
-            {!crossView && project && project.__v2 && (() => {
-              // Wave 1 U6: my highest role on this (v2) project; tooltip lists all.
-              const rs = myRoleSummary(project.__v2.roles || null, meValue?.uid || null, project);
-              const viewOnly = rs.label === 'View only';
-              return (
-                <span data-tour="role-chip" title={rs.detail.join('\n')} style={{
-                  fontSize: 11, fontFamily: FONT_STACK, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: 999,
-                  border: '1px solid ' + (viewOnly ? TOK.line : TOK.lineStrong),
-                  background: viewOnly ? TOK.bg : TOK.surface,
-                  color: viewOnly ? TOK.muted : TOK.ink, fontWeight: viewOnly ? 400 : 500,
-                }}>Your role: {rs.label}</span>
-              );
-            })()}
-            <span data-tour="search" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={() => setShowSearch(true)} title="Search across projects (Ctrl/Cmd+K)"><Search size={12} /></Btn></span>
-            <span data-tour="help" style={{ display: 'inline-flex' }}><Btn size="sm" variant="ghost" onClick={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }} title="Help"><HelpCircle size={12} /></Btn></span>
-          </div>
-
-          {/* Scope selector (audit 25/11 wave 2: only on tabs it filters; remembered per project) */}
-          {project && scopeAppliesTo(view) && (project.programs || []).length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', borderLeft: '1px solid ' + TOK.line }}>
-              <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 500 }}>Scope</span>
-              <select value={scope || ''} onChange={(e) => { setScopeProgramId(e.target.value || null); writeScope(currentId, e.target.value || ''); }}
-                style={{ fontFamily: FONT_STACK, fontSize: 12, padding: '5px 22px 5px 8px', border: '1px solid ' + TOK.lineStrong, borderRadius: 6, background: TOK.surface, color: TOK.ink, cursor: 'pointer' }}>
-                {scopeOptions(project, meValue?.uid || null).map((o) => <option key={o.value || 'all'} value={o.value}>{o.label}</option>)}
-              </select>
-            </div>
-          )}
-
-          {project && r && !crossView && (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '0 12px', borderLeft: '1px solid ' + TOK.line }}>
-              <div style={{ fontSize: 11, color: TOK.muted }}>
-                <span style={{ color: TOK.accent, fontWeight: 500, fontSize: 13 }}>{r.pct}%</span> · {r.done}/{r.total} complete
-              </div>
-              {r.overdue > 0 && <span style={{ fontSize: 11, color: TOK.overdueFg, display: 'flex', alignItems: 'center', gap: 3 }}><AlertTriangle size={11} /> {r.overdue} overdue</span>}
-            </div>
-          )}
-
-          <div style={{ flex: 1 }} />
-
-          {(() => {
+        {/* Nav shell (spec docs/superpowers/specs/2026-11-27-nav-shell-design.md): fixed sidebar + one-row top bar. */}
+        <AppSidebar
+          model={nav} view={view} currentId={currentId} myWorkCount={myWorkTabCount} author={author}
+          open={navDocked || navDrawer} overlay={!navDocked}
+          onView={goView} onProject={goProject}
+          onAccount={() => setUserMenuOpen(!userMenuOpen)} onClose={() => setNavDrawer(false)}
+        />
+        <input type="file" ref={fileInputRef} accept=".json" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && restoreJson(e.target.files[0])} />
+        <TopBar
+          title={pageTitle(view)}
+          project={inProjectView ? { name: currentId === '__all__' ? 'All projects' : (project?.name || '') } : null}
+          roleSummary={inProjectView && project && project.__v2 ? myRoleSummary(project.__v2.roles || null, meValue?.uid || null, project) : null}
+          progress={inProjectView && project && r ? { pct: r.pct, done: r.done, total: r.total, overdue: r.overdue } : null}
+          scope={project && scopeAppliesTo(view) && (project.programs || []).length > 0 ? {
+            value: scope || '',
+            options: scopeOptions(project, meValue?.uid || null),
+            onChange: (v) => { setScopeProgramId(v || null); writeScope(currentId, v || ''); },
+          } : null}
+          saveChip={(() => {
             const chip = saveChip({ pending: pendingN, saveState, lastSavedAt });
             if (!chip.label) return null;
             const col = chip.tone === 'error' ? TOK.overdueFg : chip.tone === 'ok' ? TOK.doneFg : TOK.muted;
@@ -14964,72 +14932,19 @@ export default function App() {
               ? <button onClick={retryFailedSaves} title="Retry saving" style={{ ...st, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>{chip.label}</button>
               : <span role="status" style={st}>{chip.label}</span>;
           })()}
-
-          <div data-tour="view-tabs" style={{ display: 'flex', gap: 2, padding: 2, background: TOK.bg, borderRadius: 8, flexWrap: 'wrap' }}>
-            {(() => {
-              // P4: tabs by UI tier; Plan covers Mind map / Outline / Gantt.
-              const allTabs = tabsFor(tier).map((t) => ({
-                ...t,
-                count: !project ? 0 : t.id === 'decisions' ? tabCounts.decisions : t.id === 'actions' ? tabCounts.actions : 0,
-                ownerOnly: ['portfolio', 'team-overview', 'credit-report', 'activity'].includes(t.id),
-              }));
-              // v30 Phase 3 — during impersonation, only My Work tab is visible.
-              const visibleTabs = impersonatingAs ? allTabs.filter((t) => t.id === 'my-work') : allTabs;
-              return visibleTabs.map((v, i) => {
-                const active = v.id === 'plan' ? isPlanView(view) : view === v.id;
-                return (<React.Fragment key={v.id}>
-                {i > 0 && visibleTabs[i - 1].group !== v.group && <span aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', margin: '4px 4px', background: TOK.lineStrong }} />}
-                <button data-tour={'tab-' + v.id} aria-current={active ? 'page' : undefined} onClick={() => {
-                  if (v.id === 'briefing') { setBriefingDialogIsOwnerMode(isOwner && !impersonatingAs); setShowBriefingDialog(true); return; }
-                  if (v.id === 'plan') { setView(readPlanView()); return; }
-                  setView(v.id);
-                }} style={{
-                  fontFamily: FONT_STACK, fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 6,
-                  border: 'none', background: active ? TOK.surface : 'transparent',
-                  color: v.ownerOnly ? TOK.accent : TOK.ink, cursor: 'pointer',
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
-                  boxShadow: active ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                }} title={v.ownerOnly ? 'Workspace owner only' : undefined}>{v.label}{v.id === 'my-work' && myWorkTabCount > 0 && (
-                  <span style={{
-                    marginLeft: 2, padding: '0 6px', borderRadius: 999,
-                    background: TOK.overdueFg, color: '#fff', fontSize: 10, fontWeight: 500,
-                    lineHeight: '14px', minWidth: 16, textAlign: 'center',
-                  }}>{myWorkTabCount}</span>
-                )}{v.id === 'raid' && raidPendingBadge > 0 && (
-                  <span style={{
-                    marginLeft: 2, padding: '0 6px', borderRadius: 999,
-                    background: '#B7791F', color: '#fff', fontSize: 10, fontWeight: 500,
-                    lineHeight: '14px', minWidth: 16, textAlign: 'center',
-                  }} title={`${raidPendingBadge} pending approval${raidPendingBadge === 1 ? '' : 's'}`}>{raidPendingBadge}</span>
-                )}{v.count > 0 && <span style={{ fontSize: 10, color: TOK.muted, fontWeight: 400 }}>·{v.count}</span>}</button>
-                </React.Fragment>);
-              });
-            })()}
-          </div>
-
-          <input type="file" ref={fileInputRef} accept=".json" style={{ display: 'none' }} onChange={(e) => e.target.files?.[0] && restoreJson(e.target.files[0])} />
-          {/* P4-B: one menu for export / import / people / project (spec §5). */}
-          <span data-tour="project-menu" style={{ display: 'inline-flex' }}><Btn size="sm" onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setProjectMenu({ x: Math.max(8, rect.right - 260), y: rect.bottom + 4 });
-          }} title="Export, import, people and project settings" aria-haspopup="menu"><MoreHorizontal size={12} /> More</Btn></span>
-          <button
-            onClick={() => setUserMenuOpen(!userMenuOpen)}
-            title="Account menu"
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '4px 10px', background: userMenuOpen ? TOK.surface : TOK.bg,
-              border: '1px solid ' + (userMenuOpen ? TOK.lineStrong : 'transparent'),
-              borderRadius: 999, fontSize: 11, color: TOK.muted,
-              cursor: 'pointer', fontFamily: FONT_STACK,
-            }}
-            onMouseEnter={(e) => { if (!userMenuOpen) e.currentTarget.style.background = TOK.surface; }}
-            onMouseLeave={(e) => { if (!userMenuOpen) e.currentTarget.style.background = TOK.bg; }}
-          >
-            <UserCircle size={13} /> {author}
-            <ChevronDown size={11} style={{ opacity: 0.7 }} />
-          </button>
-        </div>
+          tabs={inProjectView ? nav.projectTabs.map((t) => ({
+            id: t.id, label: t.label,
+            active: t.id === 'plan' ? isPlanView(view) : view === t.id,
+            count: !project ? 0 : t.id === 'decisions' ? tabCounts.decisions : t.id === 'actions' ? tabCounts.actions : 0,
+            badge: t.id === 'raid' ? raidPendingBadge : 0,
+          })) : []}
+          showMenuButton={!navDocked}
+          onMenu={() => { if (narrow) setNavDrawer(true); else { setNavHidden(false); writeNavHidden(false); } }}
+          onTab={goView}
+          onSearch={() => setShowSearch(true)}
+          onHelp={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setHelpMenu({ x: Math.max(8, rect.left - 120), y: rect.bottom + 4 }); }}
+          onMore={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setProjectMenu({ x: Math.max(8, rect.right - 260), y: rect.bottom + 4 }); }}
+        />
 
         {loadFailed.length > 0 && (
           <div role="alert" style={{ background: TOK.blockerBg, color: TOK.blocker, borderBottom: '1px solid currentColor', padding: '6px 14px', fontSize: 13, fontFamily: FONT_STACK, display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -15287,8 +15202,6 @@ export default function App() {
               // Export
               { label: 'Meeting mode', icon: <PlayCircle size={13} />, onClick: () => setMeetingMode(true) },
               { label: 'Minutes…', icon: <FileText size={13} />, onClick: () => setShowMeetingExport(true) },
-              // Audit 25/11 MB-11: members have no Briefing tab; it opens from here any day.
-              ...(!tabsFor(tier).some((t) => t.id === 'briefing') ? [{ label: 'Weekly briefing…', icon: <FileText size={13} />, onClick: () => { setBriefingDialogIsOwnerMode(false); setShowBriefingDialog(true); } }] : []),
               { label: 'Export Excel', icon: <FileSpreadsheet size={13} />, onClick: exportExcel },
               // W3 D4: Backup JSON is Owner only (PM / members use Export Excel).
               ...(isOwner ? [{ label: 'Backup JSON', icon: <Download size={13} />, onClick: backupJson }] : []),
@@ -15314,6 +15227,8 @@ export default function App() {
               ...(isOwner && project ? [
                 { label: meta.projectIds.length > 1 ? 'Delete project' : 'Delete project (need 2+)', icon: <Trash2 size={13} />, danger: true, onClick: deleteCurrentProject },
               ] : []),
+              { separator: true },
+              { label: navHidden ? 'Show sidebar' : 'Hide sidebar', icon: <ChevronRight size={13} />, onClick: () => { setNavHidden(!navHidden); writeNavHidden(!navHidden); } },
             ]}
             onClose={() => setProjectMenu(null)} />
         )}
@@ -15416,9 +15331,9 @@ export default function App() {
           <>
             {/* Click-outside backdrop */}
             <div onMouseDown={() => setUserMenuOpen(false)}
-              style={{ position: 'absolute', inset: 0, zIndex: 199, background: 'transparent' }} />
+              style={{ position: 'fixed', inset: 0, zIndex: 199, background: 'transparent' }} />
             <div style={{
-              position: 'absolute', top: 50, right: 16, zIndex: 200,
+              position: 'fixed', bottom: 56, left: 12, zIndex: 200,
               background: TOK.surface, border: '1px solid ' + TOK.lineStrong, borderRadius: 8,
               boxShadow: '0 8px 20px rgba(0,0,0,0.15)', fontFamily: FONT_STACK,
               minWidth: 280, overflow: 'hidden',
