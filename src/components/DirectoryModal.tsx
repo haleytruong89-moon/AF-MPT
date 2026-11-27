@@ -10,21 +10,8 @@ import {
   type DirectoryEntry,
 } from '../data';
 import { parseAliases, validateNewPerson, aliasConflictFor, filterDirectory } from '../directory.js';
+import { TOK, FONT_STACK } from '../theme.js';
 
-const TOK = {
-  bg: '#F7F5EF',
-  surface: '#FFFFFF',
-  ink: '#1A1A19',
-  muted: '#6E6C66',
-  line: 'rgba(26,26,25,0.10)',
-  lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  danger: '#A32D2D',
-  inprogFg: '#A8660C',
-  inprogBg: '#FAEEDA',
-};
-const FONT_STACK =
-  '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 const SAVE_FAILED = 'Couldn’t save the directory change. Check your connection and try again.';
 
 interface Props {

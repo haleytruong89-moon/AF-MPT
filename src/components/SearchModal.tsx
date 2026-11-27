@@ -12,20 +12,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search as SearchIcon, X, MessageSquare, ChevronRight } from 'lucide-react';
 import { fetchProjectOnce } from '../data';
 import type { Project, Task } from '../types';
+import { TOK, FONT_STACK } from '../theme.js';
 
-const TOK = {
-  bg: '#F7F5EF',
-  surface: '#FFFFFF',
-  ink: '#1A1A19',
-  muted: '#6E6C66',
-  subtle: '#95938C',
-  line: 'rgba(26,26,25,0.10)',
-  lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  hl: '#FAEEDA',
-};
-const FONT_STACK =
-  '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 
 const MAX_RESULTS = 30;
 const CACHE_TTL_MS = 60_000;

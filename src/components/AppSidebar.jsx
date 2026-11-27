@@ -2,7 +2,7 @@
 // Presentational: everything shown comes from navModel(); clicks go back through props.
 import { useState } from 'react';
 import { CheckSquare, FileText, Layers, ChevronDown, ChevronRight, UserCircle, X } from 'lucide-react';
-import { NAV, TOK, FONT_STACK } from '../theme.js';
+import { NAV, TOK, FONT_STACK, FONT_NUM } from '../theme.js';
 import { isProjectView } from '../navModel.js';
 
 const DOT = { grey: '#64748B', green: '#22C55E', amber: '#F59E0B', red: '#EF4444' };
@@ -60,7 +60,7 @@ export default function AppSidebar({ model, view, currentId, myWorkCount = 0, au
           <Item key={p.id} active={inProject && currentId === p.id} onClick={() => onProject(p.id)} title={`${p.name} · ${p.dot.title}`}>
             <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: DOT[p.dot.tone], flex: 'none' }} />
             <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
-            <span style={{ fontSize: 11.5, color: NAV.muted, fontVariantNumeric: 'tabular-nums' }}>{p.pct == null ? '—' : p.pct + '%'}</span>
+            <span style={{ fontSize: 11.5, color: NAV.muted, fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' }}>{p.pct == null ? '—' : p.pct + '%'}</span>
           </Item>
         ))}
         {model.closed.length > 0 && (

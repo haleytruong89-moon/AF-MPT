@@ -7,15 +7,16 @@ import { useContext } from 'react';
 import { MeContext } from './meContext';
 import { applyCloseIntent, reassignClose } from '../closeFlow.js';
 import { closeControlModel, chokeMessage } from '../closeWiring.js';
+import { TOK, FONT_STACK } from '../theme.js';
 
-const FONT = '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+const FONT = FONT_STACK;
 const C = {
-  ink: '#1A1A19', muted: '#6E6C66', surface: '#FFFFFF', lineStrong: 'rgba(26,26,25,0.22)',
-  Planned: { fg: '#6E6C66', bg: '#EDEBE4' },
-  InProgress: { fg: '#A8660C', bg: '#FAEEDA' },
-  Completed: { fg: '#356512', bg: '#E6EFD6' },
-  Dropped: { fg: '#7A7873', bg: '#F0EEE8' },
-  Submitted: { fg: '#8A5A0B', bg: '#FAEEDA' },
+  ink: TOK.ink, muted: TOK.muted, surface: TOK.surface, lineStrong: TOK.lineStrong,
+  Planned: { fg: TOK.plannedFg, bg: TOK.plannedBg },
+  InProgress: { fg: TOK.inprogFg, bg: TOK.inprogBg },
+  Completed: { fg: TOK.doneFg, bg: TOK.doneBg },
+  Dropped: { fg: TOK.droppedFg, bg: TOK.droppedBg },
+  Submitted: { fg: TOK.submittedFg, bg: TOK.submittedBg },
 };
 const LABEL = {
   Planned: 'Planned', InProgress: 'In Progress', Completed: 'Completed', Dropped: 'Dropped',
@@ -132,7 +133,7 @@ export function CloseControl({ task, roles, onUpdate, dialogs }) {
         const h = Array.isArray(task.closeRequestHistory) ? task.closeRequestHistory[0] : null;
         if (!h || h.status !== 'Rejected') return null;
         return (
-          <div style={{ fontSize: 11.5, color: '#A32D2D', marginBottom: 6 }}>
+          <div style={{ fontSize: 11.5, color: TOK.overdueFg, marginBottom: 6 }}>
             Last request rejected by {h.decidedBy || me.nameOf(h.decidedByUid) || 'the approver'}
             {h.decidedAt ? ` on ${fmtDay(h.decidedAt)}` : ''}: {h.reason || '—'}
           </div>

@@ -25,10 +25,10 @@ export default class RootErrorBoundary extends React.Component<{ children: React
         role="alert"
         style={{
           position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: 24, fontFamily: '"Geist","Inter",system-ui,sans-serif', background: '#F7F5EF', color: '#1A1A19',
+          padding: 24, fontFamily: '"Inter",system-ui,sans-serif', background: '#F4F7FB', color: '#11182A',
         }}
       >
-        <div style={{ maxWidth: 480, background: '#FFFFFF', padding: 28, borderRadius: 12, border: '1px solid #EDEBE4', boxShadow: '0 20px 60px rgba(0,0,0,0.08)' }}>
+        <div style={{ maxWidth: 480, background: '#FFFFFF', padding: 28, borderRadius: 12, border: '1px solid #E2E8F0', boxShadow: '0 20px 60px rgba(0,0,0,0.08)' }}>
           <div style={{ fontWeight: 500, fontSize: 15, marginBottom: 8 }}>Something went wrong. Your saved work is safe.</div>
           {this.state.unsaved && (
             <div style={{ fontSize: 13, color: '#A32D2D', marginBottom: 8 }}>Some changes were not saved.</div>
@@ -36,7 +36,7 @@ export default class RootErrorBoundary extends React.Component<{ children: React
           <button
             type="button"
             onClick={() => window.location.reload()}
-            style={{ marginTop: 8, padding: '7px 16px', borderRadius: 7, border: '1px solid #1A1A19', background: '#1A1A19', color: '#fff', fontSize: 13, cursor: 'pointer' }}
+            style={{ marginTop: 8, padding: '7px 16px', borderRadius: 7, border: '1px solid #295CA9', background: '#295CA9', color: '#fff', fontSize: 13, cursor: 'pointer' }}
           >
             Reload
           </button>

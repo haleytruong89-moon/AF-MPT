@@ -27,25 +27,8 @@ import {
   roleOf,
 } from '../data';
 import type { Project, Role, RelatedParty, UserDirEntry } from '../types';
+import { TOK, FONT_STACK } from '../theme.js';
 
-const TOK = {
-  bg: '#F7F5EF',
-  surface: '#FFFFFF',
-  ink: '#1A1A19',
-  muted: '#6E6C66',
-  subtle: '#95938C',
-  line: 'rgba(26,26,25,0.10)',
-  lineStrong: 'rgba(26,26,25,0.22)',
-  accent: '#3B6D11',
-  inprogFg: '#A8660C',
-  inprogBg: '#FAEEDA',
-  workstreamFg: '#0F6E56',
-  workstreamBg: '#E1F5EE',
-  projectFg: '#26215C',
-  projectBg: '#EEEDFE',
-};
-const FONT_STACK =
-  '"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
 
 interface Props {
   projectId: string;
