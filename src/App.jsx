@@ -14886,7 +14886,6 @@ export default function App() {
   return (
     <DirectoryIndexContext.Provider value={dirIndex}><MeContext.Provider value={meValue}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 999px; border: 2px solid ${TOK.bg}; }
