@@ -1,6 +1,6 @@
 // Sidebar of the navigation shell (spec docs/superpowers/specs/2026-11-27-nav-shell-design.md).
 // Presentational: everything shown comes from navModel(); clicks go back through props.
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { CheckSquare, FileText, Layers, ChevronDown, ChevronRight, UserCircle, X } from 'lucide-react';
 import { NAV, TOK, FONT_STACK } from '../theme.js';
 import { isProjectView } from '../navModel.js';

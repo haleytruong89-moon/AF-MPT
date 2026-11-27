@@ -1,5 +1,4 @@
 // One-row top bar + project tabs of the navigation shell (spec 2026-11-27). Presentational.
-import React from 'react';
 import { Menu, Search, HelpCircle, MoreHorizontal, AlertTriangle } from 'lucide-react';
 import { TOK, FONT_STACK } from '../theme.js';
 
