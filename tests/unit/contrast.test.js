@@ -8,8 +8,8 @@ const lum = (hex) => {
 };
 const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
 
-// Read the live design tokens from src/App.jsx (TOK) so a revert is caught.
-const app = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
+// Read the live design tokens from src/theme.js (TOK) so a revert is caught.
+const app = readFileSync(new URL('../../src/theme.js', import.meta.url), 'utf8');
 const tok = (name) => {
   const m = app.match(new RegExp(`\\b${name}: '(#[0-9A-Fa-f]{6})'`));
   if (!m) throw new Error(`token ${name} not found in TOK`);
