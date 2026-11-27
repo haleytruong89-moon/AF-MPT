@@ -67,6 +67,15 @@ export function writePlanView(v) {
   try { localStorage.setItem(PLAN_VIEW_KEY, v); } catch { /* storage unavailable: choice lasts for this session only */ }
 }
 
+// Nav shell (spec 2026-11-27): the sidebar hidden / shown choice, per browser.
+const NAV_HIDDEN_KEY = 'afmpt:navHidden';
+export function readNavHidden() {
+  try { return localStorage.getItem(NAV_HIDDEN_KEY) === '1'; } catch { return false; }
+}
+export function writeNavHidden(hidden) {
+  try { localStorage.setItem(NAV_HIDDEN_KEY, hidden ? '1' : '0'); } catch { /* storage unavailable: lasts for this session only */ }
+}
+
 // Audit 25/11 wave 2 (R3): the scope (program) last chosen per project, per browser.
 const SCOPE_KEY = (pid) => `afmpt.scope.${pid}`;
 /** -> program id, '' (explicit "All programs"), or null (never chosen). */

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { clampPanelWidth, autoRows } from '../../src/uiPrefs.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { clampPanelWidth, autoRows, readNavHidden, writeNavHidden } from '../../src/uiPrefs.js';
 
 describe('clampPanelWidth', () => {
   it('defaults to 400 for missing or garbage values', () => {
@@ -20,5 +20,25 @@ describe('autoRows', () => {
     expect(autoRows('a\nb\nc\nd\ne')).toBe(5);
     expect(autoRows('x'.repeat(60 * 8))).toBe(8);
     expect(autoRows('\n'.repeat(40))).toBe(14);
+  });
+});
+
+describe('sidebar hidden preference', () => {
+  afterEach(() => { delete globalThis.localStorage; });
+  it('NH-1 default shown; the choice is remembered; bad values read as shown', () => {
+    const m = new Map();
+    globalThis.localStorage = { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v) };
+    expect(readNavHidden()).toBe(false);
+    writeNavHidden(true);
+    expect(readNavHidden()).toBe(true);
+    writeNavHidden(false);
+    expect(readNavHidden()).toBe(false);
+    m.set('afmpt:navHidden', 'garbage');
+    expect(readNavHidden()).toBe(false);
+  });
+  it('NH-2 blocked storage: shown, and writing does not throw', () => {
+    globalThis.localStorage = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
+    expect(readNavHidden()).toBe(false);
+    expect(() => writeNavHidden(true)).not.toThrow();
   });
 });
