@@ -176,7 +176,7 @@ const RAID_REVIEW_STALE_DAYS = 7;
 // Each type gets a distinctive label + color pill in the UI.
 const REF_TYPE_STYLE = {
   sheet:  { label: 'Sheet',  bg: TOK.healthGreenBg, fg: TOK.healthGreen }, // Google Sheets — green
-  doc:    { label: 'Doc',    bg: '#DCE7F7', fg: '#1F4E8C' }, // Google Docs — blue
+  doc:    { label: 'Doc',    bg: '#DCE7F7', fg: TOK.programFg }, // Google Docs — blue
   slides: { label: 'Slides', bg: TOK.healthAmberBg, fg: TOK.inprogFg }, // Google Slides — yellow
   drive:  { label: 'Drive',  bg: '#D6ECEC', fg: '#1F6F6F' }, // Google Drive folder/file — teal
   figma:  { label: 'Figma',  bg: '#EBE3F4', fg: '#5B3D8C' }, // Figma — purple
@@ -1350,7 +1350,7 @@ function Btn({ children, onClick, variant = 'default', size = 'md', disabled, ti
     display: 'inline-flex', alignItems: 'center', gap: 6,
     transition: 'background 0.12s', whiteSpace: 'nowrap', ...style,
   };
-  if (variant === 'danger') { base.color = TOK.overdueFg; base.borderColor = '#E5A3A3'; }
+  if (variant === 'danger') { base.color = TOK.overdueFg; base.borderColor = TOK.dangerLine; }
   if (variant === 'ghost') { base.border = '1px solid transparent'; base.background = hover && !disabled ? TOK.bg : 'transparent'; }
   return (
     <button onClick={onClick} disabled={disabled} title={title}
@@ -1428,7 +1428,7 @@ function Modal({ title, children, onClose, width = 480, zHigh = false, hideClose
     };
   }, [hideClose]);
   return (
-    <div onClick={handleBackdropClick} style={{ position: 'absolute', inset: 0, background: 'rgba(15,15,14,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: zHigh ? 80 : 50, fontFamily: FONT_STACK }}>
+    <div onClick={handleBackdropClick} style={{ position: 'absolute', inset: 0, background: 'rgba(15,27,51,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: zHigh ? 80 : 50, fontFamily: FONT_STACK }}>
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} style={{ width, maxWidth: 'calc(100% - 40px)', maxHeight: 'calc(100% - 60px)', background: TOK.surface, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid ' + TOK.line, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500 }}>{title}</h3>
@@ -1500,7 +1500,7 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
         fontSize: 13,
         color: TOK.inprogFg,
         lineHeight: 1.6,
-        border: '1px solid #f0e3a0',
+        border: '1px solid ' + TOK.warnLine,
       }}>
         <strong>📌 How to copy:</strong> The content below is already selected.{' '}
         Press <kbd style={kbd}>Ctrl+C</kbd> (or <kbd style={kbd}>⌘+C</kbd> on Mac){' '}
@@ -1517,13 +1517,13 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
           borderRadius: 6,
           marginBottom: 12,
           fontSize: 13,
-          color: '#1F5E1F',
+          color: TOK.doneFg,
           lineHeight: 1.6,
-          border: '1px solid #A8D08B',
+          border: '1px solid ' + TOK.doneLine,
         }}>
           <strong>📎 Excel file auto-downloaded:</strong>{' '}
           <code style={{ background: 'white', padding: '1px 6px', borderRadius: 3, fontSize: 12 }}>{attachmentName}</code>
-          <div style={{ fontSize: 11, color: '#3a6b3a', marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: TOK.doneFg, marginTop: 4 }}>
             After opening Gmail, attach this file from your Downloads folder before sending.
           </div>
         </div>
@@ -1907,7 +1907,7 @@ function UpdateEntry({ entry, teamMembers, onResolveBlocker }) {
   const resolved = blocker && entry.resolvedAt;
   // Resolved blockers display muted; active blockers display red
   const cardBg = resolved ? TOK.bg : (blocker ? TOK.blockerBg : TOK.surface);
-  const cardBorder = resolved ? TOK.line : (blocker ? '#F1BFBF' : TOK.line);
+  const cardBorder = resolved ? TOK.line : (blocker ? TOK.dangerLine : TOK.line);
   return (
     <div style={{
       border: '1px solid ' + cardBorder,
@@ -2309,7 +2309,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
                 onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
                 <span>{s.name}</span>
                 {s.email && <span style={{ color: TOK.muted, fontSize: 11 }}>{s.email}</span>}
-                {s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.accent, background: 'rgba(59,109,17,0.10)', padding: '1px 6px', borderRadius: 4 }}>Registered</span>}
+                {s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.accent, background: 'rgba(41,92,169,0.10)', padding: '1px 6px', borderRadius: 4 }}>Registered</span>}
                 {s.isLegacy && !s.isPerson && !s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.inprogFg, background: TOK.inprogBg, padding: '1px 6px', borderRadius: 4 }}>Used in tasks</span>}
               </button>
             ))}
@@ -2548,7 +2548,7 @@ function WeightBadge({ weight, effectiveWeight, onChange, locked, isOwner, label
         display: 'inline-flex', alignItems: 'center', gap: 3,
         fontFamily: FONT_STACK, fontSize: 11,
         padding: '2px 8px', borderRadius: 999,
-        background: isExplicit ? 'rgba(59,109,17,0.10)' : TOK.bg,
+        background: isExplicit ? 'rgba(41,92,169,0.10)' : TOK.bg,
         color: isExplicit ? TOK.accent : TOK.muted,
         border: locked ? '1px dashed ' + TOK.lineStrong : '1px solid transparent',
         cursor: editable ? 'pointer' : 'default',
@@ -2775,7 +2775,7 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
   return (
     <div style={{
       marginTop: 12, padding: 12, borderRadius: 7,
-      background: TOK.inprogBg, border: '1px solid #E0BC75',
+      background: TOK.inprogBg, border: '1px solid ' + TOK.warnLine,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 16 }}>⏳</span>
@@ -4059,9 +4059,9 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
   return (
     <div style={{
       background: TOK.surface,
-      border: '1px solid ' + (decay.decayed ? '#E0A03C' : TOK.line),
+      border: '1px solid ' + (decay.decayed ? TOK.warnLine : TOK.line),
       borderRadius: 10, marginBottom: 8,
-      boxShadow: decay.decayed ? '0 0 0 1px #FAEEDA' : 'none',
+      boxShadow: decay.decayed ? '0 0 0 1px ' + TOK.inprogBg : 'none',
     }}>
       <div style={{ padding: '12px 14px', cursor: 'pointer' }} onClick={() => setExpanded(!expanded)}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
@@ -7127,7 +7127,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
           <div style={{
             padding: '10px 12px', marginBottom: 10, borderRadius: 8,
             background: weightsLocked ? TOK.overdueBg : TOK.programBg,
-            border: '1px solid ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'),
+            border: '1px solid ' + (weightsLocked ? TOK.dangerLine : TOK.programLine),
             fontSize: 12,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -7140,7 +7140,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                   : (isOwner ? 'Click ⚖ on any program/workstream/task to set a weight. Not set = shares what is left equally; a program or work stream with no task gets nothing.' : 'Weights set by workspace owner.')}
               </span>
             </div>
-            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'), color: TOK.muted, display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + (weightsLocked ? TOK.dangerLine : TOK.programLine), color: TOK.muted, display: 'flex', flexWrap: 'wrap', gap: 14 }}>
               {creditInfo.result.leadName ? (
                 <span>Lead: <strong style={{ color: TOK.ink }}>{creditInfo.result.leadName}</strong> · {Math.round(creditInfo.result.leadCp * 10) / 10} cp pool</span>
               ) : (
@@ -7181,7 +7181,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
               onDragOver={(e) => { if (dragInfo?.kind === 'ws' && dragInfo.sourcePgId !== pg.id) { noteRefusal('ws', pg.id, null); if (dropOk('ws', pg.id, null)) onDragOverZone(e, 'pg_' + pg.id); } }}
               onDragLeave={() => setDragOver(null)}
               onDrop={() => dropWsIntoPg(pg)}
-              style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(59,109,17,0.15)' : 'none' }}>
+              style={{ background: TOK.surface, border: '1px solid ' + (dropOn ? TOK.accent : TOK.line), borderRadius: 10, marginBottom: 10, overflow: 'hidden', boxShadow: dropOn ? '0 0 0 3px rgba(41,92,169,0.15)' : 'none' }}>
               <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.programBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                 <button onClick={() => toggleExpand(pg.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.programFg, padding: 2, display: 'flex' }}>
                   {pgOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -7234,7 +7234,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
                     onDragOver={(e) => { if (dragInfo?.kind === 'task' && dragInfo.sourceWsId !== ws.id) { noteRefusal('task', pg.id, ws.id); if (dropOk('task', pg.id, ws.id)) onDragOverZone(e, 'ws_' + ws.id); } }}
                     onDragLeave={() => setDragOver(null)}
                     onDrop={() => dropTaskIntoWs(pg, ws)}
-                    style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(59,109,17,0.06)' : TOK.surface }}>
+                    style={{ borderTop: '1px solid ' + TOK.line, background: wsDragOver ? 'rgba(41,92,169,0.06)' : TOK.surface }}>
                     <div style={{ padding: '8px 12px 8px 28px', display: 'flex', alignItems: 'center', gap: 8, background: TOK.workstreamBg, flexWrap: showRoles ? 'wrap' : undefined }}>
                       {wsCaps.wsMove ? <span style={{ cursor: 'grab', color: TOK.workstreamFg, opacity: 0.6, display: 'flex' }}><Grip size={12} /></span> : <span style={{ width: 12 }} />}
                       <button onClick={() => toggleExpand(ws.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.workstreamFg, padding: 2, display: 'flex' }}>
@@ -7411,7 +7411,7 @@ function DashboardView({ project, activity, onTaskClick, scopeProgramId, scopeWs
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
           <StatCard label="Progress" value={`${r.pct}%`} accent={TOK.accent} sub={`${r.done}/${r.total} tasks complete`} />
           <StatCard label="In progress" value={r.inprog} accent={TOK.inprogFg} sub={`${r.planned} planned`} />
-          <StatCard label="Awaiting approval" value={awaiting} accent="#B7791F" sub={awaiting === 0 ? 'none waiting' : 'submitted, not yet decided'} />
+          <StatCard label="Awaiting approval" value={awaiting} accent={TOK.inprogFg} sub={awaiting === 0 ? 'none waiting' : 'submitted, not yet decided'} />
           <StatCard label="Overdue" value={r.overdue} accent={TOK.overdueFg} sub={r.overdue === 0 ? 'nothing overdue' : 'needs attention'} />
           <StatCard label="Timeline" value={min && max ? fmtDateShort(min) + ' → ' + fmtDateShort(max) : '—'} accent={TOK.ink} sub="span of the tasks shown" textValue />
         </div>
@@ -8063,7 +8063,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onO
       )}
 
       {priorities.length > 0 && (
-        <div style={{ marginBottom: 14, padding: 12, background: TOK.inprogBg, border: '1px solid #f0e3a0', borderRadius: 8 }}>
+        <div style={{ marginBottom: 14, padding: 12, background: TOK.inprogBg, border: '1px solid ' + TOK.warnLine, borderRadius: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 500, color: TOK.inprogFg, marginBottom: 6 }}>
             💡 Coaching priorities — top {priorities.length} who may need support
           </div>
@@ -8443,8 +8443,8 @@ function PeakSeasonCalendar({ calendar }) {
   const [hover, setHover] = useState(null);
   const INTENSITY_BG = {
     peak: TOK.overdueFg,
-    high: '#E0A03C',
-    medium: '#7AAA7A',
+    high: TOK.warnLine,
+    medium: TOK.healthGreen,
     low: TOK.line,
   };
   return (
@@ -8896,7 +8896,7 @@ function StepLine({ entry, isFirstOpen, isMine, onDone, canTick = true }) {
         <button onClick={(e) => { e.stopPropagation(); onDone(); }}
           title="Mark step done"
           style={{
-            fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid #9FCB75',
+            fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid ' + TOK.doneLine,
             background: TOK.doneBg || TOK.doneBg, color: TOK.doneFg || TOK.doneFg,
             cursor: 'pointer', fontWeight: 500,
           }}>✓ Done</button>
@@ -9735,7 +9735,7 @@ function RiskMatrixSelector({ likelihood, impact, onChange }) {
           {levels.map((i) => {
             const lvl = raidRiskLevel(l, i);
             const selected = l === likelihood && i === impact;
-            const cellBg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
+            const cellBg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FEF2F2' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
             const cellFg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? TOK.overdueFg : lvl === 'Medium' ? TOK.inprogFg : TOK.doneFg;
             return (
               <button
@@ -9768,7 +9768,7 @@ function RiskMatrixSelector({ likelihood, impact, onChange }) {
 // Used in RAIDCard expanded view.
 function RiskLevelBadge({ likelihood, impact }) {
   const lvl = raidRiskLevel(likelihood, impact);
-  const bg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
+  const bg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FEF2F2' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
   const fg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? TOK.overdueFg : lvl === 'Medium' ? TOK.inprogFg : TOK.doneFg;
   return (
     <span style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: bg, color: fg, fontFamily: FONT_STACK }}>
@@ -9878,7 +9878,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
             marginTop: 4, padding: '2px 8px', borderRadius: 999,
             fontSize: 10.5, fontFamily: FONT_STACK, fontWeight: 500,
             color: TOK.inprogFg, background: TOK.inprogBg,
-            border: '1px solid #E0BC75', cursor: 'pointer',
+            border: '1px solid ' + TOK.warnLine, cursor: 'pointer',
             display: 'inline-flex', alignItems: 'center', gap: 4,
           }}
           title="Click to edit — free-text PIC won't show in the team-member dropdown elsewhere."
@@ -10451,13 +10451,13 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
         <div style={{ padding: '12px 14px 14px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
           {/* W3-D3 (P1): a non-Owner sees who decides. */}
           {item.status === 'PendingApproval' && !isOwner && (
-            <div style={{ padding: '8px 12px', background: TOK.inprogBg, border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, fontSize: 12, color: TOK.inprogFg }}>
+            <div style={{ padding: '8px 12px', background: TOK.inprogBg, border: '1px solid ' + TOK.warnLine, borderRadius: 8, marginBottom: 12, fontSize: 12, color: TOK.inprogFg }}>
               Only the Owner activates RAID items.
             </div>
           )}
           {/* Approval banner */}
           {item.status === 'PendingApproval' && isOwner && (
-            <div style={{ padding: '10px 12px', background: TOK.inprogBg, border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ padding: '10px 12px', background: TOK.inprogBg, border: '1px solid ' + TOK.warnLine, borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 14 }}>⏳</span>
               <div style={{ flex: 1, fontSize: 12, color: TOK.inprogFg }}>
                 <strong>Pending your approval</strong>
@@ -10919,7 +10919,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
       onClick={() => onNavigateRaid(enriched.project.id, enriched.program.id)}
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
-        border: '1px solid ' + (overdue ? '#F5C8C8' : TOK.line), borderRadius: 7,
+        border: '1px solid ' + (overdue ? TOK.dangerLine : TOK.line), borderRadius: 7,
         marginBottom: 5, background: overdue ? TOK.overdueBg : TOK.surface,
         cursor: 'pointer', fontFamily: FONT_STACK,
       }}>
@@ -11304,7 +11304,7 @@ function ByProjectCard({
         <div style={{ padding: '12px 16px 14px' }}>
           {urgentCount > 0 && (
             <div style={{
-              padding: '8px 12px', background: '#FFF8F8',
+              padding: '8px 12px', background: '#FEF2F2',
               border: '1px solid #F5C8C8', borderRadius: 8,
               marginBottom: 12, fontSize: 12,
             }}>
@@ -12738,7 +12738,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
         {/* Summary cards */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
           <SummaryCard label="Total credit pool" value={`${Math.round(summary.totalProjected * 10) / 10} cp`} sub={`${summary.projectCount} project${summary.projectCount === 1 ? '' : 's'}`} />
-          <SummaryCard label="Earned so far" value={`${Math.round(summary.totalEarned * 10) / 10} cp`} sub={`${Math.round(summary.overallEarnedPct * 10) / 10}% of projected`} accent="#356512" />
+          <SummaryCard label="Earned so far" value={`${Math.round(summary.totalEarned * 10) / 10} cp`} sub={`${Math.round(summary.overallEarnedPct * 10) / 10}% of projected`} accent={TOK.doneFg} />
           <SummaryCard label="Locked projects" value={`${summary.lockedCount} / ${summary.projectCount}`} sub={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? 'All locked' : 'Partial'} accent={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? TOK.overdueFg : TOK.muted} />
           <SummaryCard label="Distinct PICs" value={String(picRows.length)} sub="With credit allocation" />
         </div>
@@ -12832,9 +12832,9 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                       </span>
                     </div>
                     {projData.programs.map((pg, pgi) => (
-                      <div key={pgi} style={{ marginLeft: 16, marginBottom: 8, paddingLeft: 12, borderLeft: '2px solid ' + (pg.isLead ? '#E6B800' : TOK.line) }}>
+                      <div key={pgi} style={{ marginLeft: 16, marginBottom: 8, paddingLeft: 12, borderLeft: '2px solid ' + (pg.isLead ? TOK.warnLine : TOK.line) }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 12 }}>
-                          <span style={{ fontWeight: 500, color: pg.isLead ? '#856100' : TOK.programFg }}>
+                          <span style={{ fontWeight: 500, color: pg.isLead ? TOK.inprogFg : TOK.programFg }}>
                             {pg.isLead ? '👑 ' : ''}{pg.name}
                           </span>
                           <span style={{ flex: 1 }} />
@@ -14963,12 +14963,12 @@ export default function App() {
         {!bannerDismissed && isMonday() && !isBriefingDismissed(todayISODate()) && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
           <div style={{
             padding: '10px 16px',
-            background: isOwner ? '#e8f0fe' : TOK.inprogBg,
-            borderBottom: '1px solid ' + (isOwner ? '#c8dcf0' : TOK.inprogFg),
+            background: isOwner ? TOK.programBg : TOK.inprogBg,
+            borderBottom: '1px solid ' + (isOwner ? TOK.programLine : TOK.inprogFg),
             display: 'flex', alignItems: 'center', gap: 12,
           }}>
             <FileText size={18} style={{ flex: 'none' }} />
-            <div style={{ flex: 1, fontSize: 13, color: isOwner ? '#1f4e8c' : TOK.inprogFg }}>
+            <div style={{ flex: 1, fontSize: 13, color: isOwner ? TOK.programFg : TOK.inprogFg }}>
               <strong>{isOwner ? 'Time to send the weekly digest' : 'Weekly briefing ready'}</strong>
               <span style={{ marginLeft: 8, opacity: 0.85 }}>
                 {isOwner
@@ -16287,7 +16287,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
 
       {legacyMismatches.length > 0 && isOwner && (
         <div style={{
-          background: TOK.inprogBg, border: '1px solid #E0BC75', borderRadius: 7,
+          background: TOK.inprogBg, border: '1px solid ' + TOK.warnLine, borderRadius: 7,
           padding: '10px 12px', marginBottom: 8,
         }}>
           <div style={{ fontSize: 12, fontWeight: 500, color: TOK.inprogFg, marginBottom: 4 }}>
@@ -16508,7 +16508,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
             .sort((a, b) => b[1].count - a[1].count);
           if (unregistered.length === 0) return null;
           return (
-            <div style={{ marginTop: 10, padding: 10, background: TOK.inprogBg, borderRadius: 6, border: '1px solid #E0BC75' }}>
+            <div style={{ marginTop: 10, padding: 10, background: TOK.inprogBg, borderRadius: 6, border: '1px solid ' + TOK.warnLine }}>
               <div style={{ fontSize: 11, fontWeight: 500, color: TOK.inprogFg, marginBottom: 6 }}>
                 ⚠ Unregistered contributor names found in tasks ({unregistered.length})
               </div>

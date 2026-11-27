@@ -7,6 +7,7 @@ import ReactDOM from 'react-dom/client';
 import './storage-shim';
 import { setStorageUser } from './storage-shim';
 import RootErrorBoundary from './components/RootErrorBoundary';
+import { TOK, FONT_STACK } from './theme.js';
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 
@@ -60,28 +61,28 @@ function BootError({ message }: { message: string }) {
         alignItems: 'center',
         justifyContent: 'center',
         padding: 24,
-        fontFamily: '"Geist","Inter",system-ui,sans-serif',
-        background: '#F7F5EF',
-        color: '#1A1A19',
+        fontFamily: FONT_STACK,
+        background: TOK.bg,
+        color: TOK.ink,
       }}
     >
       <div
         style={{
           maxWidth: 560,
-          background: '#FFFFFF',
+          background: TOK.surface,
           padding: 28,
           borderRadius: 12,
-          border: '1px solid #FCEBEB',
+          border: '1px solid ' + TOK.dangerLine,
           boxShadow: '0 20px 60px rgba(0,0,0,0.08)',
         }}
       >
-        <div style={{ color: '#A32D2D', fontWeight: 500, fontSize: 14, marginBottom: 10 }}>
+        <div style={{ color: TOK.overdueFg, fontWeight: 500, fontSize: 14, marginBottom: 10 }}>
           ⚠ App failed to start
         </div>
         <pre
           style={{
-            background: '#FCEBEB',
-            color: '#A32D2D',
+            background: TOK.overdueBg,
+            color: TOK.overdueFg,
             padding: 12,
             borderRadius: 7,
             fontSize: 12,
@@ -92,10 +93,10 @@ function BootError({ message }: { message: string }) {
         >
           {message}
         </pre>
-        <div style={{ fontSize: 12, color: '#6E6C66', lineHeight: 1.6 }}>
-          Most common cause: <code style={{ background: '#EDEBE4', padding: '1px 5px', borderRadius: 3 }}>.env.local</code>{' '}
+        <div style={{ fontSize: 12, color: TOK.muted, lineHeight: 1.6 }}>
+          Most common cause: <code style={{ background: TOK.plannedBg, padding: '1px 5px', borderRadius: 3 }}>.env.local</code>{' '}
           is missing Firebase keys. Copy them from{' '}
-          <a href="https://console.firebase.google.com/" style={{ color: '#3B6D11' }}>
+          <a href="https://console.firebase.google.com/" style={{ color: TOK.accent }}>
             Firebase Console
           </a>{' '}
           → Project Settings → General → Your apps → SDK setup and configuration. Save the file

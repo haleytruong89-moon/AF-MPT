@@ -24,6 +24,8 @@ export const TOK = {
   danger: '#B91C1C', hl: '#FEF3C7',
   // Gantt: Submitted (dashed bar)
   submittedFg: '#92400E', submittedBg: '#FEF3C7',
+  // Borders of tinted boxes (amber / red / green / blue banners)
+  warnLine: '#FCD34D', dangerLine: '#FECACA', doneLine: '#BBF7D0', programLine: '#C7D6EC',
 };
 
 // Sidebar: SmartOSC navy.

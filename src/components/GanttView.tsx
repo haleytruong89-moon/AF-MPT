@@ -30,7 +30,7 @@ const ROW_H = 28;
 const HEADER_H = 56;
 const LEFT_PANE_W = 300;
 const INDENT = 14;
-const TODAY_COLOR = '#A32D2D';
+const TODAY_COLOR = TOK.overdueFg;
 
 type RowKind = 'project' | 'program' | 'workstream' | 'task';
 interface GRow {
@@ -328,7 +328,7 @@ function GanttGrid({
                     height: ROW_H,
                     borderBottom: '1px solid ' + TOK.line,
                     position: 'relative',
-                    background: r.task && selectedTaskId === r.task.id ? TOK.bg : r.kind === 'task' ? 'transparent' : 'rgba(26,26,25,0.025)',
+                    background: r.task && selectedTaskId === r.task.id ? TOK.bg : r.kind === 'task' ? 'transparent' : 'rgba(15,27,51,0.03)',
                   }}
                 >
                   {r.kind === 'task' && r.task ? (
@@ -380,7 +380,7 @@ function LeftRow({
     alignItems: 'center',
     gap: 4,
     cursor: isTask || foldable ? 'pointer' : 'default',
-    background: selected ? TOK.bg : isTask ? 'transparent' : 'rgba(26,26,25,0.025)',
+    background: selected ? TOK.bg : isTask ? 'transparent' : 'rgba(15,27,51,0.03)',
     fontSize: 12,
   };
   const onClick = () => {
