@@ -134,9 +134,9 @@ const DEFAULT_VIEW_OPTIONS = [
 // rest of the file which uses unicode glyphs for risk/issue/dependency markers
 // — see e.g. the overdue badge "⚠" usage already in TOK styling).
 const RAID_TYPES = {
-  Risk:       { icon: '⚠',  label: 'Risk',       fg: '#A32D2D', bg: '#FCEBEB' },
-  Assumption: { icon: '💡', label: 'Assumption', fg: '#0C447C', bg: '#E6F1FB' },
-  Issue:      { icon: '🔥', label: 'Issue',      fg: '#B7791F', bg: '#FAEEDA' },
+  Risk:       { icon: '⚠',  label: 'Risk',       fg: TOK.overdueFg, bg: TOK.overdueBg },
+  Assumption: { icon: '💡', label: 'Assumption', fg: TOK.programFg, bg: TOK.programBg },
+  Issue:      { icon: '🔥', label: 'Issue',      fg: TOK.inprogFg, bg: TOK.inprogBg },
   Dependency: { icon: '🔗', label: 'Dependency', fg: '#4B2D8C', bg: '#EEEDFE' },
 };
 
@@ -147,9 +147,9 @@ const RAID_STATUSES = ['Draft', 'PendingApproval', 'Active', 'Mitigating', 'Reso
 
 // Trend config — used by RAID review history. `stable` is the default for newly created items.
 const RAID_TREND_CONFIG = {
-  improving:  { icon: '🟢', label: 'Improving',  fg: '#356512', bg: '#E6EFD6' },
-  stable:     { icon: '🟡', label: 'Stable',     fg: '#B7791F', bg: '#FAEEDA' },
-  escalating: { icon: '🔴', label: 'Escalating', fg: '#A32D2D', bg: '#FCEBEB' },
+  improving:  { icon: '🟢', label: 'Improving',  fg: TOK.doneFg, bg: TOK.doneBg },
+  stable:     { icon: '🟡', label: 'Stable',     fg: TOK.inprogFg, bg: TOK.inprogBg },
+  escalating: { icon: '🔴', label: 'Escalating', fg: TOK.overdueFg, bg: TOK.overdueBg },
 };
 
 // Risk level matrix — riskLevel is COMPUTED from likelihood × impact, never stored.
@@ -172,13 +172,13 @@ const RAID_REVIEW_STALE_DAYS = 7;
 // Reference (wiki link) types — auto-detected from URL pattern.
 // Each type gets a distinctive label + color pill in the UI.
 const REF_TYPE_STYLE = {
-  sheet:  { label: 'Sheet',  bg: '#E2F0DE', fg: '#2D7A2D' }, // Google Sheets — green
+  sheet:  { label: 'Sheet',  bg: TOK.healthGreenBg, fg: TOK.healthGreen }, // Google Sheets — green
   doc:    { label: 'Doc',    bg: '#DCE7F7', fg: '#1F4E8C' }, // Google Docs — blue
-  slides: { label: 'Slides', bg: '#FBF1DC', fg: '#B7791F' }, // Google Slides — yellow
+  slides: { label: 'Slides', bg: TOK.healthAmberBg, fg: TOK.inprogFg }, // Google Slides — yellow
   drive:  { label: 'Drive',  bg: '#D6ECEC', fg: '#1F6F6F' }, // Google Drive folder/file — teal
   figma:  { label: 'Figma',  bg: '#EBE3F4', fg: '#5B3D8C' }, // Figma — purple
-  notion: { label: 'Notion', bg: '#EDEBE4', fg: '#1A1A19' }, // Notion — neutral
-  link:   { label: 'Link',   bg: '#EDEBE4', fg: '#6E6C66' }, // Generic — gray
+  notion: { label: 'Notion', bg: TOK.plannedBg, fg: TOK.ink }, // Notion — neutral
+  link:   { label: 'Link',   bg: TOK.plannedBg, fg: TOK.muted }, // Generic — gray
 };
 
 // Detect reference type from a URL. Falls back to 'link' for unrecognized hosts.
@@ -1347,7 +1347,7 @@ function Btn({ children, onClick, variant = 'default', size = 'md', disabled, ti
     display: 'inline-flex', alignItems: 'center', gap: 6,
     transition: 'background 0.12s', whiteSpace: 'nowrap', ...style,
   };
-  if (variant === 'danger') { base.color = '#A32D2D'; base.borderColor = '#E5A3A3'; }
+  if (variant === 'danger') { base.color = TOK.overdueFg; base.borderColor = '#E5A3A3'; }
   if (variant === 'ghost') { base.border = '1px solid transparent'; base.background = hover && !disabled ? TOK.bg : 'transparent'; }
   return (
     <button onClick={onClick} disabled={disabled} title={title}
@@ -1369,7 +1369,7 @@ function Pill({ status, overdue, size = 'md' }) {
     InProgress: { fg: TOK.inprogFg, bg: TOK.inprogBg, icon: <PlayCircle size={10} /> },
     Completed: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Dropped: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
-    Submitted: { fg: '#B7791F', bg: '#FAEEDA', icon: <Clock size={10} /> },
+    Submitted: { fg: TOK.inprogFg, bg: TOK.inprogBg, icon: <Clock size={10} /> },
   };
   const s = map[status] || map.Planned;
   return (
@@ -1490,12 +1490,12 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
   return (
     <Modal title={title} onClose={onClose} width={820} zHigh>
       <div style={{
-        background: '#fff8e1',
+        background: TOK.inprogBg,
         padding: '10px 14px',
         borderRadius: 6,
         marginBottom: 12,
         fontSize: 13,
-        color: '#7a5d00',
+        color: TOK.inprogFg,
         lineHeight: 1.6,
         border: '1px solid #f0e3a0',
       }}>
@@ -1509,7 +1509,7 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
 
       {attachmentName && (
         <div style={{
-          background: '#E2F0DE',
+          background: TOK.healthGreenBg,
           padding: '10px 14px',
           borderRadius: 6,
           marginBottom: 12,
@@ -1533,10 +1533,10 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
           <Btn size="sm" variant="primary" onClick={copyAndOpenGmail}>📧 Open Gmail</Btn>
         )}
         {copyState === 'success' && (
-          <span style={{ fontSize: 12, color: '#2d7a2d', fontWeight: 500 }}>✓ Copied — paste in Gmail with Ctrl+V</span>
+          <span style={{ fontSize: 12, color: TOK.healthGreen, fontWeight: 500 }}>✓ Copied — paste in Gmail with Ctrl+V</span>
         )}
         {copyState === 'failed' && (
-          <span style={{ fontSize: 12, color: '#a32d2d', fontWeight: 500 }}>Auto-copy blocked — please use Ctrl+C manually</span>
+          <span style={{ fontSize: 12, color: TOK.overdueFg, fontWeight: 500 }}>Auto-copy blocked — please use Ctrl+C manually</span>
         )}
       </div>
 
@@ -2080,7 +2080,7 @@ function ReferenceForm({ initial, onSave, onCancel }) {
         <span style={{ fontSize: 11, color: TOK.muted, width: 40, flexShrink: 0 }}>Title</span>
         <Input value={title} onChange={setTitle} placeholder={`(default: ${REF_TYPE_STYLE[detectedType].label})`} />
       </div>
-      {error && <div style={{ fontSize: 11, color: '#a32d2d', paddingLeft: 48 }}>{error}</div>}
+      {error && <div style={{ fontSize: 11, color: TOK.overdueFg, paddingLeft: 48 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
         <Btn size="sm" onClick={onCancel}>Cancel</Btn>
         <Btn size="sm" variant="primary" onClick={handleSave}>{initial ? 'Save' : 'Add'}</Btn>
@@ -2243,12 +2243,12 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
           return (
             <span key={c} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
-              background: known ? TOK.bg : '#FAEEDA',
-              border: '1px solid ' + (known ? TOK.line : '#E0BC75'),
+              background: known ? TOK.bg : TOK.inprogBg,
+              border: '1px solid ' + (known ? TOK.line : TOK.inprogFg),
               borderRadius: 999,
               padding: '3px 4px 3px 10px', fontSize: 12,
             }} title={!known ? 'Not in team members or contributor registry. Owner can add to registry in Project Settings.' : (member?.email || '')}>
-              {!known && <span style={{ fontSize: 10, color: '#A8660C' }}>⚠</span>}
+              {!known && <span style={{ fontSize: 10, color: TOK.inprogFg }}>⚠</span>}
               {c}
               <button onClick={() => removeContributor(c)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex', alignItems: 'center' }}
@@ -2307,7 +2307,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
                 <span>{s.name}</span>
                 {s.email && <span style={{ color: TOK.muted, fontSize: 11 }}>{s.email}</span>}
                 {s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.accent, background: 'rgba(59,109,17,0.10)', padding: '1px 6px', borderRadius: 4 }}>Registered</span>}
-                {s.isLegacy && !s.isPerson && !s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: '#A8660C', background: '#FAEEDA', padding: '1px 6px', borderRadius: 4 }}>Used in tasks</span>}
+                {s.isLegacy && !s.isPerson && !s.isRegistered && <span style={{ marginLeft: 'auto', fontSize: 9, color: TOK.inprogFg, background: TOK.inprogBg, padding: '1px 6px', borderRadius: 4 }}>Used in tasks</span>}
               </button>
             ))}
             {draft.trim() && !filteredSuggestions.some((s) => s.name.toLowerCase() === draft.trim().toLowerCase()) && (
@@ -2315,7 +2315,7 @@ function ContributorEditor({ contributors, onChange, suggestions, primaryPic, pr
                 style={{
                   width: '100%', textAlign: 'left', padding: '7px 10px',
                   fontFamily: FONT_STACK, fontSize: 12, border: 'none',
-                  background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                  background: 'transparent', cursor: 'pointer', color: TOK.inprogFg,
                   borderTop: filteredSuggestions.length > 0 ? '1px solid ' + TOK.line : 'none',
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
@@ -2423,7 +2423,7 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
               style={{
                 width: '100%', textAlign: 'left', padding: '7px 10px',
                 fontFamily: FONT_STACK, fontSize: 12, border: 'none',
-                background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                background: 'transparent', cursor: 'pointer', color: TOK.inprogFg,
                 borderTop: filtered.length > 0 ? '1px solid ' + TOK.line : 'none',
               }}
               onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
@@ -2460,7 +2460,7 @@ function PicEditor({ value, onChange, teamMembersList, project, label, placehold
           {member?.email && <span style={{ fontSize: 11, color: TOK.muted }}>({member.email})</span>}
           {!isKnown && (
             <span title="Not a team member with email — please re-select from members"
-              style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#A8660C', background: '#FAEEDA' }}>
+              style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: TOK.inprogFg, background: TOK.inprogBg }}>
               ⚠ Not a team member
             </span>
           )}
@@ -2633,9 +2633,9 @@ function CreditSharesEditor({ task, onChange, locked, isOwner }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
         <FieldLabel>Credit shares</FieldLabel>
         {mode === 'auto' ? (
-          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#0F6E56', background: '#E1F5EE' }}>⚙ Auto</span>
+          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: TOK.workstreamFg, background: TOK.workstreamBg }}>⚙ Auto</span>
         ) : (
-          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: '#A8660C', background: '#FAEEDA' }}>✎ Manual override</span>
+          <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999, color: TOK.inprogFg, background: TOK.inprogBg }}>✎ Manual override</span>
         )}
         {locked && <span style={{ fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 999, color: TOK.muted, background: TOK.bg, border: '1px dashed ' + TOK.lineStrong }}>🔒 Locked</span>}
         {!isOwner && !locked && <span style={{ fontSize: 10, color: TOK.subtle }}>(workspace owner only)</span>}
@@ -2748,8 +2748,8 @@ function DeadlineRequestDialog({ task, currentEnd, author, uid: myUid = null, on
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500,
-            background: action === 'extend' ? '#FAEEDA' : '#E1F5EE',
-            color: action === 'extend' ? '#A8660C' : '#0F6E56',
+            background: action === 'extend' ? TOK.inprogBg : TOK.workstreamBg,
+            color: action === 'extend' ? TOK.inprogFg : TOK.workstreamFg,
           }}>
             {action === 'extend' ? `➡ ${days} days later` : `⬅ ${Math.abs(days)} days earlier`}
           </span>
@@ -2772,11 +2772,11 @@ function DeadlineRequestBanner({ task, request, author, isOwner, onApprove, onRe
   return (
     <div style={{
       marginTop: 12, padding: 12, borderRadius: 7,
-      background: '#FAEEDA', border: '1px solid #E0BC75',
+      background: TOK.inprogBg, border: '1px solid #E0BC75',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 16 }}>⏳</span>
-        <div style={{ fontSize: 12, fontWeight: 500, color: '#A8660C' }}>
+        <div style={{ fontSize: 12, fontWeight: 500, color: TOK.inprogFg }}>
           Deadline change request — waiting for Owner approval
         </div>
       </div>
@@ -3755,13 +3755,13 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
           return (
             <span key={n} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
-              background: known ? TOK.healthGreenBg : '#FAEEDA',
-              border: '1px solid ' + (known ? TOK.accent : '#E0BC75'),
+              background: known ? TOK.healthGreenBg : TOK.inprogBg,
+              border: '1px solid ' + (known ? TOK.accent : TOK.inprogFg),
               borderRadius: 999,
               padding: '3px 4px 3px 10px', fontSize: 12,
               color: known ? TOK.accent : TOK.ink,
             }} title={!known ? 'Legacy value — not a current team member. Click ✕ to remove.' : (member?.email || '')}>
-              {!known && <span style={{ fontSize: 10, color: '#A8660C' }}>⚠</span>}
+              {!known && <span style={{ fontSize: 10, color: TOK.inprogFg }}>⚠</span>}
               {n}
               <button onClick={() => remove(n)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: TOK.muted, padding: 2, display: 'flex' }}
@@ -3826,7 +3826,7 @@ function DecidedByPicker({ value, onChange, teamMembers }) {
                 style={{
                   width: '100%', textAlign: 'left', padding: '7px 10px',
                   fontFamily: FONT_STACK, fontSize: 12, border: 'none',
-                  background: 'transparent', cursor: 'pointer', color: '#A8660C',
+                  background: 'transparent', cursor: 'pointer', color: TOK.inprogFg,
                   borderTop: filtered.length > 0 ? '1px solid ' + TOK.line : 'none',
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.background = TOK.bg}
@@ -4070,7 +4070,7 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
               <span title={`Review overdue by ${decay.daysOverdue} day${decay.daysOverdue === 1 ? '' : 's'}`}
                 style={{
                   fontSize: 10.5, fontWeight: 500, padding: '2px 8px', borderRadius: 999,
-                  color: '#A8660C', background: '#FAEEDA', whiteSpace: 'nowrap',
+                  color: TOK.inprogFg, background: TOK.inprogBg, whiteSpace: 'nowrap',
                 }}>🕐 Review overdue {decay.daysOverdue}d</span>
             )}
             <span style={{
@@ -6727,7 +6727,7 @@ function MindNode({ n, isFirstTask, onToggle, onTaskClick, selectedTaskId, onOpe
     else if (isOverdue(t)) { bg = TOK.overdueBg; border = TOK.overdueFg; fg = TOK.overdueFg; }
     else if (t.status === 'Completed') { bg = TOK.doneBg; border = TOK.doneFg; fg = TOK.doneFg; }
     else if (t.status === 'InProgress') { bg = TOK.inprogBg; border = TOK.inprogFg; fg = TOK.inprogFg; }
-    else if (t.status === 'Submitted') { bg = '#FAEEDA'; border = '#B7791F'; fg = '#B7791F'; } // W3-C1: same pair as the Gantt
+    else if (t.status === 'Submitted') { bg = TOK.inprogBg; border = TOK.inprogFg; fg = TOK.inprogFg; } // W3-C1: same pair as the Gantt
     else { bg = TOK.plannedBg; border = TOK.plannedFg; fg = TOK.plannedFg; }
   }
 
@@ -7123,7 +7123,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
         {isOwner && (
           <div style={{
             padding: '10px 12px', marginBottom: 10, borderRadius: 8,
-            background: weightsLocked ? '#FCEBEB' : '#E6F1FB',
+            background: weightsLocked ? TOK.overdueBg : TOK.programBg,
             border: '1px solid ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'),
             fontSize: 12,
           }}>
@@ -7692,7 +7692,7 @@ function CreditsCell({ credits }) {
   return (
     <div style={{ textAlign: 'right' }}>
       <div style={{ fontSize: 13, fontWeight: 500 }}>
-        <span style={{ color: '#356512' }}>{earned}</span>
+        <span style={{ color: TOK.doneFg }}>{earned}</span>
         <span style={{ color: TOK.subtle, fontSize: 11 }}> / {projected}</span>
       </div>
       <div style={{ fontSize: 10, color: TOK.subtle }}>{pct}% earned (projected)</div>
@@ -8060,11 +8060,11 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onO
       )}
 
       {priorities.length > 0 && (
-        <div style={{ marginBottom: 14, padding: 12, background: '#fff8e1', border: '1px solid #f0e3a0', borderRadius: 8 }}>
-          <div style={{ fontSize: 12, fontWeight: 500, color: '#7a5d00', marginBottom: 6 }}>
+        <div style={{ marginBottom: 14, padding: 12, background: TOK.inprogBg, border: '1px solid #f0e3a0', borderRadius: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: TOK.inprogFg, marginBottom: 6 }}>
             💡 Coaching priorities — top {priorities.length} who may need support
           </div>
-          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: '#7a5d00', lineHeight: 1.7 }}>
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: TOK.inprogFg, lineHeight: 1.7 }}>
             {priorities.map((p) => {
               const reasons = [];
               const dRate = p.metrics.delivery.weightedRate ?? p.metrics.delivery.rate;
@@ -8439,10 +8439,10 @@ function WorkloadDistribution({ workload }) {
 function PeakSeasonCalendar({ calendar }) {
   const [hover, setHover] = useState(null);
   const INTENSITY_BG = {
-    peak: '#A32D2D',
+    peak: TOK.overdueFg,
     high: '#E0A03C',
     medium: '#7AAA7A',
-    low: '#E5E3DC',
+    low: TOK.line,
   };
   return (
     <div style={{ background: TOK.surface, borderRadius: 8, padding: 14, border: '1px solid ' + TOK.line }}>
@@ -8674,7 +8674,7 @@ function StatusQuickPill({ status, onChange, statuses }) {
     Done: { fg: TOK.doneFg, bg: TOK.doneBg, icon: <CheckCircle2 size={10} /> },
     Cancelled: { fg: TOK.droppedFg, bg: TOK.droppedBg, icon: <X size={10} /> },
     Open: { fg: TOK.muted, bg: TOK.bg, icon: <Circle size={10} /> },
-    Blocked: { fg: '#A32D2D', bg: '#FCEBEB', icon: <X size={10} /> },
+    Blocked: { fg: TOK.overdueFg, bg: TOK.overdueBg, icon: <X size={10} /> },
   };
   const s = map[safeStatus] || map.Planned;
   const openMenu = (e) => {
@@ -8865,7 +8865,7 @@ function StepLine({ entry, isFirstOpen, isMine, onDone, canTick = true }) {
     }}>
       <div style={{
         width: 18, height: 18, borderRadius: '50%',
-        background: done ? TOK.accent : (isFirstOpen ? TOK.ink : '#EDEBE4'),
+        background: done ? TOK.accent : (isFirstOpen ? TOK.ink : TOK.plannedBg),
         color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 9, fontWeight: 700, flexShrink: 0,
       }}>
@@ -8894,7 +8894,7 @@ function StepLine({ entry, isFirstOpen, isMine, onDone, canTick = true }) {
           title="Mark step done"
           style={{
             fontSize: 10, padding: '2px 8px', borderRadius: 4, border: '1px solid #9FCB75',
-            background: TOK.doneBg || '#E6EFD6', color: TOK.doneFg || '#356512',
+            background: TOK.doneBg || TOK.doneBg, color: TOK.doneFg || TOK.doneFg,
             cursor: 'pointer', fontWeight: 500,
           }}>✓ Done</button>
       )}
@@ -9732,8 +9732,8 @@ function RiskMatrixSelector({ likelihood, impact, onChange }) {
           {levels.map((i) => {
             const lvl = raidRiskLevel(l, i);
             const selected = l === likelihood && i === impact;
-            const cellBg = lvl === 'Critical' ? '#FCEBEB' : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? '#FAEEDA' : '#E6EFD6';
-            const cellFg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? '#A32D2D' : lvl === 'Medium' ? '#B7791F' : '#356512';
+            const cellBg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
+            const cellFg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? TOK.overdueFg : lvl === 'Medium' ? TOK.inprogFg : TOK.doneFg;
             return (
               <button
                 key={l + i}
@@ -9765,8 +9765,8 @@ function RiskMatrixSelector({ likelihood, impact, onChange }) {
 // Used in RAIDCard expanded view.
 function RiskLevelBadge({ likelihood, impact }) {
   const lvl = raidRiskLevel(likelihood, impact);
-  const bg = lvl === 'Critical' ? '#FCEBEB' : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? '#FAEEDA' : '#E6EFD6';
-  const fg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? '#A32D2D' : lvl === 'Medium' ? '#B7791F' : '#356512';
+  const bg = lvl === 'Critical' ? TOK.overdueBg : lvl === 'High' ? '#FFF0EE' : lvl === 'Medium' ? TOK.inprogBg : TOK.doneBg;
+  const fg = lvl === 'Critical' ? '#7B1D1D' : lvl === 'High' ? TOK.overdueFg : lvl === 'Medium' ? TOK.inprogFg : TOK.doneFg;
   return (
     <span style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: bg, color: fg, fontFamily: FONT_STACK }}>
       {lvl} risk
@@ -9874,7 +9874,7 @@ function PicPicker({ value, onChange, teamMembers, extraSuggestions, placeholder
           style={{
             marginTop: 4, padding: '2px 8px', borderRadius: 999,
             fontSize: 10.5, fontFamily: FONT_STACK, fontWeight: 500,
-            color: '#A8660C', background: '#FAEEDA',
+            color: TOK.inprogFg, background: TOK.inprogBg,
             border: '1px solid #E0BC75', cursor: 'pointer',
             display: 'inline-flex', alignItems: 'center', gap: 4,
           }}
@@ -9901,8 +9901,8 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
 
   const statusColor = {
     Open: { fg: TOK.muted, bg: TOK.bg },
-    Blocked: { fg: '#A32D2D', bg: '#FCEBEB' },
-    Done: { fg: '#356512', bg: '#E6EFD6' },
+    Blocked: { fg: TOK.overdueFg, bg: TOK.overdueBg },
+    Done: { fg: TOK.doneFg, bg: TOK.doneBg },
   }[action.status || 'Open'];
 
   const postComment = () => {
@@ -10409,9 +10409,9 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
   // Status colors
   const statusColor = {
     Draft: { fg: TOK.muted, bg: TOK.bg },
-    PendingApproval: { fg: '#B7791F', bg: '#FAEEDA' },
-    Active: { fg: '#356512', bg: '#E6EFD6' },
-    Mitigating: { fg: '#0C447C', bg: '#E6F1FB' },
+    PendingApproval: { fg: TOK.inprogFg, bg: TOK.inprogBg },
+    Active: { fg: TOK.doneFg, bg: TOK.doneBg },
+    Mitigating: { fg: TOK.programFg, bg: TOK.programBg },
     Resolved: { fg: TOK.muted, bg: TOK.bg },
     Accepted: { fg: TOK.muted, bg: TOK.bg },
     Closed: { fg: TOK.muted, bg: TOK.bg },
@@ -10432,7 +10432,7 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
             <span style={{ color: tcfg.fg, fontWeight: 500 }}>{tcfg.label}</span>
             <span>· @{item.owner || '—'}</span>
             {openMitigations > 0 && <span>· {openMitigations} open action{openMitigations === 1 ? '' : 's'}</span>}
-            {item.escalateToBoD && <span style={{ color: '#A32D2D', fontWeight: 500 }}>· ⬆ BoD</span>}
+            {item.escalateToBoD && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>· ⬆ BoD</span>}
             {isStale && <span style={{ color: TOK.overdueFg, fontWeight: 500 }}>· ⏰ Needs review</span>}
           </div>
         </div>
@@ -10448,15 +10448,15 @@ function RAIDCard({ item, isOwner, currentUser, teamMembers, picSuggestions, onU
         <div style={{ padding: '12px 14px 14px', borderTop: '1px solid ' + TOK.line, background: TOK.bg }}>
           {/* W3-D3 (P1): a non-Owner sees who decides. */}
           {item.status === 'PendingApproval' && !isOwner && (
-            <div style={{ padding: '8px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#7A5D00' }}>
+            <div style={{ padding: '8px 12px', background: TOK.inprogBg, border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, fontSize: 12, color: TOK.inprogFg }}>
               Only the Owner activates RAID items.
             </div>
           )}
           {/* Approval banner */}
           {item.status === 'PendingApproval' && isOwner && (
-            <div style={{ padding: '10px 12px', background: '#FAEEDA', border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ padding: '10px 12px', background: TOK.inprogBg, border: '1px solid #F0D490', borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 14 }}>⏳</span>
-              <div style={{ flex: 1, fontSize: 12, color: '#7A5D00' }}>
+              <div style={{ flex: 1, fontSize: 12, color: TOK.inprogFg }}>
                 <strong>Pending your approval</strong>
                 <div style={{ fontSize: 11, marginTop: 2 }}>Submitted by {item.createdBy} · {fmtDateShort(item.createdAt)}</div>
               </div>
@@ -10729,7 +10729,7 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
             if (acc === null) return lvl;
             return order[lvl] < order[acc] ? lvl : acc;
           }, null);
-          const dotColor = highestLevel === 'Critical' ? '#A32D2D' : highestLevel === 'High' ? '#A32D2D' : highestLevel === 'Medium' ? '#B7791F' : highestLevel === 'Low' ? '#356512' : 'transparent';
+          const dotColor = highestLevel === 'Critical' ? TOK.overdueFg : highestLevel === 'High' ? TOK.overdueFg : highestLevel === 'Medium' ? TOK.inprogFg : highestLevel === 'Low' ? TOK.doneFg : 'transparent';
           const seesPending = isOwner || (!!e.project?.__v2 && canEditRaid({ isOwner, isV2: true, roles: e.project.__v2?.roles || null, uid: myUid, programId: e.program?.id ?? e.programId }));
           const hasPending = (e.program.raid || []).some((r) => r.status === 'PendingApproval' && (seesPending || r.createdBy === author));
           const hasStale = active.some((r) => raidDaysSinceReview(r) > RAID_REVIEW_STALE_DAYS);
@@ -10781,7 +10781,7 @@ function RaidRegisterView({ projects, currentProjectId, author, isOwner, teamMem
             {/* Summary strip */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 14px', background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, marginBottom: 12, fontSize: 12, color: TOK.ink, flexWrap: 'wrap' }}>
               {summary.Critical > 0 && <span><strong style={{ color: '#7B1D1D' }}>{summary.Critical}</strong> Critical</span>}
-              {summary.High > 0 && <span><strong style={{ color: '#A32D2D' }}>{summary.High}</strong> High</span>}
+              {summary.High > 0 && <span><strong style={{ color: TOK.overdueFg }}>{summary.High}</strong> High</span>}
               {summary.Issue > 0 && <span>🔥 <strong>{summary.Issue}</strong> open</span>}
               {summary.Assumption > 0 && <span>💡 <strong>{summary.Assumption}</strong> unvalidated</span>}
               {summary.stale > 0 && <span style={{ color: TOK.overdueFg }}>⏰ <strong>{summary.stale}</strong> needs review</span>}
@@ -10917,7 +10917,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
       style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
         border: '1px solid ' + (overdue ? '#F5C8C8' : TOK.line), borderRadius: 7,
-        marginBottom: 5, background: overdue ? '#FCEBEB' : TOK.surface,
+        marginBottom: 5, background: overdue ? TOK.overdueBg : TOK.surface,
         cursor: 'pointer', fontFamily: FONT_STACK,
       }}>
       <span style={{ color: TOK.subtle, fontSize: 12 }}>☐</span>
@@ -10925,7 +10925,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
         <div style={{ fontSize: 12.5, fontWeight: 500, color: overdue ? '#7B1D1D' : TOK.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {enriched.action.name}
         </div>
-        <div style={{ fontSize: 10.5, color: overdue ? '#A32D2D' : TOK.muted, marginTop: 1 }}>
+        <div style={{ fontSize: 10.5, color: overdue ? TOK.overdueFg : TOK.muted, marginTop: 1 }}>
           In: {enriched.item.title.slice(0, 50)}{enriched.item.title.length > 50 ? '…' : ''} · {enriched.program.name}
           {enriched.action.due && <> · {overdue ? 'was due' : 'due'} {fmtDateShort(enriched.action.due)}</>}
         </div>
@@ -10945,21 +10945,21 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
           defaultOpen={true}>
           {myRaid.pendingApproval.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: '#B7791F', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+              <div style={{ fontSize: 11, color: TOK.inprogFg, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
                 ⏳ Pending your approval ({myRaid.pendingApproval.length})
               </div>
               {myRaid.pendingApproval.map((e, i) => (
                 <MiniItemCard
                   key={`pa-${i}`}
                   enriched={e}
-                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: '#B7791F', background: '#FAEEDA' }}>Approve</span>}
+                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: TOK.inprogFg, background: TOK.inprogBg }}>Approve</span>}
                 />
               ))}
             </div>
           )}
           {myRaid.escalating.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: '#A32D2D', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+              <div style={{ fontSize: 11, color: TOK.overdueFg, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
                 🔴 Escalating risks I own ({myRaid.escalating.length})
               </div>
               {myRaid.escalating.map((e, i) => (
@@ -10973,7 +10973,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
           )}
           {myRaid.overdueActions.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: '#A32D2D', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+              <div style={{ fontSize: 11, color: TOK.overdueFg, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
                 ⚠ Overdue mitigation actions ({myRaid.overdueActions.length})
               </div>
               {myRaid.overdueActions.map((e, i) => (
@@ -10983,14 +10983,14 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
           )}
           {myRaid.needsReview.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 11, color: '#B7791F', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
+              <div style={{ fontSize: 11, color: TOK.inprogFg, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 5 }}>
                 ⏰ Risks not reviewed in &gt;7 days ({myRaid.needsReview.length})
               </div>
               {myRaid.needsReview.map((e, i) => (
                 <MiniItemCard
                   key={`nr-${i}`}
                   enriched={e}
-                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: '#B7791F', background: '#FAEEDA' }}>Review</span>}
+                  badge={<span style={{ fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, color: TOK.inprogFg, background: TOK.inprogBg }}>Review</span>}
                 />
               ))}
             </div>
@@ -11072,7 +11072,7 @@ function TaskProgramRaidSignal({ program, onNavigateRaid }) {
           ) : (
             <>
               {activeItems.length} active RAID item{activeItems.length === 1 ? '' : 's'} in {program.name}
-              {escalatingCount > 0 && <span style={{ marginLeft: 8, color: '#A32D2D', fontSize: 11, fontWeight: 500 }}>🔴 {escalatingCount} escalating</span>}
+              {escalatingCount > 0 && <span style={{ marginLeft: 8, color: TOK.overdueFg, fontSize: 11, fontWeight: 500 }}>🔴 {escalatingCount} escalating</span>}
             </>
           )}
         </div>
@@ -11157,7 +11157,7 @@ function ByProjectCard({
   const totalRaid = raid.escalating.length + raid.overdueActions.length + raid.needsReview.length + raid.pendingApproval.length;
   const totalDecisions = decisions.length;
   const urgentCount = overdueTasks.length + unreadMentions.length + raid.escalating.length + rejected.length + blockers.length;
-  const color = project.color || '#0C447C';
+  const color = project.color || TOK.programFg;
   const colorBg = hex2rgba(color, 0.08);
 
   const renderTaskCard = (e) => (
@@ -11284,7 +11284,7 @@ function ByProjectCard({
           <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.overdueBg, color: TOK.overdueFg, fontWeight: 600 }}>⚠ {overdueTasks.length} overdue</span>
         )}
         {unreadMentions.length > 0 && (
-          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: '#E6EFD6', color: '#356512', fontWeight: 600 }}>💬 {unreadMentions.length} @you</span>
+          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.doneBg, color: TOK.doneFg, fontWeight: 600 }}>💬 {unreadMentions.length} @you</span>
         )}
         {raid.escalating.length > 0 && (
           <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: TOK.overdueBg, color: TOK.overdueFg, fontWeight: 600 }}>🔴 {raid.escalating.length} escalating</span>
@@ -11333,11 +11333,11 @@ function ByProjectCard({
               {unreadMentions.slice(0, 5).map((m, i) => (
                 <button key={'am-' + i}
                   onClick={() => (m.task ? onTaskClick(m.task.id, project.id) : m.action && onActionClick ? onActionClick(project.id, m.action.id) : null)}
-                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: '#356512', marginBottom: 2, whiteSpace: 'normal' }}>
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT_STACK, fontSize: 12, color: TOK.doneFg, marginBottom: 2, whiteSpace: 'normal' }}>
                   💬 {m.postAuthor || '—'} on <strong>{m.task?.name || m.action?.title || 'an item'}</strong>: "{m.text || ''}"
                 </button>
               ))}
-              {unreadMentions.length > 5 && <div style={{ color: '#356512', fontSize: 11 }}>+ {unreadMentions.length - 5} more in By urgency → Mentions</div>}
+              {unreadMentions.length > 5 && <div style={{ color: TOK.doneFg, fontSize: 11 }}>+ {unreadMentions.length - 5} more in By urgency → Mentions</div>}
             </div>
           )}
 
@@ -11892,7 +11892,7 @@ function MyWorkView({
             {t.label}
             {t.badge != null && (
               <span style={{
-                background: '#FCEBEB', color: '#A32D2D', borderRadius: 999,
+                background: TOK.overdueBg, color: TOK.overdueFg, borderRadius: 999,
                 padding: '1px 6px', fontSize: 10, fontWeight: 700,
               }}>{t.badge}</span>
             )}
@@ -12736,7 +12736,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
           <SummaryCard label="Total credit pool" value={`${Math.round(summary.totalProjected * 10) / 10} cp`} sub={`${summary.projectCount} project${summary.projectCount === 1 ? '' : 's'}`} />
           <SummaryCard label="Earned so far" value={`${Math.round(summary.totalEarned * 10) / 10} cp`} sub={`${Math.round(summary.overallEarnedPct * 10) / 10}% of projected`} accent="#356512" />
-          <SummaryCard label="Locked projects" value={`${summary.lockedCount} / ${summary.projectCount}`} sub={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? 'All locked' : 'Partial'} accent={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? '#A32D2D' : TOK.muted} />
+          <SummaryCard label="Locked projects" value={`${summary.lockedCount} / ${summary.projectCount}`} sub={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? 'All locked' : 'Partial'} accent={summary.lockedCount === summary.projectCount && summary.projectCount > 0 ? TOK.overdueFg : TOK.muted} />
           <SummaryCard label="Distinct PICs" value={String(picRows.length)} sub="With credit allocation" />
         </div>
 
@@ -12773,14 +12773,14 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                     display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr 1fr 0.5fr', gap: 10,
                     padding: '12px 14px', borderBottom: '1px solid ' + TOK.line,
                     cursor: 'pointer', alignItems: 'center',
-                    background: selectedPic === r.id ? '#E6F1FB' : 'transparent',
+                    background: selectedPic === r.id ? TOK.programBg : 'transparent',
                     transition: 'background .12s',
                   }}
                   onMouseEnter={(e) => { if (selectedPic !== r.id) e.currentTarget.style.background = TOK.bg; }}
                   onMouseLeave={(e) => { if (selectedPic !== r.id) e.currentTarget.style.background = 'transparent'; }}
                 >
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
-                  <div style={{ textAlign: 'right', fontSize: 13, color: '#356512', fontWeight: 500 }}>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.doneFg, fontWeight: 500 }}>
                     {Math.round(r.earned * 100) / 100}
                   </div>
                   <div style={{ textAlign: 'right', fontSize: 13, color: TOK.ink }}>
@@ -12791,7 +12791,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ display: 'inline-block', width: 60, height: 5, background: 'rgba(0,0,0,0.08)', borderRadius: 999, overflow: 'hidden', verticalAlign: 'middle' }}>
-                      <div style={{ width: `${Math.min(100, r.pctEarned)}%`, height: '100%', background: '#356512' }} />
+                      <div style={{ width: `${Math.min(100, r.pctEarned)}%`, height: '100%', background: TOK.doneFg }} />
                     </div>
                     <span style={{ fontSize: 11, color: TOK.muted, marginLeft: 6 }}>{Math.round(r.pctEarned)}%</span>
                   </div>
@@ -12821,7 +12821,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                       <span style={{ fontSize: 14, fontWeight: 500 }}>{projData.project.name}</span>
                       <span style={{ fontSize: 11, color: TOK.muted }}>Year {projData.project.creditYear || '—'}</span>
                       <span style={{ flex: 1 }} />
-                      <span style={{ fontSize: 12, color: '#356512', fontWeight: 500 }}>
+                      <span style={{ fontSize: 12, color: TOK.doneFg, fontWeight: 500 }}>
                         {Math.round(projData.actual * 100) / 100} cp earned
                       </span>
                       <span style={{ fontSize: 11, color: TOK.muted }}>
@@ -12835,7 +12835,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                             {pg.isLead ? '👑 ' : ''}{pg.name}
                           </span>
                           <span style={{ flex: 1 }} />
-                          <span style={{ color: '#356512', fontWeight: 500 }}>
+                          <span style={{ color: TOK.doneFg, fontWeight: 500 }}>
                             {Math.round(pg.actual * 100) / 100} / {Math.round(pg.projected * 100) / 100} cp
                           </span>
                         </div>
@@ -12848,7 +12848,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                                   {e.credited ? '✓ ' : '○ '}{e.taskName}
                                   {' '}<span style={{ fontSize: 10, color: TOK.subtle }}>({Math.round(e.sharePct * 10) / 10}%)</span>
                                 </span>
-                                <span style={{ color: e.credited ? '#356512' : TOK.subtle, fontVariantNumeric: 'tabular-nums' }}>
+                                <span style={{ color: e.credited ? TOK.doneFg : TOK.subtle, fontVariantNumeric: 'tabular-nums' }}>
                                   {Math.round(e.projected * 100) / 100} cp
                                 </span>
                               </div>
@@ -12948,7 +12948,7 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
                   const text = cellText(cell, opts);
                   const on = !!sel && sel.personId === k.personId && sel.pid === k.pid;
                   return (
-                    <td key={c.id} style={{ ...td, color: text ? TOK.ink : TOK.subtle, background: on ? '#E6F1FB' : 'transparent', cursor: cell ? 'pointer' : 'default' }}
+                    <td key={c.id} style={{ ...td, color: text ? TOK.ink : TOK.subtle, background: on ? TOK.programBg : 'transparent', cursor: cell ? 'pointer' : 'default' }}
                       onClick={() => { if (cell) setSel(on ? null : k); }}>
                       {text || '—'}
                     </td>
@@ -14960,12 +14960,12 @@ export default function App() {
         {!bannerDismissed && isMonday() && !isBriefingDismissed(todayISODate()) && !(meta?.dismissedBriefingDates || []).includes(todayISODate()) && (
           <div style={{
             padding: '10px 16px',
-            background: isOwner ? '#e8f0fe' : '#fff8e1',
-            borderBottom: '1px solid ' + (isOwner ? '#c8dcf0' : '#f0e3a0'),
+            background: isOwner ? '#e8f0fe' : TOK.inprogBg,
+            borderBottom: '1px solid ' + (isOwner ? '#c8dcf0' : TOK.inprogFg),
             display: 'flex', alignItems: 'center', gap: 12,
           }}>
             <span style={{ fontSize: 18 }}>{isOwner ? '📨' : '📋'}</span>
-            <div style={{ flex: 1, fontSize: 13, color: isOwner ? '#1f4e8c' : '#7a5d00' }}>
+            <div style={{ flex: 1, fontSize: 13, color: isOwner ? '#1f4e8c' : TOK.inprogFg }}>
               <strong>{isOwner ? 'Time to send the weekly digest' : 'Weekly briefing ready'}</strong>
               <span style={{ marginLeft: 8, opacity: 0.85 }}>
                 {isOwner
@@ -16118,7 +16118,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
           </div>
         </div>
         {members.length === 0 ? (
-          <div style={{ fontSize: 11, color: '#A8660C', marginTop: 3 }}>
+          <div style={{ fontSize: 11, color: TOK.inprogFg, marginTop: 3 }}>
             ⚠ Add team members below first, then return to pick project lead.
           </div>
         ) : projectLead ? (
@@ -16276,7 +16276,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
           </div>
         )}
         {!newName.trim() && newEmail.trim() && (
-          <div style={{ fontSize: 11, color: '#A8660C', marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: TOK.inprogFg, marginTop: 4 }}>
             ⚠ Name is required to add this member.
           </div>
         )}
@@ -16284,10 +16284,10 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
 
       {legacyMismatches.length > 0 && isOwner && (
         <div style={{
-          background: '#FAEEDA', border: '1px solid #E0BC75', borderRadius: 7,
+          background: TOK.inprogBg, border: '1px solid #E0BC75', borderRadius: 7,
           padding: '10px 12px', marginBottom: 8,
         }}>
-          <div style={{ fontSize: 12, fontWeight: 500, color: '#A8660C', marginBottom: 4 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: TOK.inprogFg, marginBottom: 4 }}>
             ⚠ Legacy name mismatch detected
           </div>
           <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 8, lineHeight: 1.5 }}>
@@ -16352,7 +16352,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
               border: '1px solid ' + TOK.line, borderRadius: 6, marginBottom: 4,
               background: TOK.bg,
             }}>
-              <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: '#A8660C', background: '#FAEEDA' }}>⚠</span>
+              <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: TOK.inprogFg, background: TOK.inprogBg }}>⚠</span>
               <span style={{ fontSize: 12, fontWeight: 500, minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
               <span style={{ fontSize: 10, color: TOK.subtle, whiteSpace: 'nowrap' }}>{entry.count}×</span>
               {sug ? (
@@ -16420,7 +16420,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
                     display: 'flex', alignItems: 'center', gap: 8, padding: '3px 8px',
                     fontSize: 12, color: TOK.ink,
                   }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: TOK.doneFg || '#356512', background: TOK.doneBg || '#E6EFD6' }}>✓</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 4, color: TOK.doneFg || TOK.doneFg, background: TOK.doneBg || TOK.doneBg }}>✓</span>
                     <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.name}</span>
                     <span style={{ fontSize: 10, color: TOK.subtle }}>{entry.count}×</span>
                   </div>
@@ -16505,8 +16505,8 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
             .sort((a, b) => b[1].count - a[1].count);
           if (unregistered.length === 0) return null;
           return (
-            <div style={{ marginTop: 10, padding: 10, background: '#FAEEDA', borderRadius: 6, border: '1px solid #E0BC75' }}>
-              <div style={{ fontSize: 11, fontWeight: 500, color: '#A8660C', marginBottom: 6 }}>
+            <div style={{ marginTop: 10, padding: 10, background: TOK.inprogBg, borderRadius: 6, border: '1px solid #E0BC75' }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: TOK.inprogFg, marginBottom: 6 }}>
                 ⚠ Unregistered contributor names found in tasks ({unregistered.length})
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
