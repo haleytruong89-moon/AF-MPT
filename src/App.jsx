@@ -25,6 +25,7 @@ import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
+import { DEFAULT_DEADLINE_TYPE, ACTIVITY_THRESHOLDS, DEFAULT_DASHBOARD_WINDOW, bucketColor, sampleStatus, deliverySample, computeActivityIndexWithTrend, rankCoachingPriorities } from './coaching.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { effortMatrix, cellText, effortTable } from './effortReport.js';
@@ -86,28 +87,6 @@ const HEALTH_LABEL = { green: 'On track', amber: 'At risk', red: 'Off track' };
 // ─── Deadline classification (Activity Dashboard) ───
 const DEADLINE_TYPES = ['hard', 'soft'];
 const DEADLINE_TYPE_LABEL = { hard: 'Hard deadline', soft: 'Soft target' };
-const DEFAULT_DEADLINE_TYPE = 'hard';
-
-// ─── Activity Dashboard thresholds ───
-const ACTIVITY_THRESHOLDS = {
-  delivery: { green: 85, amber: 70 },
-  cadence:  { green: 7, amber: 14 },
-  blocker:  { green: 3, amber: 7 },
-  risk:     { green: 85, amber: 70 },
-  engagement: { green: 5, amber: 2 },
-  composite: { green: 80, amber: 65 },
-  minSamples: 3,
-};
-const COMPOSITE_WEIGHTS = {
-  delivery: 0.40,
-  cadence: 0.30,
-  risk: 0.20,
-  engagement: 0.10,
-};
-const DEFAULT_DASHBOARD_WINDOW = {
-  actionWeeks: 4,
-  taskWeeks: 12,
-};
 const DIFFICULTY_PRESETS = {
   standard: 1.0,
   complex: 1.3,
@@ -290,42 +269,10 @@ function ensureProjectRaid(project) {
 }
 
 // ─── Activity Dashboard / Briefing date helpers ───
-function weeksAgo(n) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - n * 7);
-  return d;
-}
-
 function daysBetween(a, b) {
   const da = new Date(a); da.setHours(0, 0, 0, 0);
   const db = new Date(b); db.setHours(0, 0, 0, 0);
   return Math.round((db - da) / 86400000);
-}
-
-function inDateRange(ts, from, to) {
-  if (!ts) return false;
-  const d = new Date(ts);
-  if (isNaN(d)) return false;
-  if (from && d < from) return false;
-  if (to) { const t = new Date(to); t.setHours(23, 59, 59, 999); if (d > t) return false; }
-  return true;
-}
-
-function bucketColor(value, thresholds, { inverted = false } = {}) {
-  if (value == null || isNaN(value)) return 'subtle';
-  if (inverted) {
-    if (value <= thresholds.green) return 'green';
-    if (value <= thresholds.amber) return 'amber';
-    return 'red';
-  }
-  if (value >= thresholds.green) return 'green';
-  if (value >= thresholds.amber) return 'amber';
-  return 'red';
-}
-
-function sampleStatus(count) {
-  return count >= ACTIVITY_THRESHOLDS.minSamples ? 'ok' : 'low';
 }
 
 function addDays(isoDate, days) {
@@ -358,329 +305,7 @@ function logDeadlineChange(oldTask, newEnd, author, reason) {
   return { ...oldTask, end: next, deadlineHistory: [...(oldTask.deadlineHistory || []), entry] };
 }
 
-// Trend direction: 'up' | 'flat' | 'down' | null. inverted=true means lower is better.
-function trendOf(curr, prev, { inverted = false } = {}) {
-  if (curr == null || prev == null) return null;
-  const delta = curr - prev;
-  const threshold = Math.max(2, Math.abs(prev) * 0.05);
-  if (Math.abs(delta) < threshold) return 'flat';
-  const isUp = delta > 0;
-  if (inverted) return isUp ? 'down' : 'up';
-  return isUp ? 'up' : 'down';
-}
-
-// Per-PIC activity snapshot for the Activity Dashboard. Pure function.
-function computeActivityIndex(projectsMap, options = {}, dirIndex = null) {
-  const now = options.now || new Date();
-  const actionFrom = options.actionFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.actionWeeks);
-  const taskFrom = options.taskFrom || weeksAgo(DEFAULT_DASHBOARD_WINDOW.taskWeeks);
-
-  const out = new Map();
-  // P1: keyed by canonical person id, `pic` = display name. With no dirIndex,
-  // id === pic === the raw string (legacy grouping).
-  const ensure = (raw) => {
-    const id = personKey(dirIndex, raw);
-    if (!out.has(id)) out.set(id, {
-      pic: personLabel(dirIndex, raw), id,
-      delivery: { onTime: 0, late: 0, total: 0, rate: null, weightedRate: null, hardOnTime: 0, hardTotal: 0, softOnTime: 0, softTotal: 0 },
-      cadence:  { activeTasks: 0, staleTasks: 0, avgDaysSinceUpdate: null },
-      blocker:  { resolved: 0, unresolved: 0, avgResolveDays: null },
-      risk:     { greenButOverdue: 0, totalReports: 0, honestyRate: null, lateBlockers: 0, earlyBlockers: 0 },
-      engagement: { decisions: 0, blockersResolvedForOthers: 0, crossTaskUpdates: 0, total: 0 },
-      composite: { score: null, dimensions: { delivery: null, cadence: null, risk: null, engagement: null } },
-      sampleSize: { actions: 0, tasks: 0, blockers: 0, riskReports: 0 },
-      activeTasks: [],
-      recentFlags: [],
-    });
-    return out.get(id);
-  };
-
-  const cadenceDaysByPic = new Map();
-  const resolveDaysByPic = new Map();
-  const weightedDeliveryByPic = new Map();
-
-  for (const project of Object.values(projectsMap)) {
-    for (const action of project.actionItems || []) {
-      if (!action.pic) continue;
-      const dueInRange = action.dueDate && inDateRange(action.dueDate, actionFrom, now);
-      const closedInRange = action.status === 'Done' && inDateRange(action.timestamp, actionFrom, now);
-      if (!dueInRange && !closedInRange) continue;
-
-      const m = ensure(action.pic);
-      m.sampleSize.actions++;
-      if (action.status === 'Cancelled') continue;
-
-      m.delivery.total++;
-      if (action.status === 'Done') {
-        const closedAt = action.completedAt || action.timestamp;
-        const onTime = !action.dueDate || daysBetween(closedAt, action.dueDate) >= 0;
-        if (onTime) m.delivery.onTime++;
-        else m.delivery.late++;
-      } else if (action.dueDate && new Date(action.dueDate) < now) {
-        m.delivery.late++;
-        const lateDays = daysBetween(action.dueDate, now);
-        m.recentFlags.push({
-          kind: 'overdue_action',
-          message: `Action overdue ${lateDays}d: ${action.title}`,
-          ts: action.dueDate,
-        });
-      }
-    }
-
-    for (const program of project.programs || []) {
-      for (const ws of program.workstreams || []) {
-        const wsMultiplier = ws.difficultyMultiplier || 1.0;
-        for (const task of ws.tasks || []) {
-          if (!task.pic) continue;
-          const m = ensure(task.pic);
-          const deadlineType = task.deadlineType || DEFAULT_DEADLINE_TYPE;
-          const inTaskWindow = task.end && inDateRange(task.end, taskFrom, now);
-
-          if (inTaskWindow && task.status !== 'Dropped') {
-            m.sampleSize.tasks++;
-            const isComplete = task.status === 'Completed';
-            if (deadlineType === 'hard') {
-              m.delivery.hardTotal++;
-              if (isComplete) m.delivery.hardOnTime++;
-            } else {
-              m.delivery.softTotal++;
-              if (isComplete) m.delivery.softOnTime++;
-            }
-            if (!weightedDeliveryByPic.has(m.id)) {
-              weightedDeliveryByPic.set(m.id, { weightedOnTime: 0, weightedTotal: 0 });
-            }
-            const wd = weightedDeliveryByPic.get(m.id);
-            wd.weightedTotal += wsMultiplier;
-            if (isComplete) wd.weightedOnTime += wsMultiplier;
-
-            const isLate = isOverdueTask(task, now);
-            if (isLate || isComplete) {
-              m.sampleSize.riskReports++;
-              m.risk.totalReports++;
-              if (isLate && (task.health === 'green' || !task.health)) {
-                m.risk.greenButOverdue++;
-                m.recentFlags.push({
-                  kind: 'risk_dishonesty',
-                  message: `Self-reported green but overdue: ${task.name}`,
-                  ts: task.end, taskId: task.id,
-                });
-              }
-            }
-
-            if (isLate) {
-              const lateDays = daysBetween(task.end, now);
-              m.recentFlags.push({
-                kind: deadlineType === 'hard' ? 'overdue_task_hard' : 'overdue_task_soft',
-                message: `${deadlineType === 'hard' ? 'Task' : 'Soft target'} overdue ${lateDays}d: ${task.name}`,
-                ts: task.end, taskId: task.id,
-              });
-            }
-          }
-
-          if (task.status === 'InProgress') {
-            m.cadence.activeTasks++;
-            m.activeTasks.push({ project, program, workstream: ws, task });
-            const latestUpdate = (task.updates || [])
-              .map((u) => new Date(u.timestamp))
-              .filter((d) => !isNaN(d))
-              .sort((a, b) => b - a)[0];
-            // Use latest update; fall back to task.start only if it's in the past
-            // (a future-dated start has no "days since activity" meaning).
-            let latestActivity = latestUpdate;
-            if (!latestActivity && task.start) {
-              const startD = new Date(task.start);
-              if (!isNaN(startD) && startD <= now) latestActivity = startD;
-            }
-            if (latestActivity) {
-              const days = Math.max(0, daysBetween(latestActivity, now));
-              if (!cadenceDaysByPic.has(m.id)) cadenceDaysByPic.set(m.id, []);
-              cadenceDaysByPic.get(m.id).push(days);
-              if (days >= ACTIVITY_THRESHOLDS.cadence.amber) {
-                m.cadence.staleTasks++;
-                if (days >= ACTIVITY_THRESHOLDS.cadence.green * 2) {
-                  m.recentFlags.push({
-                    kind: 'stale_update',
-                    message: `No update for ${days}d: ${task.name}`,
-                    ts: latestActivity.toISOString(), taskId: task.id,
-                  });
-                }
-              }
-            }
-          }
-
-          for (const u of task.updates || []) {
-            if (u.author && personKey(dirIndex, u.author) !== m.id && inDateRange(u.timestamp, taskFrom, now)) {
-              const updater = ensure(u.author);
-              updater.engagement.crossTaskUpdates++;
-              updater.engagement.total++;
-            }
-            if (u.isBlocker && u.resolvedAt && u.resolvedBy && personKey(dirIndex, u.resolvedBy) !== m.id
-                && inDateRange(u.resolvedAt, taskFrom, now)) {
-              const helper = ensure(u.resolvedBy);
-              helper.engagement.blockersResolvedForOthers++;
-              helper.engagement.total++;
-            }
-            if (!u.isBlocker) continue;
-            if (!inDateRange(u.timestamp, taskFrom, now)) continue;
-            m.sampleSize.blockers++;
-            if (u.resolvedAt) {
-              m.blocker.resolved++;
-              const days = daysBetween(u.timestamp, u.resolvedAt);
-              if (!resolveDaysByPic.has(m.id)) resolveDaysByPic.set(m.id, []);
-              resolveDaysByPic.get(m.id).push(days);
-            } else {
-              m.blocker.unresolved++;
-              const ageDays = daysBetween(u.timestamp, now);
-              if (ageDays >= ACTIVITY_THRESHOLDS.blocker.amber) {
-                m.recentFlags.push({
-                  kind: 'unresolved_blocker',
-                  message: `Blocker open ${ageDays}d: ${task.name}`,
-                  ts: u.timestamp, taskId: task.id,
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-
-    for (const decision of project.decisions || []) {
-      if (!inDateRange(decision.date, taskFrom, now)) continue;
-      for (const decider of decision.decidedBy || []) {
-        const m = ensure(decider);
-        m.engagement.decisions++;
-        m.engagement.total++;
-      }
-    }
-  }
-
-  for (const m of out.values()) {
-    if (m.delivery.total > 0) {
-      m.delivery.rate = Math.round(100 * m.delivery.onTime / m.delivery.total);
-    }
-    const wd = weightedDeliveryByPic.get(m.id);
-    if (wd && wd.weightedTotal > 0) {
-      const taskComponent = wd.weightedOnTime / wd.weightedTotal;
-      const actionComponent = m.delivery.total > 0 ? m.delivery.onTime / m.delivery.total : taskComponent;
-      if (m.delivery.total > 0 && wd.weightedTotal > 0) {
-        m.delivery.weightedRate = Math.round(100 * (0.6 * actionComponent + 0.4 * taskComponent));
-      } else if (wd.weightedTotal > 0) {
-        m.delivery.weightedRate = Math.round(100 * taskComponent);
-      } else {
-        m.delivery.weightedRate = m.delivery.rate;
-      }
-    } else {
-      m.delivery.weightedRate = m.delivery.rate;
-    }
-    const cd = cadenceDaysByPic.get(m.id);
-    if (cd && cd.length > 0) {
-      m.cadence.avgDaysSinceUpdate = Math.round(cd.reduce((a, b) => a + b, 0) / cd.length);
-    }
-    const rd = resolveDaysByPic.get(m.id);
-    if (rd && rd.length > 0) {
-      m.blocker.avgResolveDays = Math.round(10 * rd.reduce((a, b) => a + b, 0) / rd.length) / 10;
-    }
-    if (m.risk.totalReports > 0) {
-      m.risk.honestyRate = Math.round(100 * (1 - m.risk.greenButOverdue / m.risk.totalReports));
-    }
-    const dim = { delivery: null, cadence: null, risk: null, engagement: null };
-    let totalWeight = 0;
-    let weightedSum = 0;
-
-    if (sampleStatus(m.sampleSize.actions) === 'ok' && m.delivery.weightedRate != null) {
-      dim.delivery = m.delivery.weightedRate;
-      weightedSum += dim.delivery * COMPOSITE_WEIGHTS.delivery;
-      totalWeight += COMPOSITE_WEIGHTS.delivery;
-    }
-    if (m.cadence.activeTasks > 0 && m.cadence.avgDaysSinceUpdate != null) {
-      const days = m.cadence.avgDaysSinceUpdate;
-      dim.cadence = Math.max(0, Math.min(100, Math.round(100 - days * 3.5)));
-      weightedSum += dim.cadence * COMPOSITE_WEIGHTS.cadence;
-      totalWeight += COMPOSITE_WEIGHTS.cadence;
-    }
-    if (sampleStatus(m.sampleSize.riskReports) === 'ok' && m.risk.honestyRate != null) {
-      dim.risk = m.risk.honestyRate;
-      weightedSum += dim.risk * COMPOSITE_WEIGHTS.risk;
-      totalWeight += COMPOSITE_WEIGHTS.risk;
-    }
-    if (m.engagement.total > 0) {
-      const e = m.engagement.total;
-      if (e <= 2) dim.engagement = Math.round(60 * e / 2);
-      else if (e <= 5) dim.engagement = Math.round(60 + (85 - 60) * (e - 2) / 3);
-      else dim.engagement = Math.min(100, Math.round(85 + (100 - 85) * (e - 5) / 5));
-      weightedSum += dim.engagement * COMPOSITE_WEIGHTS.engagement;
-      totalWeight += COMPOSITE_WEIGHTS.engagement;
-    }
-    m.composite.dimensions = dim;
-    // Low-confidence guard: composite needs ≥2 qualifying dimensions, otherwise
-    // a single dimension would dominate (re-normalized to 100% weight) and the
-    // score becomes misleading — show "—" instead.
-    const qualifyingDims = Object.values(dim).filter((v) => v != null).length;
-    if (totalWeight > 0 && qualifyingDims >= 2) {
-      m.composite.score = Math.round(weightedSum / totalWeight);
-    }
-    m.composite.qualifyingDims = qualifyingDims;
-
-    m.recentFlags.sort((a, b) => new Date(b.ts) - new Date(a.ts));
-    m.recentFlags = m.recentFlags.slice(0, 5);
-  }
-  return out;
-}
-
-// Wraps computeActivityIndex with previous-period comparison; attaches `trend` per PIC.
-function computeActivityIndexWithTrend(projectsMap, options = {}, dirIndex = null) {
-  const now = options.now || new Date();
-  const actionWeeks = options.actionWeeks || DEFAULT_DASHBOARD_WINDOW.actionWeeks;
-  const taskWeeks = options.taskWeeks || DEFAULT_DASHBOARD_WINDOW.taskWeeks;
-
-  const current = computeActivityIndex(projectsMap, {
-    actionFrom: weeksAgo(actionWeeks),
-    taskFrom: weeksAgo(taskWeeks),
-    now,
-  }, dirIndex);
-
-  const prevNow = weeksAgo(actionWeeks);
-  const previous = computeActivityIndex(projectsMap, {
-    actionFrom: weeksAgo(actionWeeks * 2),
-    taskFrom: weeksAgo(taskWeeks * 2),
-    now: prevNow,
-  }, dirIndex);
-
-  for (const m of current.values()) {
-    const prev = previous.get(m.id);
-    m.trend = {
-      composite: trendOf(m.composite.score, prev?.composite?.score),
-      delivery: trendOf(m.delivery.weightedRate, prev?.delivery?.weightedRate),
-      cadence: trendOf(m.cadence.avgDaysSinceUpdate, prev?.cadence?.avgDaysSinceUpdate, { inverted: true }),
-      risk: trendOf(m.risk.honestyRate, prev?.risk?.honestyRate),
-    };
-  }
-  return current;
-}
-
-// Top-K PICs needing support, ordered by signal weight. Used by the dashboard
-// banner. Score adds: red delivery (3), amber delivery (1), red cadence (2),
-// amber cadence (1), and one point per unresolved blocker.
-function rankCoachingPriorities(metricsMap, limit = 3) {
-  const scored = [];
-  for (const m of metricsMap.values()) {
-    let score = 0;
-    if (sampleStatus(m.sampleSize.actions) === 'ok') {
-      const c = bucketColor(m.delivery.rate, ACTIVITY_THRESHOLDS.delivery);
-      if (c === 'red') score += 3;
-      else if (c === 'amber') score += 1;
-    }
-    if (m.cadence.activeTasks > 0) {
-      const c = bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true });
-      if (c === 'red') score += 2;
-      else if (c === 'amber') score += 1;
-    }
-    if (m.blocker.unresolved > 0) score += m.blocker.unresolved;
-    if (score > 0) scored.push({ pic: m.pic, score, metrics: m });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit);
-}
+// Coaching engine: src/coaching.js (audit 27/11, unit-tested).
 
 // Decision decay check: returns { decayed, daysOverdue?, reviewDate? }
 function getDecisionDecay(decision, now = new Date()) {
@@ -8234,7 +7859,7 @@ function CreditsCell({ credits }) {
 
 function PICRow({ metrics, credits, onClick }) {
   const m = metrics;
-  const dCount = m.sampleSize.actions + m.sampleSize.tasks;
+  const dCount = deliverySample(m);
   const deliveryColor = sampleStatus(dCount) === 'ok' ? bucketColor(m.delivery.weightedRate, ACTIVITY_THRESHOLDS.delivery) : 'subtle';
   const cadenceColor = m.cadence.activeTasks > 0 ? bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true }) : 'subtle';
   const riskColor = sampleStatus(m.sampleSize.riskReports) === 'ok' ? bucketColor(m.risk.honestyRate, ACTIVITY_THRESHOLDS.risk) : 'subtle';
@@ -8360,7 +7985,7 @@ function WorkstreamDifficultyConfig({ projects, onProjectUpdate, onClose }) {
 
 function PICDetailModal({ metrics, onClose }) {
   const m = metrics;
-  const dCount = m.sampleSize.actions + m.sampleSize.tasks;
+  const dCount = deliverySample(m);
   const deliveryColor = sampleStatus(dCount) === 'ok' ? bucketColor(m.delivery.weightedRate, ACTIVITY_THRESHOLDS.delivery) : 'subtle';
   const cadenceColor = m.cadence.activeTasks > 0 ? bucketColor(m.cadence.avgDaysSinceUpdate, ACTIVITY_THRESHOLDS.cadence, { inverted: true }) : 'subtle';
   const riskColor = sampleStatus(m.sampleSize.riskReports) === 'ok' ? bucketColor(m.risk.honestyRate, ACTIVITY_THRESHOLDS.risk) : 'subtle';
@@ -8541,6 +8166,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onO
         </div>
         <div style={{ fontSize: 12, color: TOK.muted, marginTop: 4, lineHeight: 1.5, maxWidth: 720 }}>
           Read-only coaching view — surfaces who's delivering, who's communicating, and who may need support. Not a performance score. Calibrate thresholds after 4-8 weeks of data.
+          {' '}On time = handed in by the due date (submit date when it went for approval); tasks waiting for approval and tasks closed before approvals existed are not rated. Only tasks with a PIC count. Trend arrows compare with the previous period of the same length, using today's statuses (approximate).
         </div>
       </div>
 
@@ -8599,7 +8225,7 @@ function ActivityDashboardView({ projects, onProjectUpdate, isOwner = false, onO
             {priorities.map((p) => {
               const reasons = [];
               const dRate = p.metrics.delivery.weightedRate ?? p.metrics.delivery.rate;
-              if (sampleStatus(p.metrics.sampleSize.actions) === 'ok' && bucketColor(dRate, ACTIVITY_THRESHOLDS.delivery) === 'red') {
+              if (sampleStatus(deliverySample(p.metrics)) === 'ok' && bucketColor(dRate, ACTIVITY_THRESHOLDS.delivery) === 'red') {
                 reasons.push(`delivery ${dRate}%`);
               }
               if (p.metrics.cadence.staleTasks > 0) {
