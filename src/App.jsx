@@ -47,7 +47,7 @@ import { minutesDefaults } from './minutesDefaults.js';
 import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
-import { TOK, NAV, FONT_STACK } from './theme.js';
+import { TOK, NAV, FONT_STACK, FONT_NUM } from './theme.js';
 import { navModel, isProjectView, viewAfterProjectClick, pageTitle } from './navModel.js';
 import AppSidebar from './components/AppSidebar.jsx';
 import TopBar from './components/TopBar.jsx';
@@ -12780,13 +12780,13 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                   onMouseLeave={(e) => { if (selectedPic !== r.id) e.currentTarget.style.background = 'transparent'; }}
                 >
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</div>
-                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.doneFg, fontWeight: 500 }}>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.doneFg, fontWeight: 500, fontFamily: FONT_NUM }}>
                     {Math.round(r.earned * 100) / 100}
                   </div>
-                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.ink }}>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.ink, fontFamily: FONT_NUM }}>
                     {Math.round(r.projected * 100) / 100}
                   </div>
-                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.muted }}>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: TOK.muted, fontFamily: FONT_NUM }}>
                     {Math.round(r.pct * 10) / 10}%
                   </div>
                   <div style={{ textAlign: 'right' }}>
@@ -12848,7 +12848,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
                                   {e.credited ? '✓ ' : '○ '}{e.taskName}
                                   {' '}<span style={{ fontSize: 10, color: TOK.subtle }}>({Math.round(e.sharePct * 10) / 10}%)</span>
                                 </span>
-                                <span style={{ color: e.credited ? TOK.doneFg : TOK.subtle, fontVariantNumeric: 'tabular-nums' }}>
+                                <span style={{ color: e.credited ? TOK.doneFg : TOK.subtle, fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' }}>
                                   {Math.round(e.projected * 100) / 100} cp
                                 </span>
                               </div>
@@ -12907,7 +12907,7 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
     copyPlainText(toTsv(t.header, t.rows), showToast);
   };
   const th = { padding: '8px 10px', fontSize: 11, fontWeight: 500, color: TOK.muted, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid ' + TOK.line, background: TOK.bg };
-  const td = { padding: '7px 10px', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid ' + TOK.line, fontVariantNumeric: 'tabular-nums' };
+  const td = { padding: '7px 10px', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: '1px solid ' + TOK.line, fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' };
   return (
     <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 8, marginTop: 16, padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -12941,7 +12941,7 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
           <tbody>
             {rowsOf.map((r) => (
               <tr key={r.id}>
-                <td style={{ ...td, textAlign: 'left', fontWeight: 500, position: 'sticky', left: 0, background: TOK.surface }}>{r.name}{r.closed ? ' 🔒' : ''}</td>
+                <td style={{ ...td, fontFamily: FONT_STACK, textAlign: 'left', fontWeight: 500, position: 'sticky', left: 0, background: TOK.surface }}>{r.name}{r.closed ? ' 🔒' : ''}</td>
                 {colsOf.map((c) => {
                   const k = keyOf(r, c);
                   const cell = m.cell(k.personId, k.pid);
@@ -12958,7 +12958,7 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
               </tr>
             ))}
             <tr>
-              <td style={{ ...td, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: TOK.surface }}>Total</td>
+              <td style={{ ...td, fontFamily: FONT_STACK, textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: TOK.surface }}>Total</td>
               {colsOf.map((c) => <td key={c.id} style={{ ...td, fontWeight: 500 }}>{cellText(c.total, opts)}</td>)}
               <td style={{ ...td, fontWeight: 600 }}>{cellText(m.total, opts)}</td>
             </tr>
@@ -12979,8 +12979,8 @@ function EffortReportSection({ report, period, thisYear, showToast }) {
             <tbody>
               {selCell.rows.map((x, i) => (
                 <tr key={(x.taskId || 'lead') + i}>
-                  <td style={{ ...td, textAlign: 'left', whiteSpace: 'normal' }}>{x.taskName}{x.open ? <span style={{ color: TOK.subtle }}> (open)</span> : null}</td>
-                  <td style={{ ...td, textAlign: 'left', whiteSpace: 'normal', color: TOK.muted }}>{x.lead ? 'Project lead' : `${x.programName} › ${x.workstreamName}`}</td>
+                  <td style={{ ...td, fontFamily: FONT_STACK, textAlign: 'left', whiteSpace: 'normal' }}>{x.taskName}{x.open ? <span style={{ color: TOK.subtle }}> (open)</span> : null}</td>
+                  <td style={{ ...td, fontFamily: FONT_STACK, textAlign: 'left', whiteSpace: 'normal', color: TOK.muted }}>{x.lead ? 'Project lead' : `${x.programName} › ${x.workstreamName}`}</td>
                   <td style={td}>{x.closedOn ? fmtDate(x.closedOn) : '—'}</td>
                   <td style={{ ...td, color: x.timing === 'late' ? TOK.overdueFg : TOK.muted }}>{x.timing ? TIMING_LABEL[x.timing] || x.timing : '—'}</td>
                   <td style={td}>{x.lead ? '—' : `${x.share}%`}</td>

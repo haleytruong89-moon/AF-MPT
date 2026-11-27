@@ -1,6 +1,6 @@
 // One-row top bar + project tabs of the navigation shell (spec 2026-11-27). Presentational.
 import { Menu, Search, HelpCircle, MoreHorizontal, AlertTriangle } from 'lucide-react';
-import { TOK, FONT_STACK } from '../theme.js';
+import { TOK, FONT_STACK, FONT_NUM } from '../theme.js';
 
 const iconBtn = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, height: 32, minWidth: 32, padding: '0 8px',
@@ -23,7 +23,7 @@ export default function TopBar({ title = '', project = null, roleSummary = null,
           }}>Your role: {roleSummary.label}</span>
         )}
         {progress && (
-          <span style={{ fontSize: 12, color: TOK.muted, display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none', fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 12, color: TOK.muted, display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none', fontFamily: FONT_NUM, fontVariantNumeric: 'tabular-nums' }}>
             <span><span style={{ color: TOK.accent, fontWeight: 600, fontSize: 13 }}>{progress.pct}%</span> · {progress.done}/{progress.total} complete</span>
             {progress.overdue > 0 && <span style={{ color: TOK.overdueFg, display: 'inline-flex', alignItems: 'center', gap: 3 }}><AlertTriangle size={12} aria-hidden="true" /> {progress.overdue} overdue</span>}
           </span>
@@ -52,7 +52,7 @@ export default function TopBar({ title = '', project = null, roleSummary = null,
               display: 'inline-flex', alignItems: 'center', gap: 6,
             }}>
               {t.label}
-              {t.count > 0 && <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 400 }}>{t.count}</span>}
+              {t.count > 0 && <span style={{ fontSize: 11, color: TOK.muted, fontWeight: 400, fontFamily: FONT_NUM }}>{t.count}</span>}
               {t.badge > 0 && <span title={`${t.badge} pending approval${t.badge === 1 ? '' : 's'}`} style={{ padding: '0 6px', borderRadius: 999, background: TOK.inprogFg, color: '#fff', fontSize: 10, fontWeight: 600, lineHeight: '15px' }}>{t.badge}</span>}
             </button>
           ))}
