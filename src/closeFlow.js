@@ -126,6 +126,8 @@ function histEntry({ cr, status, me, now, reason = null, before, after, prefix =
     outcome: cr.outcome ?? null,
     requestedByUid: cr.requestedByUid ?? null,
     approverUid: cr.approverUid ?? null,
+    // Audit 27/11 (Q3 A): when it was handed in, for on-time in Coaching.
+    submittedAt: cr.submittedAt ?? null,
     status,
     decidedByUid: me.uid,
     decidedBy: me.name ?? null,
