@@ -5,7 +5,8 @@ import {
   Clock, AlertTriangle, CheckCircle2, Circle, PlayCircle,
   MessageSquare, Search, FolderPlus, FileDown,
   FileUp, Activity, ArrowRightLeft, Info, RefreshCw, UserCircle,
-  Move, FileText, History, Grip, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon
+  Move, FileText, History, Grip, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon,
+  AlertCircle, BarChart3, ClipboardList, Compass, Hourglass, Lock, Pin, Send, TrendingUp, Unlock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -7116,8 +7117,8 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
       <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
         {/* HOD 25/11 Q2: one muted line for non-Owners (they cannot act on the pool). */}
         {!isOwner && typeof project.creditPoints === 'number' && (
-          <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 8 }}>
-            {weightsLocked ? '🔒' : '🔓'} Credit pool: {project.creditPoints} cp · Year {project.creditYear ?? new Date().getFullYear()}
+          <div style={{ fontSize: 11.5, color: TOK.muted, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+            {weightsLocked ? <Lock size={13} /> : <Unlock size={13} />} Credit pool: {project.creditPoints} cp · Year {project.creditYear ?? new Date().getFullYear()}
           </div>
         )}
         {isOwner && (
@@ -7128,8 +7129,8 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
             fontSize: 12,
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontWeight: 500, color: weightsLocked ? TOK.healthRed : TOK.programFg }}>
-                {weightsLocked ? '🔒' : '🔓'} Credit pool: {project.creditPoints ?? DEFAULT_CREDIT_POINTS} cp · Year {project.creditYear ?? new Date().getFullYear()}
+              <span style={{ fontWeight: 500, color: weightsLocked ? TOK.healthRed : TOK.programFg, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {weightsLocked ? <Lock size={13} /> : <Unlock size={13} />} Credit pool: {project.creditPoints ?? DEFAULT_CREDIT_POINTS} cp · Year {project.creditYear ?? new Date().getFullYear()}
               </span>
               <span style={{ flex: 1, color: TOK.muted }}>
                 {weightsLocked
@@ -7146,7 +7147,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
               <span>Allocated: <strong style={{ color: TOK.ink }}>{Math.round(creditInfo.result.programPoolCp * 10) / 10} cp</strong></span>
               <span>Earned so far: <strong style={{ color: TOK.healthGreen }}>{Math.round(creditInfo.workspaceEarned * 10) / 10} cp</strong> <span style={{ opacity: 0.7 }}>(only Completed tasks)</span></span>
               {creditInfo.result.unallocatedCp > 0.05 && (
-                <span style={{ color: TOK.healthAmber }}>⚠ Unallocated: {Math.round(creditInfo.result.unallocatedCp * 10) / 10} cp{creditInfo.result.noPicTasks ? ` (${creditInfo.result.noPicTasks} task${creditInfo.result.noPicTasks === 1 ? '' : 's'} without a PIC)` : ' (no task yet)'}</span>
+                <span style={{ color: TOK.healthAmber, display: 'inline-flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={13} /> Unallocated: {Math.round(creditInfo.result.unallocatedCp * 10) / 10} cp{creditInfo.result.noPicTasks ? ` (${creditInfo.result.noPicTasks} task${creditInfo.result.noPicTasks === 1 ? '' : 's'} without a PIC)` : ' (no task yet)'}</span>
               )}
               {(() => {
                 const pgs = project.programs || [];
@@ -8641,7 +8642,7 @@ function MyWorkSection({ icon, title, count, subtitle, defaultOpen = false, head
           borderBottom: open ? '1px solid ' + TOK.line : 'none',
           background: open ? TOK.bg : TOK.surface,
         }}>
-        <span style={{ fontSize: 16, lineHeight: 1 }}>{icon}</span>
+        <span style={{ display: 'inline-flex', lineHeight: 1, color: TOK.muted }}>{icon}</span>
         <span style={{ fontSize: 14, fontWeight: 600, color: TOK.ink }}>{title}</span>
         {typeof count === 'number' && count > 0 && (
           <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: TOK.bg, color: TOK.muted, fontWeight: 500 }}>
@@ -8799,7 +8800,7 @@ function MyWorkManagerSection({ inbox, onTaskClick, onTaskUpdate, dialogs }) {
     return g.items.map((it) => row(it, `→ ${it.request.newDate ? fmtDateShort(it.request.newDate) : 'new date'} (Owner decides)`));
   };
   return (
-    <MyWorkSection icon="🧭" title={inbox.onlyLead ? 'My work stream' : 'My programs'} count={total} defaultOpen={total > 0}>
+    <MyWorkSection icon={<Compass size={15} />} title={inbox.onlyLead ? 'My work stream' : 'My programs'} count={total} defaultOpen={total > 0}>
       {total === 0 && <div style={{ fontSize: 12.5, color: TOK.muted }}>Nothing overdue, blocked or stale in what you manage.</div>}
       {total > 0 && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -10939,7 +10940,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
       {/* Attention section (only render if any sub-group is non-empty) */}
       {attentionCount > 0 && (
         <MyWorkSection
-          icon="⚠"
+          icon={<AlertTriangle size={15} />}
           title="RAID items needing my attention"
           count={attentionCount}
           defaultOpen={true}>
@@ -11001,7 +11002,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
       {/* Mitigation actions due this week */}
       {myRaid.dueThisWeek.length > 0 && (
         <MyWorkSection
-          icon="📅"
+          icon={<Calendar size={15} />}
           title="Mitigation actions due this week"
           count={myRaid.dueThisWeek.length}
           defaultOpen={true}>
@@ -11014,7 +11015,7 @@ function MyRaidSection({ myRaid, teamMembers, onNavigateRaid }) {
       {/* All RAID items I own — collapsed by default */}
       {myRaid.owned.length > 0 && (
         <MyWorkSection
-          icon="📋"
+          icon={<ClipboardList size={15} />}
           title="All RAID items I own"
           count={myRaid.owned.length}
           defaultOpen={false}>
@@ -11629,13 +11630,13 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
   const totalProjected = r1(credit.reduce((s, c) => s + c.projected, 0));
   const totalEarned = r1(credit.reduce((s, c) => s + c.earned, 0));
   return (
-    <MyWorkSection icon="📈" title="My record" count={closed.rows.length} defaultOpen={false}>
+    <MyWorkSection icon={<TrendingUp size={15} />} title="My record" count={closed.rows.length} defaultOpen={false}>
       <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 10 }}>
         Your record is visible to you and the Owner. Managers of a task also see its credit split, and your managers see your on-time / late counts.
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <span style={{ fontSize: 12.5, fontWeight: 600 }}>✅ Closed by me</span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={14} />Closed by me</span>
         <select value={period} onChange={(e) => setPeriod(e.target.value)} style={sel} aria-label="Period">
           {PERIODS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
         </select>
@@ -11672,7 +11673,7 @@ function MyRecordSection({ projects, isMe, dirIndex, showToast, onTaskClick }) {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <span style={{ fontSize: 12.5, fontWeight: 600 }}>📊 My credit</span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}><BarChart3 size={14} />My credit</span>
         <select value={year} onChange={(e) => setYear(Number(e.target.value))} style={sel} aria-label="Credit year">
           {years.map((y) => <option key={y} value={y}>{y}</option>)}
         </select>
@@ -11950,7 +11951,7 @@ function MyWorkView({
       {Header}
 
       {approvals.needsMine.length > 0 && (
-        <MyWorkSection icon="⏳" title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
+        <MyWorkSection icon={<Hourglass size={15} />} title="Needs my approval" count={approvals.needsMine.length} defaultOpen>
           {approvals.needsMine.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="needs"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
@@ -11961,7 +11962,7 @@ function MyWorkView({
         <MyWorkManagerSection inbox={managerBox} onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
       )}
       {followUps.length > 0 && (
-        <MyWorkSection icon="📌" title="Project follow-ups" count={followUps.length} defaultOpen>
+        <MyWorkSection icon={<Pin size={15} />} title="Project follow-ups" count={followUps.length} defaultOpen>
           <div style={{ fontSize: 11, color: TOK.muted, marginBottom: 6 }}>Open actions past due in the projects you coordinate. Chase the PIC or update the action.</div>
           {followUps.map(({ project, action, lateDays }) => (
             <div key={project.id + ':' + action.id} role="button" tabIndex={0}
@@ -11977,7 +11978,7 @@ function MyWorkView({
         </MyWorkSection>
       )}
       {approvals.sent.length + deadlineSent.length + approvedSent.length > 0 && (
-        <MyWorkSection icon="📤" title="Sent for approval" count={approvals.sent.length + deadlineSent.length} defaultOpen>
+        <MyWorkSection icon={<Send size={15} />} title="Sent for approval" count={approvals.sent.length + deadlineSent.length} defaultOpen>
           {approvals.sent.map((it) => (
             <MyWorkApprovalRow key={it.project.id + ':' + it.task.id} item={it} mode="sent"
               onTaskClick={onTaskClick} onTaskUpdate={onTaskUpdate} dialogs={dialogs} />
@@ -12068,7 +12069,7 @@ function MyWorkView({
 
       {/* 🔴 Needs attention now */}
       <MyWorkSection
-        icon="🔴" title="Needs attention now"
+        icon={<AlertCircle size={15} color={TOK.overdueFg} />} title="Needs attention now"
         count={myWork.needsAttention.length}
         defaultOpen={myWork.needsAttention.length > 0}>
         {myWork.needsAttention.length === 0 && (
@@ -12234,7 +12235,7 @@ function MyWorkView({
 
       {/* ✅ Action items assigned to me */}
       <MyWorkSection
-        icon="✅" title="Action items assigned to me"
+        icon={<CheckCircle2 size={15} />} title="Action items assigned to me"
         count={counts.actions}
         defaultOpen={myWork.actionItems.today.length > 0}
         headerRight={
@@ -12319,7 +12320,7 @@ function MyWorkView({
 
       {/* 💬 Mentions */}
       <MyWorkSection
-        icon="💬" title="Mentions"
+        icon={<MessageSquare size={15} />} title="Mentions"
         count={myWork.allMentions.length}
         subtitle={myWork.unreadMentions.length > 0 ? `${myWork.unreadMentions.length} unread` : null}
         defaultOpen={myWork.unreadMentions.length > 0}>
@@ -12359,7 +12360,7 @@ function MyWorkView({
 
       {/* 📋 Tasks I own */}
       <MyWorkSection
-        icon="📋" title="My tasks"
+        icon={<ClipboardList size={15} />} title="My tasks"
         count={counts.owned}
         defaultOpen={myWork.tasksOwned.today.length + myWork.tasksOwned.week.length > 0}
         headerRight={
@@ -12389,7 +12390,7 @@ function MyWorkView({
 
       {/* 🤝 Tasks I contribute to */}
       <MyWorkSection
-        icon="🤝" title="Tasks I contribute to"
+        icon={<Users size={15} />} title="Tasks I contribute to"
         count={myWork.tasksContributing.length}
         defaultOpen={myWork.tasksContributing.length > 0 && myWork.tasksContributing.length <= 6}>
         {myWork.tasksContributing.length === 0 && (
@@ -12413,7 +12414,7 @@ function MyWorkView({
 
       {/* 🤔 Decisions awaiting input */}
       <MyWorkSection
-        icon="🤔" title="Decisions awaiting your input"
+        icon={<HelpCircle size={15} />} title="Decisions awaiting your input"
         count={myWork.decisions.length}
         defaultOpen={myWork.decisions.length > 0}>
         {myWork.decisions.length === 0 && (
@@ -12713,7 +12714,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
         {(yearClosed || snapLoading || (selectedYear === LIFETIME && closedYears.length > 0)) && (
           <div style={{ padding: '8px 12px', marginBottom: 12, background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 7, fontSize: 12, color: TOK.muted }}>
             {snapLoading ? 'Loading the frozen figures…'
-              : yearClosed ? <>🔒 Credit year {selectedYear} closed{yearDoc.closedAt ? ` on ${fmtDate(yearDoc.closedAt)}` : ''}{yearDoc.closedBy ? ` by ${yearDoc.closedBy}` : ''}. These are the frozen figures; later edits to {selectedYear} tasks do not change them.</>
+              : yearClosed ? <><Lock size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />Credit year {selectedYear} closed{yearDoc.closedAt ? ` on ${fmtDate(yearDoc.closedAt)}` : ''}{yearDoc.closedBy ? ` by ${yearDoc.closedBy}` : ''}. These are the frozen figures; later edits to {selectedYear} tasks do not change them.</>
               : <>Lifetime: {closedYears.slice().sort().join(', ')} from the frozen figures, other years live.</>}
           </div>
         )}
@@ -12721,7 +12722,7 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
         {unallocated.length > 0 && (
           <details style={{ padding: '8px 12px', marginBottom: 12, background: TOK.healthAmberBg, borderRadius: 7, fontSize: 12, color: TOK.ink }}>
             <summary style={{ cursor: 'pointer' }}>
-              ⚠ Unallocated: {Math.round(unallocated.reduce((s, u) => s + u.cp, 0) * 10) / 10} cp in {unallocated.length} project{unallocated.length === 1 ? '' : 's'} can't be earned yet ({unallocated.reduce((s, u) => s + u.noPic, 0)} tasks without a PIC, or no task yet)
+              <AlertTriangle size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />Unallocated: {Math.round(unallocated.reduce((s, u) => s + u.cp, 0) * 10) / 10} cp in {unallocated.length} project{unallocated.length === 1 ? '' : 's'} can't be earned yet ({unallocated.reduce((s, u) => s + u.noPic, 0)} tasks without a PIC, or no task yet)
             </summary>
             <div style={{ marginTop: 6, lineHeight: 1.6 }}>
               {unallocated.map((u) => (
@@ -14964,7 +14965,7 @@ export default function App() {
             borderBottom: '1px solid ' + (isOwner ? '#c8dcf0' : TOK.inprogFg),
             display: 'flex', alignItems: 'center', gap: 12,
           }}>
-            <span style={{ fontSize: 18 }}>{isOwner ? '📨' : '📋'}</span>
+            <FileText size={18} style={{ flex: 'none' }} />
             <div style={{ flex: 1, fontSize: 13, color: isOwner ? '#1f4e8c' : TOK.inprogFg }}>
               <strong>{isOwner ? 'Time to send the weekly digest' : 'Weekly briefing ready'}</strong>
               <span style={{ marginLeft: 8, opacity: 0.85 }}>
@@ -15059,7 +15060,7 @@ export default function App() {
               )}
               {project && isClosedProject(project) && !crossView && (
                 <div style={{ padding: '8px 16px', background: TOK.bg, borderBottom: '1px solid ' + TOK.line, fontSize: 12, color: TOK.muted, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span>🔒 This project is closed{project.closedAt ? ` (${fmtDate(project.closedAt)})` : ''}. It stays in credit and effort reports.</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Lock size={13} />This project is closed{project.closedAt ? ` (${fmtDate(project.closedAt)})` : ''}. It stays in credit and effort reports.</span>
                   {isOwner && !impersonatingAs && <Btn size="sm" variant="ghost" onClick={() => reopenProject(project.id)}>Reopen</Btn>}
                 </div>
               )}
@@ -16133,7 +16134,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
             background: weightsLocked ? TOK.healthRedBg : TOK.healthGreenBg,
             color: weightsLocked ? TOK.healthRed : TOK.healthGreen,
           }}>
-            {weightsLocked ? `🔒 Locked for ${creditYear}` : '🔓 Unlocked'}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>{weightsLocked ? <><Lock size={12} />Locked for {creditYear}</> : <><Unlock size={12} />Unlocked</>}</span>
           </span>
           <Btn size="sm" disabled={!isOwner} onClick={async () => {
             if (!isOwner) return;
