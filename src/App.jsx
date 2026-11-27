@@ -6,7 +6,7 @@ import {
   MessageSquare, Search, FolderPlus, FileDown,
   FileUp, Activity, ArrowRightLeft, Info, RefreshCw, UserCircle,
   Move, FileText, History, Grip, HelpCircle, BookOpen, Users, Maximize2, Link as LinkIcon,
-  AlertCircle, BarChart3, ClipboardList, Compass, Hourglass, Lock, Pin, Send, TrendingUp, Unlock
+  AlertCircle, BarChart3, ClipboardList, Compass, Hourglass, Lock, Pin, Send, TrendingUp, Unlock, Mail
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { SearchModal, useSearchHotkey } from './components/SearchModal';
@@ -49,6 +49,8 @@ import { coordinatorFollowUps } from './followUps.js';
 import { taskWithStatus } from './taskOps';
 import { isOverdueTask } from './taskStatus';
 import { TOK, NAV, FONT_STACK, FONT_NUM } from './theme.js';
+// Small inline icon in a text row (date, people, email).
+const ICON_INLINE = { verticalAlign: '-2px', marginRight: 4, flex: 'none' };
 import { navModel, isProjectView, viewAfterProjectClick, pageTitle } from './navModel.js';
 import AppSidebar from './components/AppSidebar.jsx';
 import TopBar from './components/TopBar.jsx';
@@ -1531,7 +1533,7 @@ function CopyHelperModal({ html, title, gmailUrl, onClose, attachmentName }) {
         <Btn size="sm" onClick={selectAllContent}>Re-select all</Btn>
         <Btn size="sm" onClick={tryCopy}>📋 Try auto-copy</Btn>
         {gmailUrl && (
-          <Btn size="sm" variant="primary" onClick={copyAndOpenGmail}>📧 Open Gmail</Btn>
+          <Btn size="sm" variant="primary" onClick={copyAndOpenGmail}><Mail size={13} style={ICON_INLINE} />Open Gmail</Btn>
         )}
         {copyState === 'success' && (
           <span style={{ fontSize: 12, color: TOK.healthGreen, fontWeight: 500 }}>✓ Copied — paste in Gmail with Ctrl+V</span>
@@ -3982,8 +3984,8 @@ function DecisionRowCompact({ decision, onEdit, onDelete, teamMembers }) {
         }}>{FOLLOWUP_LABEL[decision.followUpStatus]}</span>
       </div>
       <div style={{ display: 'flex', gap: 8, fontSize: 10.5, color: TOK.muted, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span>📅 {fmtDateShort(decision.date)}</span>
-        <span>👥 {(decision.decidedBy || []).join(', ') || '—'}</span>
+        <span><Calendar size={13} style={ICON_INLINE} />{fmtDateShort(decision.date)}</span>
+        <span><Users size={13} style={ICON_INLINE} />{(decision.decidedBy || []).join(', ') || '—'}</span>
         {decision.meetingRef && <span style={{ background: TOK.bg, padding: '0 5px', borderRadius: 3, fontSize: 10 }}>{decision.meetingRef}</span>}
         <div style={{ flex: 1 }} />
         {onEdit && (
@@ -4025,8 +4027,8 @@ function ActionRowCompact({ action, onEdit, onDelete, teamMembers, deleteMode = 
         </div>
       )}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', fontSize: 10.5, color: TOK.muted }}>
-        <span>👤 <strong>{action.pic || '—'}</strong></span>
-        {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}>📅 {fmtDateShort(action.dueDate)}</span>}
+        <span><UserCircle size={13} style={ICON_INLINE} /><strong>{action.pic || '—'}</strong></span>
+        {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}><Calendar size={13} style={ICON_INLINE} />{fmtDateShort(action.dueDate)}</span>}
         <span style={{
           fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 999,
           color: pc.fg, background: pc.bg,
@@ -4081,8 +4083,8 @@ function DecisionEntry({ decision, project, onEdit, onDelete, teamMembers }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 12, fontSize: 11, color: TOK.muted, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span>📅 {fmtDate(decision.date)}</span>
-          <span>👥 {(decision.decidedBy || []).join(', ') || '—'}</span>
+          <span><Calendar size={13} style={ICON_INLINE} />{fmtDate(decision.date)}</span>
+          <span><Users size={13} style={ICON_INLINE} />{(decision.decidedBy || []).join(', ') || '—'}</span>
           {related.length > 0 && <span>🎯 {related.length} task{related.length === 1 ? '' : 's'}</span>}
           {decision.meetingRef && <span style={{ background: TOK.bg, padding: '1px 6px', borderRadius: 4 }}>{decision.meetingRef}</span>}
           <span style={{ marginLeft: 'auto', fontSize: 10, color: TOK.subtle }}>by {decision.author}</span>
@@ -4655,7 +4657,7 @@ function ActionItemRow({ action, project, onEdit, onDelete, onSelect, selected, 
         </div>
         <div style={{ display: 'flex', gap: 8, fontSize: 11, color: TOK.muted, flexWrap: 'wrap' }}>
           {related && <span>{related.program.name} › {related.workstream.name} › {related.task.name}</span>}
-          {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}>📅 {fmtDateShort(action.dueDate)}</span>}
+          {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}><Calendar size={13} style={ICON_INLINE} />{fmtDateShort(action.dueDate)}</span>}
         </div>
       </div>
       <span style={{
@@ -5035,7 +5037,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
           )}
           <div style={{ flex: 1 }} />
           <Btn size="sm" onClick={() => exportExcel()} disabled={targetActions.length === 0}><FileSpreadsheet size={11} /> Excel template</Btn>
-          <Btn size="sm" onClick={emailAllPics} disabled={targetActions.length === 0}>📧 Email PICs</Btn>
+          <Btn size="sm" onClick={emailAllPics} disabled={targetActions.length === 0}><Mail size={13} style={ICON_INLINE} />Email PICs</Btn>
         </div>
 
         {/* v30.C — RAID mitigations surfaced from the register, shown above the actions list */}
@@ -5113,7 +5115,7 @@ function ActionItemsView({ project, onProjectUpdate, teamMembers, author, dialog
                     {hasEmail && <span style={{ fontSize: 11, color: TOK.subtle }}>{member.email}</span>}
                     <div style={{ flex: 1 }} />
                     <Btn size="sm" variant="ghost" onClick={() => exportExcel(items)}><FileSpreadsheet size={11} /> Excel</Btn>
-                    <Btn size="sm" variant="ghost" onClick={() => emailPic(pic, items)} disabled={!hasEmail} title={hasEmail ? `Email ${pic}` : 'No email on file'}>📧 Email</Btn>
+                    <Btn size="sm" variant="ghost" onClick={() => emailPic(pic, items)} disabled={!hasEmail} title={hasEmail ? `Email ${pic}` : 'No email on file'}><Mail size={13} style={ICON_INLINE} />Email</Btn>
                   </div>
                   {items.map((a) => (
                     <ActionItemRow key={a.id} action={a} project={project} teamMembers={teamMembers} deleteMode={actionMode(a)}
@@ -5464,8 +5466,8 @@ function AggregationView({ projects, currentProjectId, teamMembers, dialogs, sho
                   </div>
                   <div style={{ display: 'flex', gap: 12, fontSize: 11, color: TOK.muted, alignItems: 'center', flexWrap: 'wrap' }}>
                     <span style={{ background: TOK.projectBg, color: TOK.projectFg, padding: '1px 6px', borderRadius: 4, fontSize: 10.5, fontWeight: 500 }}>{d._project.name}</span>
-                    <span>📅 {fmtDate(d.date)}</span>
-                    <span>👥 {(d.decidedBy || []).join(', ') || '—'}</span>
+                    <span><Calendar size={13} style={ICON_INLINE} />{fmtDate(d.date)}</span>
+                    <span><Users size={13} style={ICON_INLINE} />{(d.decidedBy || []).join(', ') || '—'}</span>
                     {d.meetingRef && <span style={{ background: TOK.bg, padding: '1px 6px', borderRadius: 4 }}>{d.meetingRef}</span>}
                     <span style={{ marginLeft: 'auto', fontSize: 10, color: TOK.subtle }}>by {d.author}</span>
                   </div>
@@ -5508,8 +5510,8 @@ function AggregationView({ projects, currentProjectId, teamMembers, dialogs, sho
                     <div style={{ display: 'flex', gap: 8, fontSize: 11, color: TOK.muted, flexWrap: 'wrap', alignItems: 'center' }}>
                       <span style={{ background: TOK.projectBg, color: TOK.projectFg, padding: '1px 6px', borderRadius: 4, fontSize: 10.5, fontWeight: 500 }}>{a._project.name}</span>
                       {related && <span>{related.program.name} › {related.task.name}</span>}
-                      <span>👤 <strong>{a.pic || '—'}</strong></span>
-                      {a.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}>📅 {fmtDateShort(a.dueDate)}</span>}
+                      <span><UserCircle size={13} style={ICON_INLINE} /><strong>{a.pic || '—'}</strong></span>
+                      {a.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted }}><Calendar size={13} style={ICON_INLINE} />{fmtDateShort(a.dueDate)}</span>}
                     </div>
                   </div>
                   <span style={{
@@ -5682,7 +5684,7 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                     <More n={overdueShown.more} />
                   </div>
                   <div style={{ background: TOK.surface, border: '1px solid ' + TOK.line, borderRadius: 10, padding: 16 }}>
-                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12 }}>📅 Due in the next 7 days ({dueSoon.length})</h3>
+                    <h3 style={{ margin: 0, fontSize: 15, fontWeight: 500, marginBottom: 12 }}><Calendar size={13} style={ICON_INLINE} />Due in the next 7 days ({dueSoon.length})</h3>
                     {dueSoon.length === 0 && <div style={{ fontSize: 13, color: TOK.subtle, padding: '8px 0' }}>Nothing due this week.</div>}
                     {dueShown.shown.map((x) => taskRow(x, 'ds'))}
                     <More n={dueShown.more} />
@@ -5737,7 +5739,7 @@ function MeetingMode({ projects, onExit, dateFrom, dateTo, currentProjectId = nu
                       }}>
                         <span style={{ flex: 1, fontWeight: 500 }}>{a.title}</span>
                         <span style={{ fontSize: 12, color: TOK.muted }}>{a.pic}</span>
-                        {a.dueDate && <span style={{ fontSize: 12, color: overdue ? TOK.overdueFg : TOK.muted }}>📅 {fmtDateShort(a.dueDate)}</span>}
+                        {a.dueDate && <span style={{ fontSize: 12, color: overdue ? TOK.overdueFg : TOK.muted }}><Calendar size={13} style={ICON_INLINE} />{fmtDateShort(a.dueDate)}</span>}
                         <span style={{
                           fontSize: 11, fontWeight: 500, padding: '2px 7px', borderRadius: 999,
                           color: priorityColor(a.priority).fg, background: priorityColor(a.priority).bg,
@@ -6314,7 +6316,7 @@ function MeetingExportDialog({ projects, onClose, dialogs, showToast, author, te
             <Btn onClick={copyToClipboard}>📋 Copy Markdown</Btn>
             <Btn onClick={copyAsRich}>✨ Copy rich text</Btn>
             <Btn onClick={downloadMarkdown}><Download size={11} /> Download .md</Btn>
-            <Btn variant="primary" onClick={openInEmail}>📧 Open in Gmail</Btn>
+            <Btn variant="primary" onClick={openInEmail}><Mail size={13} style={ICON_INLINE} />Open in Gmail</Btn>
           </div>
           <div style={{ marginTop: 8, fontSize: 11, color: TOK.subtle, lineHeight: 1.5 }}>
             <strong>Open in Gmail:</strong> shows the formatted email — press <kbd style={{ padding: '0 4px', background: TOK.bg, border: '1px solid ' + TOK.lineStrong, borderRadius: 3, fontSize: 10 }}>Ctrl+C</kbd> to copy (content is auto-selected), then click "Open Gmail" and paste in the body with <kbd style={{ padding: '0 4px', background: TOK.bg, border: '1px solid ' + TOK.lineStrong, borderRadius: 3, fontSize: 10 }}>Ctrl+V</kbd>.
@@ -9142,7 +9144,7 @@ function ActionRowInline({ action, project, related, author, teamMembers, picSug
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
             <span>{project.name}</span>
             {related && <span>· {related.program.name} › {related.workstream.name} › {related.task.name}</span>}
-            {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>· 📅 {fmtDateShort(action.dueDate)}</span>}
+            {action.dueDate && <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>· <Calendar size={13} style={ICON_INLINE} />{fmtDateShort(action.dueDate)}</span>}
             {updates.length > 0 && <span>· 💬 {updates.length}</span>}
             {(action.subtasks || []).length > 0 && (
               <span>· ✓ {(action.subtasks || []).filter((s) => s.status === 'Done').length}/{(action.subtasks || []).length}</span>
@@ -9372,7 +9374,7 @@ function MitigationRowInline({
             <span>{breadcrumbText}</span>
             {mitigation.due && (
               <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>
-                · 📅 {fmtDateShort(mitigation.due)}
+                · <Calendar size={13} style={ICON_INLINE} />{fmtDateShort(mitigation.due)}
               </span>
             )}
           </div>
@@ -9449,7 +9451,7 @@ function SubtaskMyWorkRow({ subtask, parentAction, project, teamMembers, onMarkD
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap', fontSize: 11, color: TOK.muted }}>
           <span>Sub of: "<span style={{ color: TOK.ink }}>{parentAction.title}</span>"</span>
           <span>· {project.name}</span>
-          {parentAction.dueDate && <span>· 📅 {fmtDateShort(parentAction.dueDate)} (parent due)</span>}
+          {parentAction.dueDate && <span>· <Calendar size={13} style={ICON_INLINE} />{fmtDateShort(parentAction.dueDate)} (parent due)</span>}
         </div>
       </div>
       {onMarkDone ? (
@@ -9928,7 +9930,7 @@ function MitigationActionRow({ action, currentUser, teamMembers, onUpdate, onRem
             <span>@{action.pic || '—'}</span>
             {action.due && (
               <span style={{ color: overdue ? TOK.overdueFg : TOK.muted, fontWeight: overdue ? 500 : 400 }}>
-                · 📅 {fmtDateShort(action.due)} {overdue ? '(overdue)' : ''}
+                · <Calendar size={13} style={ICON_INLINE} />{fmtDateShort(action.due)} {overdue ? '(overdue)' : ''}
               </span>
             )}
             {comments.length > 0 && <span>· 💬 {comments.length}</span>}
@@ -13072,7 +13074,7 @@ function BriefingDialog({ projects, isOwnerMode = false, ownerName = null, teamM
         <Btn size="sm" onClick={copyMarkdown}>Copy Markdown</Btn>
         <Btn size="sm" onClick={copyRich}>✨ Copy rich text</Btn>
         <Btn size="sm" onClick={download}>Download .md</Btn>
-        <Btn size="sm" variant="primary" onClick={openGmail}>📧 Open in Gmail</Btn>
+        <Btn size="sm" variant="primary" onClick={openGmail}><Mail size={13} style={ICON_INLINE} />Open in Gmail</Btn>
       </div>
     </Modal>
   );
@@ -16178,7 +16180,7 @@ function ProjectSettingsModal({ project, directory = [], onClose, onSave, onClos
         background: TOK.bg, border: '1px solid ' + TOK.line, borderRadius: 8,
         padding: 12, marginBottom: 12, fontSize: 12, color: TOK.ink, lineHeight: 1.55,
       }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>👥 How members work in this project</div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}><Users size={13} style={ICON_INLINE} />How members work in this project</div>
         <div style={{ marginBottom: 6 }}>
           To grant <strong>access</strong>, click <strong>Manage Members</strong> in the top toolbar (RBAC). Anyone with access automatically appears in PIC autocomplete elsewhere — you don't need to re-add them here.
         </div>
