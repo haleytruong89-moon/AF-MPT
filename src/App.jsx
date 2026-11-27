@@ -16,7 +16,7 @@ import { DirectoryModal } from './components/DirectoryModal';
 import Walkthrough from './components/Walkthrough/Walkthrough';
 import { useAuth } from './auth';
 import { useUserDirectory, useWorkspaceDirectory } from './data';
-import { buildDirectoryIndex, canonicalPerson, pickerPeople, groupByPerson, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
+import { buildDirectoryIndex, canonicalPerson, pickerPeople, personKey, personLabel, findMember, meKey, isMeFor } from './directory';
 import { validateWebhookUrl, buildTestText, postToChat, WEBHOOK_PREFIX, buildActionCard, getNotifyPref, setNotifyPref, buildNewActionCard, buildCloseSubmittedCard, buildCloseRejectedCard, buildCloseReassignedCard, buildBlockerCard } from './chatNotify';
 import { transferCandidates, OWNER_WRITE_FLAG, transferLocked, TRANSFER_LOCKED_MESSAGE } from './ownership';
 import { UNKNOWN_PERSON, nextSaveState, hasUnsavedWork, setUnsavedWorkSignal, failedRestores, FORCE_WRITE_FLAG, bannerGroups, createKeyedQueue, loadFailures, saveChip, retryablePids, manualRetryPids, activityStateKey, isActivityKey, projectIdOfKey, shouldReloadOnFocus } from './persistence';
@@ -25,6 +25,7 @@ import { rejectedCloseItem } from './myWorkItems.js';
 import { ownerQueue, QUEUE_LABEL } from './ownerQueue.js';
 import { managerInbox, approvalEvidence, STALE_DAYS, lastTouch } from './managerInbox.js';
 import { personDelivery } from './delivery.js';
+import { DEFAULT_CREDIT_POINTS, weightsOverflow, taskCounts, effectiveWeights as getEffectiveWeights, defaultCreditShares as computeDefaultCreditShares, computeProjectCredits, programHasWork, wsHasWork } from './creditCalc.js';
 import { LIFETIME, vnYear, creditRowsForPeriod, creditPeriodYears } from './creditYears.js';
 import { isClosedProject, closePatch, reopenPatch, nextYearName, copyStructure } from './projectLifecycle.js';
 import { effortMatrix, cellText, effortTable } from './effortReport.js';
@@ -126,7 +127,6 @@ const DECISION_REVIEW_DAYS = 30;
 const BRIEFING_DEFAULT_WINDOW_DAYS = 7;
 
 // ─── Credit allocation (v22+) ───
-const DEFAULT_CREDIT_POINTS = 100;
 
 // Default company departments — seeded into contributorRegistry for new projects.
 // Owner can add/remove via Project Settings → Contributor registry.
@@ -721,157 +721,7 @@ function sortTasksByStart(tasks) {
   });
 }
 
-// ─── Credit allocation helpers (v22) ───
-
-// Equal split: returns array of N items each = 100/N (rounded to 2 decimals).
-// Used as fallback when sibling weights are not explicitly set.
-function equalSplit(count) {
-  if (count <= 0) return [];
-  const each = Math.round((100 / count) * 100) / 100;
-  return new Array(count).fill(each);
-}
-
-// Resolve effective % for each sibling. If all have explicit numeric weight,
-// normalize to 100. Otherwise fall back to equalSplit(N).
-function getEffectiveWeights(siblings) {
-  if (!siblings || siblings.length === 0) return [];
-  const allHave = siblings.every((s) => typeof s.weight === 'number' && !isNaN(s.weight) && s.weight >= 0);
-  if (!allHave) return equalSplit(siblings.length);
-  const sum = siblings.reduce((acc, s) => acc + s.weight, 0);
-  if (sum <= 0) return equalSplit(siblings.length);
-  return siblings.map((s) => (s.weight / sum) * 100);
-}
-
-// Resolve a task's per-PIC share map. Always normalizes to sum=100 (or {} if no PIC).
-// If task.creditShares set explicitly, use it; otherwise default = 100% to primary PIC.
-function getEffectiveCreditShares(task) {
-  if (!task) return {};
-  const explicit = task.creditShares;
-  if (explicit && typeof explicit === 'object' && Object.keys(explicit).length > 0) {
-    const sum = Object.values(explicit).reduce((a, b) => a + (Number(b) || 0), 0);
-    if (sum > 0) {
-      const out = {};
-      for (const [k, v] of Object.entries(explicit)) {
-        if (Number(v) > 0) out[k] = (Number(v) / sum) * 100;
-      }
-      return out;
-    }
-  }
-  if (task.pic) return { [task.pic]: 100 };
-  return {};
-}
-
-// Effort-based credit: only Completed tasks earn credit.
-function isTaskCredited(task) {
-  return !!task && task.status === 'Completed';
-}
-
-// ─── Credit allocation: rules + project-level computation (v23) ───
-
-// Default-share rules. Returns {[name]: %} or null if no rule applies.
-//   1 PIC + 0 contributors → primary 100%
-//   1 PIC + 1 contributor  → 70/30
-//   1 PIC + 2 contributors → 70/15/15
-//   1 PIC + 3+ contribs    → null (PM enters manually)
-function computeDefaultCreditShares(primaryPic, contributors) {
-  if (!primaryPic) return null;
-  const contribs = Array.isArray(contributors) ? contributors.filter(Boolean) : [];
-  if (contribs.length === 0) return { [primaryPic]: 100 };
-  if (contribs.length === 1) return { [primaryPic]: 70, [contribs[0]]: 30 };
-  if (contribs.length === 2) return { [primaryPic]: 70, [contribs[0]]: 15, [contribs[1]]: 15 };
-  return null;
-}
-
-// Per-project credit computation. Returns rich object:
-//   { totalCp, leadCp, leadName, leadSharePct, programPoolCp, perPic, breakdown }
-// Project lead (if set) gets `projectLeadShare`% extracted FIRST, awarded
-// proportional to overall completion. Remaining (100 - leadShare)% is split
-// among programs/workstreams/tasks via getEffectiveWeights.
-// `breakdown` includes every (task × pic) row plus a Project Lead pseudo-entry
-// (`isProjectLead: true`) — filter that out when summing per-program totals.
-function computeProjectCredits(project, dirIndex = null) {
-  const totalCp = (typeof project.creditPoints === 'number' && project.creditPoints >= 0)
-    ? project.creditPoints
-    : DEFAULT_CREDIT_POINTS;
-  const perPic = new Map();
-  const breakdown = [];
-
-  // Step 1: Project Lead (if set)
-  const leadName = (project.projectLead || '').trim();
-  const leadSharePct = (typeof project.projectLeadShare === 'number' && project.projectLeadShare >= 0 && project.projectLeadShare <= 100)
-    ? project.projectLeadShare
-    : (leadName ? 10 : 0);
-  const leadCp = leadName ? (totalCp * leadSharePct / 100) : 0;
-  if (leadName && leadCp > 0) {
-    const r = rollup(project);
-    const projectCompletionPct = (r.weighted / Math.max(r.total, 1)) * 100;
-    const leadActual = leadCp * (projectCompletionPct / 100);
-    // P1: perPic is keyed by canonical person id; `name` is the display name.
-    // With no dirIndex both are the raw lead name (legacy).
-    const leadId = personKey(dirIndex, leadName);
-    const leadLabel = personLabel(dirIndex, leadName);
-    if (!perPic.has(leadId)) perPic.set(leadId, { earned: 0, projected: 0, name: leadLabel });
-    const cur = perPic.get(leadId);
-    cur.earned += leadActual;
-    cur.projected += leadCp;
-    breakdown.push({
-      programId: null, programName: '— Project Lead —',
-      workstreamId: null, workstreamName: '',
-      taskId: null, taskName: `${leadName} (project lead, ${leadSharePct}%)`,
-      picName: leadLabel, picId: leadId, sharePct: 100, taskCp: leadCp,
-      projected: leadCp, actual: leadActual, credited: r.weighted >= r.total,
-      taskStatus: null, isProjectLead: true,
-    });
-  }
-
-  // Step 2: Programs/workstreams/tasks share remaining
-  const programPoolCp = totalCp - leadCp;
-  const programs = project.programs || [];
-  const programWeights = getEffectiveWeights(programs);
-
-  programs.forEach((pg, pgIdx) => {
-    const pgCp = programPoolCp * (programWeights[pgIdx] / 100);
-    const wss = pg.workstreams || [];
-    const wsWeights = getEffectiveWeights(wss);
-
-    wss.forEach((ws, wsIdx) => {
-      const wsCp = pgCp * (wsWeights[wsIdx] / 100);
-      const eligibleTasks = (ws.tasks || []).filter((t) => t.status !== 'Dropped');
-      const taskWeights = getEffectiveWeights(eligibleTasks);
-
-      eligibleTasks.forEach((t, tIdx) => {
-        const taskCp = wsCp * (taskWeights[tIdx] / 100);
-        const credited = isTaskCredited(t);
-        const shares = getEffectiveCreditShares(t);
-        // P1: with dirIndex, shares of one person's aliases are summed under one canonical id.
-        const people = dirIndex
-          ? groupByPerson(Object.keys(shares), dirIndex).map((g) => [g.id, g.name, g.values.reduce((s, v) => s + shares[v], 0)])
-          : Object.entries(shares).map(([picName, sharePct]) => [picName, picName, sharePct]);
-
-        for (const [picId, picName, sharePct] of people) {
-          const earned = taskCp * (sharePct / 100);
-          const projected = earned;
-          const actual = credited ? earned : 0;
-
-          breakdown.push({
-            programId: pg.id, programName: pg.name,
-            workstreamId: ws.id, workstreamName: ws.name,
-            taskId: t.id, taskName: t.name,
-            picName, picId, sharePct, taskCp, projected, actual, credited,
-            taskStatus: t.status, isProjectLead: false,
-          });
-
-          if (!perPic.has(picId)) perPic.set(picId, { earned: 0, projected: 0, name: picName });
-          const cur = perPic.get(picId);
-          cur.earned += actual;
-          cur.projected += projected;
-        }
-      });
-    });
-  });
-
-  return { totalCp, leadCp, leadName, leadSharePct, programPoolCp, perPic, breakdown };
-}
+// Credit allocation: src/creditCalc.js (audit 27/11, unit-tested).
 
 // v30 — Cross-project aggregation of everything relevant to `author`.
 // Pure read; no mutation. Called from MyWorkView via useMemo, and from
@@ -7516,10 +7366,10 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
   };
 
   // Pre-compute effective weights at each level
-  const programWeights = useMemo(() => getEffectiveWeights(project.programs || []), [project.programs]);
+  const programWeights = useMemo(() => getEffectiveWeights(project.programs || [], programHasWork), [project.programs]);
   const wsWeightsMap = useMemo(() => {
     const m = new Map();
-    for (const pg of (project.programs || [])) m.set(pg.id, getEffectiveWeights(pg.workstreams || []));
+    for (const pg of (project.programs || [])) m.set(pg.id, getEffectiveWeights(pg.workstreams || [], wsHasWork));
     return m;
   }, [project.programs]);
   const taskWeightsMap = useMemo(() => {
@@ -7676,7 +7526,7 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
               <span style={{ flex: 1, color: TOK.muted }}>
                 {weightsLocked
                   ? 'Weights are locked for this year. Owner can unlock in Project Settings.'
-                  : (isOwner ? 'Click ⚖ on any program/workstream/task to set explicit weights. Empty = equal split.' : 'Weights set by workspace owner.')}
+                  : (isOwner ? 'Click ⚖ on any program/workstream/task to set a weight. Not set = shares what is left equally; a program or work stream with no task gets nothing.' : 'Weights set by workspace owner.')}
               </span>
             </div>
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + (weightsLocked ? '#EDB8B8' : '#C0D9F0'), color: TOK.muted, display: 'flex', flexWrap: 'wrap', gap: 14 }}>
@@ -7687,6 +7537,16 @@ function OutlineView({ project, onProjectUpdate, getLatestProject, onTaskClick, 
               )}
               <span>Allocated: <strong style={{ color: TOK.ink }}>{Math.round(creditInfo.result.programPoolCp * 10) / 10} cp</strong></span>
               <span>Earned so far: <strong style={{ color: TOK.healthGreen }}>{Math.round(creditInfo.workspaceEarned * 10) / 10} cp</strong> <span style={{ opacity: 0.7 }}>(only Completed tasks)</span></span>
+              {creditInfo.result.unallocatedCp > 0.05 && (
+                <span style={{ color: TOK.healthAmber }}>⚠ Unallocated: {Math.round(creditInfo.result.unallocatedCp * 10) / 10} cp{creditInfo.result.noPicTasks ? ` (${creditInfo.result.noPicTasks} task${creditInfo.result.noPicTasks === 1 ? '' : 's'} without a PIC)` : ' (no task yet)'}</span>
+              )}
+              {(() => {
+                const pgs = project.programs || [];
+                const over = weightsOverflow(pgs, programHasWork)
+                  || pgs.some((pg) => weightsOverflow(pg.workstreams || [], wsHasWork)
+                    || (pg.workstreams || []).some((w) => weightsOverflow((w.tasks || []).filter(taskCounts))));
+                return over ? <span style={{ color: TOK.healthAmber }}>⚠ Some set weights add up to over 100%: they were scaled down and the items without a weight get 0.</span> : null;
+              })()}
               {isOwner && creditInfo.topPics.length > 0 && (
                 <span style={{ flex: 1, textAlign: 'right' }}>
                   Top: {creditInfo.topPics.map((p) => `${p.name} ${Math.round(p.projected * 10) / 10}`).join(' · ')}
@@ -13035,6 +12895,11 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
     if (!closedYears.length) return computeWorkspaceCredits(projects, LIFETIME, dirIndex);
     return mergeReports(allYears.map((y) => (closedYears.includes(y) ? snapCache[y] : computeWorkspaceCredits(projects, y, dirIndex))));
   }, [projects, selectedYear, dirIndex, closedYears, snapCache, allYears]);
+  // Audit 27/11: points of each pool nobody can earn today (tasks without a PIC, no task at all).
+  const unallocated = useMemo(() => Object.values(projects || {}).filter((p) => p && p.lifecycle !== 'closed').map((p) => {
+    const c = computeProjectCredits(p, dirIndex);
+    return { id: p.id, name: p.name, cp: c.unallocatedCp, noPic: c.noPicTasks, pool: c.totalCp };
+  }).filter((u) => u.cp > 0.05).sort((a, b) => b.cp - a.cp), [projects, dirIndex]);
   const yearDoc = selectedYear !== LIFETIME ? yearDocs[selectedYear] || null : null;
   const yearClosed = yearDoc?.status === 'closed';
 
@@ -13242,6 +13107,20 @@ function CreditReportView({ projects, isOwner, showToast, dialogs, author, authU
               : yearClosed ? <>🔒 Credit year {selectedYear} closed{yearDoc.closedAt ? ` on ${fmtDate(yearDoc.closedAt)}` : ''}{yearDoc.closedBy ? ` by ${yearDoc.closedBy}` : ''}. These are the frozen figures; later edits to {selectedYear} tasks do not change them.</>
               : <>Lifetime: {closedYears.slice().sort().join(', ')} from the frozen figures, other years live.</>}
           </div>
+        )}
+
+        {unallocated.length > 0 && (
+          <details style={{ padding: '8px 12px', marginBottom: 12, background: TOK.healthAmberBg, borderRadius: 7, fontSize: 12, color: TOK.ink }}>
+            <summary style={{ cursor: 'pointer' }}>
+              ⚠ Unallocated: {Math.round(unallocated.reduce((s, u) => s + u.cp, 0) * 10) / 10} cp in {unallocated.length} project{unallocated.length === 1 ? '' : 's'} can't be earned yet ({unallocated.reduce((s, u) => s + u.noPic, 0)} tasks without a PIC, or no task yet)
+            </summary>
+            <div style={{ marginTop: 6, lineHeight: 1.6 }}>
+              {unallocated.map((u) => (
+                <div key={u.id}>{u.name}: {Math.round(u.cp * 10) / 10} of {u.pool} cp{u.noPic ? ` · ${u.noPic} task${u.noPic === 1 ? '' : 's'} without a PIC` : ' · no task yet'}</div>
+              ))}
+              <div style={{ color: TOK.muted, marginTop: 4 }}>Assign a PIC to the tasks (or add tasks) and these points go to people. Programs and work streams with no task get no share.</div>
+            </div>
+          </details>
         )}
 
         {/* Summary cards */}
