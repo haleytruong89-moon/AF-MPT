@@ -43,3 +43,18 @@ describe('SmartOSC theme', () => {
     expect(ratio('#FFFFFF', TOK.overdueFg)).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe('no old palette left in the UI', () => {
+  it('TH-4 login, error screens, walkthrough and components use the tokens', async () => {
+    const fs = await import('fs');
+    const files = ['src/auth.tsx', 'src/main.tsx', 'src/components/Walkthrough/Walkthrough.jsx', 'src/components/GanttView.tsx',
+      'src/components/AppSidebar.jsx', 'src/components/TopBar.jsx', 'src/components/RootErrorBoundary.tsx'];
+    for (const f of files) {
+      const s = fs.readFileSync(f, 'utf8');
+      for (const old of ['Geist', '#F7F5EF', '#1A1A19', '#6E6C66', '#3B6D11', 'rgba(26,26,25']) expect(s.includes(old), `${f} has ${old}`).toBe(false);
+    }
+    const app = fs.readFileSync('src/App.jsx', 'utf8');
+    expect(app.includes('Geist')).toBe(false);
+    expect(/rgba\(59,\s*109,\s*17/.test(app), 'old green accent tint').toBe(false);
+  });
+});

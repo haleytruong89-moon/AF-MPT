@@ -10,6 +10,7 @@ import {
   forwardRef,
 } from 'react';
 import { useWalkthrough } from './useWalkthrough';
+import { TOK, FONT_STACK } from '../../theme.js';
 import { STEPS } from './steps';
 
 const OVERLAY_Z = 1500;
@@ -169,8 +170,8 @@ const Walkthrough = forwardRef(function Walkthrough(
             style={{
               background: '#fff', borderRadius: 12, padding: 24, width: 420, maxWidth: '90vw',
               boxShadow: '0 20px 50px rgba(0,0,0,0.35)',
-              fontFamily: '"Geist","Inter",ui-sans-serif,system-ui,sans-serif',
-              color: '#111',
+              fontFamily: FONT_STACK,
+              color: TOK.ink,
             }}
           >
             <ProgressBar current={stepIndex + 1} total={totalSteps} />
@@ -263,7 +264,7 @@ function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, o
           position: 'fixed',
           top: rect.top - 4, left: rect.left - 4,
           width: rect.width + 8, height: rect.height + 8,
-          border: '2px solid #fbbf24', borderRadius: 6,
+          border: '2px solid ' + TOK.accent, borderRadius: 6,
           pointerEvents: 'none', zIndex: TOOLTIP_Z,
         }}
       />
@@ -276,8 +277,8 @@ function SpotlightOverlay({ rect, placement, tip, step, progressLabel, onNext, o
           width: TOOLTIP_W, padding: 14, background: '#fff', borderRadius: 10,
           boxShadow: '0 12px 32px rgba(0,0,0,0.4)', zIndex: TOOLTIP_Z,
           pointerEvents: 'auto',
-          fontFamily: '"Geist","Inter",ui-sans-serif,system-ui,sans-serif',
-          color: '#111',
+          fontFamily: FONT_STACK,
+          color: TOK.ink,
         }}
       >
         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{progressLabel}</div>

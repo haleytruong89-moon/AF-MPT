@@ -8,6 +8,7 @@ import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import { auth, googleProvider, ALLOWED_DOMAIN } from './firebase';
 import { upsertCurrentUser } from './data';
 import type { UserProfile } from './types';
+import { TOK, FONT_STACK } from './theme.js';
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -95,7 +96,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (loading) {
     return (
       <div style={signInWrap}>
-        <div style={{ color: '#6E6C66', fontSize: 13 }}>Loading…</div>
+        <div style={{ color: TOK.muted, fontSize: 13 }}>Loading…</div>
       </div>
     );
   }
@@ -109,24 +110,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
             marginBottom: 6,
             fontSize: 11,
             fontWeight: 500,
-            color: '#6E6C66',
+            color: TOK.muted,
             letterSpacing: 0.04,
           }}
         >
           AF · MASTER PROJECT TRACKER
         </div>
-        <h1 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 500, color: '#1A1A19' }}>
+        <h1 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 500, color: TOK.ink }}>
           Sign in to continue
         </h1>
-        <p style={{ margin: '0 0 22px', fontSize: 13, color: '#6E6C66', lineHeight: 1.55 }}>
+        <p style={{ margin: '0 0 22px', fontSize: 13, color: TOK.muted, lineHeight: 1.55 }}>
           Use your <strong>@{ALLOWED_DOMAIN}</strong> Google account. Access is restricted to the
           team.
         </p>
         <button
           onClick={signIn}
           style={googleBtn}
-          onMouseEnter={(e) => (e.currentTarget.style.background = '#F7F5EF')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = '#FFFFFF')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = TOK.bg)}
+          onMouseLeave={(e) => (e.currentTarget.style.background = TOK.surface)}
         >
           <GoogleLogo /> Sign in with Google
         </button>
@@ -135,8 +136,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
             style={{
               marginTop: 18,
               padding: '10px 12px',
-              background: '#FCEBEB',
-              color: '#A32D2D',
+              background: TOK.overdueBg,
+              color: TOK.overdueFg,
               borderRadius: 7,
               fontSize: 12,
               lineHeight: 1.5,
@@ -145,9 +146,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
             {error}
           </div>
         )}
-        <div style={{ marginTop: 30, fontSize: 11, color: '#95938C', lineHeight: 1.5 }}>
+        <div style={{ marginTop: 30, fontSize: 11, color: TOK.subtle, lineHeight: 1.5 }}>
           By signing in you agree to share your name, email, and profile photo with this app for
-          attribution on changes and check-ins. See <a href="/privacy.html" style={{ color: '#3B6D11' }}>Privacy</a> · <a href="/terms.html" style={{ color: '#3B6D11' }}>Terms</a>.
+          attribution on changes and check-ins. See <a href="/privacy.html" style={{ color: TOK.accent }}>Privacy</a> · <a href="/terms.html" style={{ color: TOK.accent }}>Terms</a>.
         </div>
       </div>
     </div>
@@ -160,17 +161,17 @@ const signInWrap: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontFamily: '"Geist","Inter",system-ui,sans-serif',
-  background: '#F7F5EF',
+  fontFamily: FONT_STACK,
+  background: TOK.bg,
 };
 const signInCard: React.CSSProperties = {
-  background: '#FFFFFF',
+  background: TOK.surface,
   padding: '36px 32px',
   borderRadius: 14,
   boxShadow: '0 20px 60px rgba(0,0,0,0.08)',
   maxWidth: 380,
   width: '100%',
-  border: '1px solid rgba(26,26,25,0.08)',
+  border: '1px solid ' + TOK.line,
 };
 const googleBtn: React.CSSProperties = {
   display: 'flex',
@@ -182,9 +183,9 @@ const googleBtn: React.CSSProperties = {
   fontSize: 14,
   fontWeight: 500,
   fontFamily: 'inherit',
-  color: '#1A1A19',
-  background: '#FFFFFF',
-  border: '1px solid rgba(26,26,25,0.22)',
+  color: TOK.ink,
+  background: TOK.surface,
+  border: '1px solid ' + TOK.lineStrong,
   borderRadius: 8,
   cursor: 'pointer',
   transition: 'background 0.12s',
